@@ -576,6 +576,7 @@ name = "meld-rs"
 version = "0.1.0"
 dependencies = [
  "dir-cmp",
+ "gio",
  "gtk4",
  "walkdir",
 ]
