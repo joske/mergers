@@ -1,0 +1,9 @@
+[package]
+name = "meld-rs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+walkdir = "2.5"
+dir-cmp = "0"
+gtk4 = { version = "0.9", features = ["v4_14"] }
