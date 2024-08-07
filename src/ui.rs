@@ -92,20 +92,3 @@ fn create_tree(store: ListStore) -> ListView {
 
     ListView::new(Some(selection_model), Some(factory))
 }
-
-// alternative code for comparing directories
-// use dir_cmp::{full::compare_dirs, Options};
-// use std::path::Path;
-//     let options = Options {
-//         ignore_equal: false,
-//         ignore_left_only: false,
-//         ignore_right_only: false,
-//         filter: None,
-//         recursive: true,
-//     };
-//     let left = Path::new("/home/jos/Pictures");
-//     let right = Path::new("/home/jos/Pictures");
-//     let result = compare_dirs(left, right, options).unwrap();
-//     for r in result {
-//         println!("{r:?}");
-//     }
