@@ -1,11 +1,11 @@
-use std::path::Path;
-
 use gtk4::gio::ListStore;
 use gtk4::{prelude::*, Orientation, PolicyType, ScrolledWindow};
 use gtk4::{Application, ApplicationWindow, Label, ListItem};
 use gtk4::{ListView, MultiSelection, SignalListItemFactory, StringObject};
+use walkdir::WalkDir;
 
-use crate::diff;
+// use std::path::Path;
+// use crate::diff;
 
 pub(crate) fn build_ui(application: &Application) {
     application.connect_activate(|app| {
@@ -13,17 +13,23 @@ pub(crate) fn build_ui(application: &Application) {
         let right_model = ListStore::new::<StringObject>();
 
         // store data in the model
-        let (left, right) = diff::diff(
-            Path::new("/home/jos/tmp/cmp1"),
-            Path::new("/home/jos/tmp/cmp2"),
-        )
-        .unwrap();
-        for entry in left.children() {
-            let object = StringObject::new(entry.name());
+        let left = WalkDir::new("/home/jos/tmp/cmp1")
+            .min_depth(1)
+            .sort_by_file_name();
+        let right = WalkDir::new("/home/jos/tmp/cmp2")
+            .min_depth(1)
+            .sort_by_file_name();
+        // let (left, right) = diff::diff(
+        //     Path::new("/home/jos/tmp/cmp1"),
+        //     Path::new("/home/jos/tmp/cmp2"),
+        // )
+        // .unwrap();
+        for entry in left.into_iter().filter_map(|e| e.ok()) {
+            let object = StringObject::new(entry.path().to_str().unwrap());
             left_model.append(&object);
         }
-        for entry in right.children() {
-            let object = StringObject::new(entry.name());
+        for entry in right.into_iter().filter_map(|e| e.ok()) {
+            let object = StringObject::new(entry.path().to_str().unwrap());
             right_model.append(&object);
         }
 

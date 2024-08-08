@@ -5,6 +5,6 @@ edition = "2021"
 
 [dependencies]
 walkdir = "2.5"
-dir-cmp = "0"
+dircmp = "0"
 gtk4 = { version = "0.9", features = ["v4_14"] }
 gio = { version = "0.20", features = ["v2_66"] }
