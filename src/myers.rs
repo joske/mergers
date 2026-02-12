@@ -63,7 +63,15 @@ pub fn diff<T: Eq + Hash>(a: &[T], b: &[T]) -> Vec<DiffChunk> {
 
     // Build matching blocks from snake chain
     let mut blocks = build_matching_blocks(
-        lastsnake, &arena, prefix, suffix, &aindex, &bindex, discarded, a.len(), b.len(),
+        lastsnake,
+        &arena,
+        prefix,
+        suffix,
+        &aindex,
+        &bindex,
+        discarded,
+        a.len(),
+        b.len(),
     );
 
     // Postprocess: merge adjacent matching blocks
@@ -169,8 +177,7 @@ fn discard_nonmatching<'a, T: Eq + Hash>(
     let (b_filtered, bindex) = index_matching(&aset, b);
     let (a_filtered, aindex) = index_matching(&bset, a);
 
-    let discarded =
-        (b.len() - b_filtered.len() > 10) || (a.len() - a_filtered.len() > 10);
+    let discarded = (b.len() - b_filtered.len() > 10) || (a.len() - a_filtered.len() > 10);
 
     if discarded {
         (a_filtered, aindex, b_filtered, bindex, true)
@@ -183,11 +190,7 @@ fn discard_nonmatching<'a, T: Eq + Hash>(
 
 /// Run the core Myers O(NP) algorithm on two sequences.
 /// Returns the arena index of the last snake node, or None if either sequence is empty.
-fn myers_core<T: PartialEq>(
-    a: &[T],
-    b: &[T],
-    arena: &mut Vec<SnakeNode>,
-) -> Option<usize> {
+fn myers_core<T: PartialEq>(a: &[T], b: &[T], arena: &mut Vec<SnakeNode>) -> Option<usize> {
     let m = a.len();
     let n = b.len();
 
@@ -401,11 +404,14 @@ fn build_matching_blocks(
 
     // Prepend common prefix block
     if common_prefix > 0 {
-        blocks.insert(0, MatchingBlock {
-            a: 0,
-            b: 0,
-            len: common_prefix,
-        });
+        blocks.insert(
+            0,
+            MatchingBlock {
+                a: 0,
+                b: 0,
+                len: common_prefix,
+            },
+        );
     }
 
     // Append common suffix block
@@ -535,11 +541,16 @@ mod tests {
     fn test_identical() {
         let a = vec!["a", "b", "c"];
         let chunks = diff(&a, &a);
-        assert_eq!(chunks, vec![DiffChunk {
-            tag: DiffTag::Equal,
-            start_a: 0, end_a: 3,
-            start_b: 0, end_b: 3,
-        }]);
+        assert_eq!(
+            chunks,
+            vec![DiffChunk {
+                tag: DiffTag::Equal,
+                start_a: 0,
+                end_a: 3,
+                start_b: 0,
+                end_b: 3,
+            }]
+        );
     }
 
     #[test]
@@ -556,11 +567,16 @@ mod tests {
         let a: Vec<&str> = vec![];
         let b = vec!["a", "b"];
         let chunks = diff(&a, &b);
-        assert_eq!(chunks, vec![DiffChunk {
-            tag: DiffTag::Insert,
-            start_a: 0, end_a: 0,
-            start_b: 0, end_b: 2,
-        }]);
+        assert_eq!(
+            chunks,
+            vec![DiffChunk {
+                tag: DiffTag::Insert,
+                start_a: 0,
+                end_a: 0,
+                start_b: 0,
+                end_b: 2,
+            }]
+        );
     }
 
     #[test]
@@ -568,11 +584,16 @@ mod tests {
         let a = vec!["a", "b"];
         let b: Vec<&str> = vec![];
         let chunks = diff(&a, &b);
-        assert_eq!(chunks, vec![DiffChunk {
-            tag: DiffTag::Delete,
-            start_a: 0, end_a: 2,
-            start_b: 0, end_b: 0,
-        }]);
+        assert_eq!(
+            chunks,
+            vec![DiffChunk {
+                tag: DiffTag::Delete,
+                start_a: 0,
+                end_a: 2,
+                start_b: 0,
+                end_b: 0,
+            }]
+        );
     }
 
     #[test]
@@ -580,10 +601,25 @@ mod tests {
         let a = vec!["a", "b"];
         let b = vec!["a", "b", "c"];
         let chunks = diff(&a, &b);
-        assert_eq!(chunks, vec![
-            DiffChunk { tag: DiffTag::Equal, start_a: 0, end_a: 2, start_b: 0, end_b: 2 },
-            DiffChunk { tag: DiffTag::Insert, start_a: 2, end_a: 2, start_b: 2, end_b: 3 },
-        ]);
+        assert_eq!(
+            chunks,
+            vec![
+                DiffChunk {
+                    tag: DiffTag::Equal,
+                    start_a: 0,
+                    end_a: 2,
+                    start_b: 0,
+                    end_b: 2
+                },
+                DiffChunk {
+                    tag: DiffTag::Insert,
+                    start_a: 2,
+                    end_a: 2,
+                    start_b: 2,
+                    end_b: 3
+                },
+            ]
+        );
     }
 
     #[test]
@@ -591,10 +627,25 @@ mod tests {
         let a = vec!["b", "c"];
         let b = vec!["a", "b", "c"];
         let chunks = diff(&a, &b);
-        assert_eq!(chunks, vec![
-            DiffChunk { tag: DiffTag::Insert, start_a: 0, end_a: 0, start_b: 0, end_b: 1 },
-            DiffChunk { tag: DiffTag::Equal, start_a: 0, end_a: 2, start_b: 1, end_b: 3 },
-        ]);
+        assert_eq!(
+            chunks,
+            vec![
+                DiffChunk {
+                    tag: DiffTag::Insert,
+                    start_a: 0,
+                    end_a: 0,
+                    start_b: 0,
+                    end_b: 1
+                },
+                DiffChunk {
+                    tag: DiffTag::Equal,
+                    start_a: 0,
+                    end_a: 2,
+                    start_b: 1,
+                    end_b: 3
+                },
+            ]
+        );
     }
 
     #[test]
@@ -602,11 +653,32 @@ mod tests {
         let a = vec!["a", "b", "c"];
         let b = vec!["a", "c"];
         let chunks = diff(&a, &b);
-        assert_eq!(chunks, vec![
-            DiffChunk { tag: DiffTag::Equal, start_a: 0, end_a: 1, start_b: 0, end_b: 1 },
-            DiffChunk { tag: DiffTag::Delete, start_a: 1, end_a: 2, start_b: 1, end_b: 1 },
-            DiffChunk { tag: DiffTag::Equal, start_a: 2, end_a: 3, start_b: 1, end_b: 2 },
-        ]);
+        assert_eq!(
+            chunks,
+            vec![
+                DiffChunk {
+                    tag: DiffTag::Equal,
+                    start_a: 0,
+                    end_a: 1,
+                    start_b: 0,
+                    end_b: 1
+                },
+                DiffChunk {
+                    tag: DiffTag::Delete,
+                    start_a: 1,
+                    end_a: 2,
+                    start_b: 1,
+                    end_b: 1
+                },
+                DiffChunk {
+                    tag: DiffTag::Equal,
+                    start_a: 2,
+                    end_a: 3,
+                    start_b: 1,
+                    end_b: 2
+                },
+            ]
+        );
     }
 
     #[test]
@@ -679,12 +751,26 @@ mod tests {
 
     #[test]
     fn test_single_element_sequences() {
-        assert_eq!(diff(&["a"], &["a"]), vec![
-            DiffChunk { tag: DiffTag::Equal, start_a: 0, end_a: 1, start_b: 0, end_b: 1 },
-        ]);
-        assert_eq!(diff(&["a"], &["b"]), vec![
-            DiffChunk { tag: DiffTag::Replace, start_a: 0, end_a: 1, start_b: 0, end_b: 1 },
-        ]);
+        assert_eq!(
+            diff(&["a"], &["a"]),
+            vec![DiffChunk {
+                tag: DiffTag::Equal,
+                start_a: 0,
+                end_a: 1,
+                start_b: 0,
+                end_b: 1
+            },]
+        );
+        assert_eq!(
+            diff(&["a"], &["b"]),
+            vec![DiffChunk {
+                tag: DiffTag::Replace,
+                start_a: 0,
+                end_a: 1,
+                start_b: 0,
+                end_b: 1
+            },]
+        );
     }
 
     #[test]

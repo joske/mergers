@@ -112,9 +112,11 @@ fn reload_file_tab(tab: &FileTab) {
     let cur_left = tab
         .left_buf
         .text(&tab.left_buf.start_iter(), &tab.left_buf.end_iter(), false);
-    let cur_right = tab
-        .right_buf
-        .text(&tab.right_buf.start_iter(), &tab.right_buf.end_iter(), false);
+    let cur_right = tab.right_buf.text(
+        &tab.right_buf.start_iter(),
+        &tab.right_buf.end_iter(),
+        false,
+    );
 
     if cur_left.as_str() == left_content && cur_right.as_str() == right_content {
         return; // nothing changed on disk vs buffer
@@ -636,15 +638,7 @@ fn draw_gutter(
     }
 }
 
-fn draw_arrow(
-    cr: &gtk4::cairo::Context,
-    cx: f64,
-    cy: f64,
-    right: bool,
-    r: f64,
-    g: f64,
-    b: f64,
-) {
+fn draw_arrow(cr: &gtk4::cairo::Context, cx: f64, cy: f64, right: bool, r: f64, g: f64, b: f64) {
     let radius = 9.0;
     cr.set_source_rgba(r, g, b, 0.85);
     cr.arc(cx, cy, radius, 0.0, 2.0 * std::f64::consts::PI);
@@ -673,8 +667,7 @@ fn get_lines_text(buf: &TextBuffer, start_line: usize, end_line: usize) -> Strin
         .iter_at_line(start_line as i32)
         .unwrap_or(buf.start_iter());
     let end = if (end_line as i32) < buf.line_count() {
-        buf.iter_at_line(end_line as i32)
-            .unwrap_or(buf.end_iter())
+        buf.iter_at_line(end_line as i32).unwrap_or(buf.end_iter())
     } else {
         buf.end_iter()
     };
@@ -943,9 +936,10 @@ fn open_file_diff(
     });
 
     // Tab label
-    let file_name = Path::new(rel_path)
-        .file_name()
-        .map_or_else(|| rel_path.to_string(), |n| n.to_string_lossy().into_owned());
+    let file_name = Path::new(rel_path).file_name().map_or_else(
+        || rel_path.to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
     let left_dir_name = Path::new(LEFT_DIR)
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -1009,20 +1003,19 @@ pub(crate) fn build_ui(application: &Application) {
 
         // Shared TreeListModel — both panes see the same tree structure
         let cm = children_map.clone();
-        let tree_model =
-            TreeListModel::new(root_store.clone(), false, false, move |item| {
-                let obj = item.downcast_ref::<StringObject>()?;
-                let raw = obj.string();
-                if decode_is_dir(&raw) {
-                    let rel = decode_rel_path(&raw);
-                    cm.borrow()
-                        .get(rel)
-                        .cloned()
-                        .map(gio::prelude::Cast::upcast::<gio::ListModel>)
-                } else {
-                    None
-                }
-            });
+        let tree_model = TreeListModel::new(root_store.clone(), false, false, move |item| {
+            let obj = item.downcast_ref::<StringObject>()?;
+            let raw = obj.string();
+            if decode_is_dir(&raw) {
+                let rel = decode_rel_path(&raw);
+                cm.borrow()
+                    .get(rel)
+                    .cloned()
+                    .map(gio::prelude::Cast::upcast::<gio::ListModel>)
+            } else {
+                None
+            }
+        });
 
         // ── Left pane ──────────────────────────────────────────────────
         let left_sel = SingleSelection::new(Some(tree_model.clone()));
@@ -1035,10 +1028,8 @@ pub(crate) fn build_ui(application: &Application) {
             let col = ColumnViewColumn::new(Some("Size"), Some(make_field_factory(true, 4)));
             col.set_fixed_width(80);
             left_view.append_column(&col);
-            let col = ColumnViewColumn::new(
-                Some("Modification time"),
-                Some(make_field_factory(true, 5)),
-            );
+            let col =
+                ColumnViewColumn::new(Some("Modification time"), Some(make_field_factory(true, 5)));
             col.set_fixed_width(180);
             left_view.append_column(&col);
         }
@@ -1097,12 +1088,7 @@ pub(crate) fn build_ui(application: &Application) {
                     let obj = row.item().and_downcast::<StringObject>().unwrap();
                     let raw = obj.string();
                     if !decode_is_dir(&raw) {
-                        open_file_diff(
-                            &nb,
-                            decode_rel_path(&raw),
-                            decode_status(&raw),
-                            &tabs,
-                        );
+                        open_file_diff(&nb, decode_rel_path(&raw), decode_status(&raw), &tabs);
                     }
                 }
             });
@@ -1117,12 +1103,7 @@ pub(crate) fn build_ui(application: &Application) {
                     let obj = row.item().and_downcast::<StringObject>().unwrap();
                     let raw = obj.string();
                     if !decode_is_dir(&raw) {
-                        open_file_diff(
-                            &nb,
-                            decode_rel_path(&raw),
-                            decode_status(&raw),
-                            &tabs,
-                        );
+                        open_file_diff(&nb, decode_rel_path(&raw), decode_status(&raw), &tabs);
                     }
                 }
             });
@@ -1162,12 +1143,8 @@ pub(crate) fn build_ui(application: &Application) {
             if changed && !SAVING.load(std::sync::atomic::Ordering::Relaxed) {
                 // Build new tree into a temporary map (not inside borrow_mut)
                 let mut new_map = HashMap::new();
-                let (new_store, _) = scan_level(
-                    Path::new(LEFT_DIR),
-                    Path::new(RIGHT_DIR),
-                    "",
-                    &mut new_map,
-                );
+                let (new_store, _) =
+                    scan_level(Path::new(LEFT_DIR), Path::new(RIGHT_DIR), "", &mut new_map);
                 // Replace children_map, then drop the borrow before touching the store.
                 // Appending to root_store triggers TreeListModel's create_func which
                 // borrows children_map immutably — so we must not hold a mutable borrow.
