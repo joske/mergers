@@ -8,3 +8,5 @@ walkdir = "2.5"
 dircmp = "0"
 gtk4 = { version = "0.9", features = ["v4_14"] }
 gio = { version = "0.20", features = ["v2_66"] }
+chrono = "0.4"
+notify = "6"

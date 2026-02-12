@@ -1,7 +1,7 @@
 use gio::prelude::ApplicationExtManual;
 use gtk4::{glib, Application};
 
-mod diff;
+mod myers;
 mod ui;
 
 fn main() -> glib::ExitCode {
