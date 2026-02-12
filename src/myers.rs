@@ -2,7 +2,16 @@
 //!
 //! Based on: "An O(NP) Sequence Comparison Algorithm" (1989)
 //! by Sun Wu, Udi Manber, Gene Myers, Webb Miller
-//! http://research.janelia.org/myers/Papers/np_diff.pdf
+//! <http://research.janelia.org/myers/Papers/np_diff.pdf>
+#![allow(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::many_single_char_names,
+    clippy::cast_lossless,
+    clippy::items_after_statements,
+    clippy::too_many_lines
+)]
 
 use std::collections::HashSet;
 use std::hash::Hash;
@@ -320,6 +329,7 @@ fn myers_core<T: PartialEq>(
 
 // --- Build Matching Blocks ---
 
+#[allow(clippy::too_many_arguments)]
 fn build_matching_blocks(
     lastsnake: Option<usize>,
     arena: &[SnakeNode],
@@ -431,17 +441,18 @@ fn postprocess<T: PartialEq>(blocks: &mut Vec<MatchingBlock>, a: &[T], b: &[T]) 
 
         while i >= 0 {
             let prev = blocks[i as usize];
-            if prev.b + prev.len == cur.b || prev.a + prev.len == cur.a {
-                if cur.a >= prev.len && cur.b >= prev.len {
-                    let slice_a = &a[cur.a - prev.len..cur.a];
-                    let slice_b = &b[cur.b - prev.len..cur.b];
-                    if slice_a == slice_b {
-                        cur.a -= prev.len;
-                        cur.b -= prev.len;
-                        cur.len += prev.len;
-                        i -= 1;
-                        continue;
-                    }
+            if (prev.b + prev.len == cur.b || prev.a + prev.len == cur.a)
+                && cur.a >= prev.len
+                && cur.b >= prev.len
+            {
+                let slice_a = &a[cur.a - prev.len..cur.a];
+                let slice_b = &b[cur.b - prev.len..cur.b];
+                if slice_a == slice_b {
+                    cur.a -= prev.len;
+                    cur.b -= prev.len;
+                    cur.len += prev.len;
+                    i -= 1;
+                    continue;
                 }
             }
             break;

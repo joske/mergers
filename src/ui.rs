@@ -1,3 +1,12 @@
+#![allow(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_lossless,
+    clippy::cast_precision_loss,
+    clippy::too_many_lines
+)]
+
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
@@ -23,14 +32,14 @@ use crate::myers::{self, DiffChunk, DiffTag};
 const LEFT_DIR: &str = "/home/jos/tmp/cmp1";
 const RIGHT_DIR: &str = "/home/jos/tmp/cmp2";
 
-const CSS: &str = r#"
+const CSS: &str = r"
 .diff-changed { color: #729fcf; font-weight: bold; }
 .diff-deleted { color: #f57900; }
 .diff-inserted { color: #73d216; }
 .diff-missing { color: #888a85; font-style: italic; }
 .info-bar { background: #3584e4; padding: 8px 12px; }
 .info-bar label { color: white; }
-"#;
+";
 
 const SEP: char = '\x1f';
 
@@ -114,10 +123,10 @@ fn reload_file_tab(tab: &FileTab) {
     tab.left_buf.set_text(&left_content);
     tab.right_buf.set_text(&right_content);
 
-    let new_chunks = if left_content != right_content {
-        myers::diff_lines(&left_content, &right_content)
-    } else {
+    let new_chunks = if left_content == right_content {
         Vec::new()
+    } else {
+        myers::diff_lines(&left_content, &right_content)
     };
     apply_diff_tags(&tab.left_buf, &tab.right_buf, &new_chunks);
     *tab.chunks.borrow_mut() = new_chunks;
@@ -149,6 +158,7 @@ fn format_mtime(t: SystemTime) -> String {
 // ─── Row encoding ──────────────────────────────────────────────────────────
 // Fields: STATUS \x1f NAME \x1f IS_DIR \x1f REL_PATH \x1f L_SIZE \x1f L_MTIME \x1f R_SIZE \x1f R_MTIME
 
+#[allow(clippy::too_many_arguments)]
 fn encode_row(
     status: FileStatus,
     name: &str,
@@ -190,17 +200,16 @@ fn decode_rel_path(raw: &str) -> &str {
 fn read_dir_entries(dir: &Path) -> BTreeMap<String, DirMeta> {
     let mut map = BTreeMap::new();
     if let Ok(rd) = fs::read_dir(dir) {
-        for entry in rd.filter_map(|e| e.ok()) {
-            let name = match entry.file_name().into_string() {
-                Ok(n) => n,
-                Err(_) => continue,
+        for entry in rd.filter_map(Result::ok) {
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
             };
             let meta = entry.metadata().ok();
             let is_dir = entry.path().is_dir();
             map.insert(
                 name,
                 DirMeta {
-                    size: meta.as_ref().map(|m| m.len()),
+                    size: meta.as_ref().map(std::fs::Metadata::len),
                     mtime: meta.as_ref().and_then(|m| m.modified().ok()),
                     is_dir,
                 },
@@ -212,7 +221,7 @@ fn read_dir_entries(dir: &Path) -> BTreeMap<String, DirMeta> {
 
 /// Recursively compare two directory trees.
 /// Populates `children_map[rel_path]` with a `ListStore` for each directory level.
-/// Returns (store_for_this_level, aggregate_status).
+/// Returns (`store_for_this_level`, `aggregate_status`).
 fn scan_level(
     left_root: &Path,
     right_root: &Path,
@@ -238,8 +247,8 @@ fn scan_level(
     let mut names: Vec<(&String, bool)> = all
         .iter()
         .map(|n| {
-            let is_dir = left_entries.get(*n).map(|m| m.is_dir).unwrap_or(false)
-                || right_entries.get(*n).map(|m| m.is_dir).unwrap_or(false);
+            let is_dir = left_entries.get(*n).is_some_and(|m| m.is_dir)
+                || right_entries.get(*n).is_some_and(|m| m.is_dir);
             (*n, is_dir)
         })
         .collect();
@@ -343,7 +352,7 @@ fn apply_status_class(widget: &impl WidgetExt, status: &str, is_left: bool) {
 
 // ─── Column factories ──────────────────────────────────────────────────────
 
-/// Name column: TreeExpander → Box → [Icon, Label]
+/// Name column: `TreeExpander` → Box → [Icon, Label]
 fn make_name_factory(is_left: bool) -> SignalListItemFactory {
     let factory = SignalListItemFactory::new();
 
@@ -571,6 +580,7 @@ fn line_to_gutter_y(
     0.0
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_gutter(
     cr: &gtk4::cairo::Context,
     width: f64,
@@ -597,7 +607,7 @@ fn draw_gutter(
             DiffTag::Replace => (0.45, 0.62, 0.81),
             DiffTag::Delete => (0.96, 0.47, 0.0),
             DiffTag::Insert => (0.45, 0.82, 0.09),
-            _ => continue,
+            DiffTag::Equal => continue,
         };
 
         // Filled band
@@ -706,16 +716,17 @@ fn refresh_diff(
     left_buf.remove_all_tags(&left_buf.start_iter(), &left_buf.end_iter());
     right_buf.remove_all_tags(&right_buf.start_iter(), &right_buf.end_iter());
 
-    let new_chunks = if lt != rt {
-        myers::diff_lines(&lt, &rt)
-    } else {
+    let new_chunks = if lt == rt {
         Vec::new()
+    } else {
+        myers::diff_lines(&lt, &rt)
     };
     apply_diff_tags(left_buf, right_buf, &new_chunks);
     *chunks.borrow_mut() = new_chunks;
     gutter.queue_draw();
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_gutter_click(
     x: f64,
     y: f64,
@@ -934,8 +945,7 @@ fn open_file_diff(
     // Tab label
     let file_name = Path::new(rel_path)
         .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| rel_path.to_string());
+        .map_or_else(|| rel_path.to_string(), |n| n.to_string_lossy().into_owned());
     let left_dir_name = Path::new(LEFT_DIR)
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -1008,7 +1018,7 @@ pub(crate) fn build_ui(application: &Application) {
                     cm.borrow()
                         .get(rel)
                         .cloned()
-                        .map(|s| s.upcast::<gio::ListModel>())
+                        .map(gio::prelude::Cast::upcast::<gio::ListModel>)
                 } else {
                     None
                 }
