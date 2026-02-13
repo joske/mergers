@@ -29,9 +29,6 @@ use gtk4::{
 
 use crate::myers::{self, DiffChunk, DiffTag};
 
-const LEFT_DIR: &str = "/home/jos/tmp/cmp1";
-const RIGHT_DIR: &str = "/home/jos/tmp/cmp2";
-
 const CSS: &str = r"
 .diff-changed { color: #729fcf; font-weight: bold; }
 .diff-deleted { color: #f57900; }
@@ -102,11 +99,11 @@ fn apply_diff_tags(left_buf: &TextBuffer, right_buf: &TextBuffer, chunks: &[Diff
     }
 }
 
-fn reload_file_tab(tab: &FileTab) {
+fn reload_file_tab(tab: &FileTab, left_dir: &str, right_dir: &str) {
     let left_content =
-        fs::read_to_string(Path::new(LEFT_DIR).join(&tab.rel_path)).unwrap_or_default();
+        fs::read_to_string(Path::new(left_dir).join(&tab.rel_path)).unwrap_or_default();
     let right_content =
-        fs::read_to_string(Path::new(RIGHT_DIR).join(&tab.rel_path)).unwrap_or_default();
+        fs::read_to_string(Path::new(right_dir).join(&tab.rel_path)).unwrap_or_default();
 
     // Only reset buffers if the on-disk content actually differs from what's in the buffer
     let cur_left = tab
@@ -779,9 +776,11 @@ fn open_file_diff(
     rel_path: &str,
     status: &str,
     open_tabs: &Rc<RefCell<Vec<FileTab>>>,
+    left_dir: &str,
+    right_dir: &str,
 ) {
-    let left_path = Path::new(LEFT_DIR).join(rel_path);
-    let right_path = Path::new(RIGHT_DIR).join(rel_path);
+    let left_path = Path::new(left_dir).join(rel_path);
+    let right_path = Path::new(right_dir).join(rel_path);
 
     let left_content = fs::read_to_string(&left_path).unwrap_or_default();
     let right_content = fs::read_to_string(&right_path).unwrap_or_default();
@@ -940,11 +939,11 @@ fn open_file_diff(
         || rel_path.to_string(),
         |n| n.to_string_lossy().into_owned(),
     );
-    let left_dir_name = Path::new(LEFT_DIR)
+    let left_dir_name = Path::new(left_dir)
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let right_dir_name = Path::new(RIGHT_DIR)
+    let right_dir_name = Path::new(right_dir)
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
@@ -973,8 +972,12 @@ fn open_file_diff(
 
 // ─── Main UI ───────────────────────────────────────────────────────────────
 
-pub(crate) fn build_ui(application: &Application) {
-    application.connect_activate(|app| {
+pub(crate) fn build_ui(application: &Application, left_dir: String, right_dir: String) {
+    let left_dir = Rc::new(left_dir);
+    let right_dir = Rc::new(right_dir);
+    application.connect_activate(move |app| {
+        let left_dir = left_dir.clone();
+        let right_dir = right_dir.clone();
         // Load CSS
         let provider = CssProvider::new();
         provider.load_from_string(CSS);
@@ -989,8 +992,8 @@ pub(crate) fn build_ui(application: &Application) {
         let root_store = ListStore::new::<StringObject>();
         {
             let (store, _) = scan_level(
-                Path::new(LEFT_DIR),
-                Path::new(RIGHT_DIR),
+                Path::new(left_dir.as_str()),
+                Path::new(right_dir.as_str()),
                 "",
                 &mut children_map.borrow_mut(),
             );
@@ -1082,13 +1085,15 @@ pub(crate) fn build_ui(application: &Application) {
             let nb = notebook.clone();
             let tm = tree_model.clone();
             let tabs = open_tabs.clone();
+            let ld = left_dir.clone();
+            let rd = right_dir.clone();
             left_view.connect_activate(move |_, pos| {
                 if let Some(item) = tm.item(pos) {
                     let row = item.downcast::<TreeListRow>().unwrap();
                     let obj = row.item().and_downcast::<StringObject>().unwrap();
                     let raw = obj.string();
                     if !decode_is_dir(&raw) {
-                        open_file_diff(&nb, decode_rel_path(&raw), decode_status(&raw), &tabs);
+                        open_file_diff(&nb, decode_rel_path(&raw), decode_status(&raw), &tabs, &ld, &rd);
                     }
                 }
             });
@@ -1097,13 +1102,15 @@ pub(crate) fn build_ui(application: &Application) {
             let nb = notebook.clone();
             let tm = tree_model.clone();
             let tabs = open_tabs.clone();
+            let ld = left_dir.clone();
+            let rd = right_dir.clone();
             right_view.connect_activate(move |_, pos| {
                 if let Some(item) = tm.item(pos) {
                     let row = item.downcast::<TreeListRow>().unwrap();
                     let obj = row.item().and_downcast::<StringObject>().unwrap();
                     let raw = obj.string();
                     if !decode_is_dir(&raw) {
-                        open_file_diff(&nb, decode_rel_path(&raw), decode_status(&raw), &tabs);
+                        open_file_diff(&nb, decode_rel_path(&raw), decode_status(&raw), &tabs, &ld, &rd);
                     }
                 }
             });
@@ -1111,30 +1118,36 @@ pub(crate) fn build_ui(application: &Application) {
 
         // ── File watcher ───────────────────────────────────────────────
         let (fs_tx, fs_rx) = mpsc::channel::<()>();
-        std::thread::spawn(move || {
-            use notify::{RecursiveMode, Watcher};
-            let _watcher = {
-                let mut w = notify::recommended_watcher(
-                    move |res: Result<notify::Event, notify::Error>| {
-                        if res.is_ok() {
-                            let _ = fs_tx.send(());
-                        }
-                    },
-                )
-                .expect("Failed to create file watcher");
-                w.watch(Path::new(LEFT_DIR), RecursiveMode::Recursive).ok();
-                w.watch(Path::new(RIGHT_DIR), RecursiveMode::Recursive).ok();
-                w
-            };
-            loop {
-                std::thread::park();
-            }
-        });
+        {
+            let ld = left_dir.to_string();
+            let rd = right_dir.to_string();
+            std::thread::spawn(move || {
+                use notify::{RecursiveMode, Watcher};
+                let _watcher = {
+                    let mut w = notify::recommended_watcher(
+                        move |res: Result<notify::Event, notify::Error>| {
+                            if res.is_ok() {
+                                let _ = fs_tx.send(());
+                            }
+                        },
+                    )
+                    .expect("Failed to create file watcher");
+                    w.watch(Path::new(&ld), RecursiveMode::Recursive).ok();
+                    w.watch(Path::new(&rd), RecursiveMode::Recursive).ok();
+                    w
+                };
+                loop {
+                    std::thread::park();
+                }
+            });
+        }
 
         // Poll for filesystem changes and reload
         let cm_reload = children_map.clone();
         let rs_reload = root_store.clone();
         let tabs_reload = open_tabs.clone();
+        let ld_reload = left_dir.clone();
+        let rd_reload = right_dir.clone();
         gtk4::glib::timeout_add_local(Duration::from_millis(500), move || {
             let mut changed = false;
             while fs_rx.try_recv().is_ok() {
@@ -1144,7 +1157,7 @@ pub(crate) fn build_ui(application: &Application) {
                 // Build new tree into a temporary map (not inside borrow_mut)
                 let mut new_map = HashMap::new();
                 let (new_store, _) =
-                    scan_level(Path::new(LEFT_DIR), Path::new(RIGHT_DIR), "", &mut new_map);
+                    scan_level(Path::new(ld_reload.as_str()), Path::new(rd_reload.as_str()), "", &mut new_map);
                 // Replace children_map, then drop the borrow before touching the store.
                 // Appending to root_store triggers TreeListModel's create_func which
                 // borrows children_map immutably — so we must not hold a mutable borrow.
@@ -1157,7 +1170,7 @@ pub(crate) fn build_ui(application: &Application) {
                 }
                 // Reload open file tabs
                 for tab in tabs_reload.borrow().iter() {
-                    reload_file_tab(tab);
+                    reload_file_tab(tab, &ld_reload, &rd_reload);
                 }
             }
             gtk4::glib::ControlFlow::Continue
