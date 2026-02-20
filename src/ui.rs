@@ -95,6 +95,7 @@ fn apply_diff_tags(left_buf: &TextBuffer, right_buf: &TextBuffer, chunks: &[Diff
             DiffTag::Replace => {
                 apply_line_tag(left_buf, "changed", chunk.start_a, chunk.end_a);
                 apply_line_tag(right_buf, "changed", chunk.start_b, chunk.end_b);
+                apply_inline_tags(left_buf, right_buf, chunk);
             }
             DiffTag::Delete => {
                 apply_line_tag(left_buf, "deleted", chunk.start_a, chunk.end_a);
@@ -116,19 +117,27 @@ fn apply_merge_tags(
     right_chunks: &[DiffChunk],
 ) {
     // Left pane: a-side of left diff only
+    // left_chunks = diff(left, middle): a-side = left, b-side = middle
     for chunk in left_chunks {
         match chunk.tag {
             DiffTag::Equal | DiffTag::Insert => {}
-            DiffTag::Replace => apply_line_tag(left_buf, "changed", chunk.start_a, chunk.end_a),
+            DiffTag::Replace => {
+                apply_line_tag(left_buf, "changed", chunk.start_a, chunk.end_a);
+                apply_inline_tags(left_buf, middle_buf, chunk);
+            }
             DiffTag::Delete => apply_line_tag(left_buf, "deleted", chunk.start_a, chunk.end_a),
         }
     }
 
     // Right pane: b-side of right diff only
+    // right_chunks = diff(middle, right): a-side = middle, b-side = right
     for chunk in right_chunks {
         match chunk.tag {
             DiffTag::Equal | DiffTag::Delete => {}
-            DiffTag::Replace => apply_line_tag(right_buf, "changed", chunk.start_b, chunk.end_b),
+            DiffTag::Replace => {
+                apply_line_tag(right_buf, "changed", chunk.start_b, chunk.end_b);
+                apply_inline_tags(middle_buf, right_buf, chunk);
+            }
             DiffTag::Insert => apply_line_tag(right_buf, "inserted", chunk.start_b, chunk.end_b),
         }
     }
@@ -511,6 +520,25 @@ fn setup_diff_tags(buffer: &TextBuffer) {
             .paragraph_background("#f5c6cb")
             .build(),
     );
+    // Inline word-level highlighting (layered on top of line-level paragraph_background)
+    table.add(
+        &TextTag::builder()
+            .name("inline-changed")
+            .background("#f0d080")
+            .build(),
+    );
+    table.add(
+        &TextTag::builder()
+            .name("inline-deleted")
+            .background("#f0b0b0")
+            .build(),
+    );
+    table.add(
+        &TextTag::builder()
+            .name("inline-inserted")
+            .background("#a0dfa0")
+            .build(),
+    );
 }
 
 fn create_source_buffer(file_path: &Path) -> TextBuffer {
@@ -532,7 +560,15 @@ fn create_source_buffer(file_path: &Path) -> TextBuffer {
 fn remove_diff_tags(buf: &TextBuffer) {
     let start = buf.start_iter();
     let end = buf.end_iter();
-    for name in &["changed", "deleted", "inserted", "conflict"] {
+    for name in &[
+        "changed",
+        "deleted",
+        "inserted",
+        "conflict",
+        "inline-changed",
+        "inline-deleted",
+        "inline-inserted",
+    ] {
         if let Some(tag) = buf.tag_table().lookup(name) {
             buf.remove_tag(&tag, &start, &end);
         }
@@ -597,6 +633,99 @@ fn apply_line_tag(buffer: &TextBuffer, tag_name: &str, start_line: usize, end_li
     };
     if let (Some(s), Some(e)) = (start, end) {
         buffer.apply_tag_by_name(tag_name, &s, &e);
+    }
+}
+
+fn get_line_text(buf: &TextBuffer, line: usize) -> String {
+    let start = buf
+        .iter_at_line(line as i32)
+        .unwrap_or_else(|| buf.start_iter());
+    let mut end = start;
+    end.forward_to_line_end();
+    buf.text(&start, &end, false).to_string()
+}
+
+fn apply_char_tag(
+    buf: &TextBuffer,
+    tag_name: &str,
+    line: usize,
+    tokens: &[myers::Token<'_>],
+    tok_start: usize,
+    tok_end: usize,
+) {
+    if tok_start >= tok_end || tok_start >= tokens.len() {
+        return;
+    }
+    let byte_start = tokens[tok_start].offset;
+    let byte_end = if tok_end < tokens.len() {
+        tokens[tok_end].offset
+    } else {
+        tokens.last().map_or(0, |t| t.offset + t.text.len())
+    };
+    // iter_at_line_offset uses character (not byte) offsets, so convert
+    let line_text = get_line_text(buf, line);
+    let char_start = line_text[..byte_start].chars().count() as i32;
+    let char_end = line_text[..byte_end].chars().count() as i32;
+    let s = buf.iter_at_line_offset(line as i32, char_start);
+    let e = buf.iter_at_line_offset(line as i32, char_end);
+    if let (Some(s), Some(e)) = (s, e) {
+        buf.apply_tag_by_name(tag_name, &s, &e);
+    }
+}
+
+fn apply_inline_tags(left_buf: &TextBuffer, right_buf: &TextBuffer, chunk: &DiffChunk) {
+    let n = std::cmp::min(chunk.end_a - chunk.start_a, chunk.end_b - chunk.start_b);
+    for i in 0..n {
+        let left_line = chunk.start_a + i;
+        let right_line = chunk.start_b + i;
+        let left_text = get_line_text(left_buf, left_line);
+        let right_text = get_line_text(right_buf, right_line);
+
+        let (toks_a, toks_b, word_chunks) = myers::diff_words(&left_text, &right_text);
+
+        for wc in &word_chunks {
+            match wc.tag {
+                DiffTag::Equal => {}
+                DiffTag::Replace => {
+                    apply_char_tag(
+                        left_buf,
+                        "inline-changed",
+                        left_line,
+                        &toks_a,
+                        wc.start_a,
+                        wc.end_a,
+                    );
+                    apply_char_tag(
+                        right_buf,
+                        "inline-changed",
+                        right_line,
+                        &toks_b,
+                        wc.start_b,
+                        wc.end_b,
+                    );
+                }
+                DiffTag::Delete => {
+                    apply_char_tag(
+                        left_buf,
+                        "inline-deleted",
+                        left_line,
+                        &toks_a,
+                        wc.start_a,
+                        wc.end_a,
+                    );
+                }
+                DiffTag::Insert => {
+                    apply_char_tag(
+                        right_buf,
+                        "inline-inserted",
+                        right_line,
+                        &toks_b,
+                        wc.start_b,
+                        wc.end_b,
+                    );
+                }
+            }
+        }
     }
 }
 

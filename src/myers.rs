@@ -88,6 +88,74 @@ pub fn diff_lines(a: &str, b: &str) -> Vec<DiffChunk> {
     diff(&a_lines, &b_lines)
 }
 
+/// A token with its byte offset in the original string.
+#[derive(Debug)]
+pub struct Token<'a> {
+    pub text: &'a str,
+    pub offset: usize,
+}
+
+/// Tokenize a string into word tokens, whitespace runs, and individual punctuation.
+///
+/// - Word: run of `char::is_alphanumeric() || '_'`
+/// - Whitespace: run of `char::is_whitespace()`
+/// - Punctuation: each remaining char is its own token
+pub fn tokenize(s: &str) -> Vec<Token<'_>> {
+    let mut tokens = Vec::new();
+    let mut i = 0;
+    while i < s.len() {
+        let ch = s[i..].chars().next().unwrap();
+        if ch.is_alphanumeric() || ch == '_' {
+            let start = i;
+            while i < s.len() {
+                let c = s[i..].chars().next().unwrap();
+                if c.is_alphanumeric() || c == '_' {
+                    i += c.len_utf8();
+                } else {
+                    break;
+                }
+            }
+            tokens.push(Token {
+                text: &s[start..i],
+                offset: start,
+            });
+        } else if ch.is_whitespace() {
+            let start = i;
+            while i < s.len() {
+                let c = s[i..].chars().next().unwrap();
+                if c.is_whitespace() {
+                    i += c.len_utf8();
+                } else {
+                    break;
+                }
+            }
+            tokens.push(Token {
+                text: &s[start..i],
+                offset: start,
+            });
+        } else {
+            let len = ch.len_utf8();
+            tokens.push(Token {
+                text: &s[i..i + len],
+                offset: i,
+            });
+            i += len;
+        }
+    }
+    tokens
+}
+
+/// Word-level diff: tokenize both strings, diff the token texts,
+/// return (tokens a, tokens b, chunks) where chunk indices reference token positions.
+pub fn diff_words<'a>(a: &'a str, b: &'a str) -> (Vec<Token<'a>>, Vec<Token<'a>>, Vec<DiffChunk>) {
+    let toks_a = tokenize(a);
+    let toks_b = tokenize(b);
+    let words_a: Vec<&str> = toks_a.iter().map(|t| t.text).collect();
+    let words_b: Vec<&str> = toks_b.iter().map(|t| t.text).collect();
+    let chunks = diff(&words_a, &words_b);
+    (toks_a, toks_b, chunks)
+}
+
 // --- Internal types ---
 
 #[derive(Debug, Clone, Copy)]
