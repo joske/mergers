@@ -6,8 +6,9 @@ edition = "2021"
 [dependencies]
 walkdir = "2.5"
 dircmp = "0"
-gtk4 = { version = "0.9", features = ["v4_14"] }
-gio = { version = "0.20", features = ["v2_66"] }
+gtk4 = { version = "0.11", features = ["v4_14"] }
+gio = { version = "0.22", features = ["v2_66"] }
 chrono = "0.4"
 notify = "6"
 clap = { version = "4", features = ["derive"] }
+sourceview5 = { version = "0.11.0-alpha.1", features = ["gtk_v4_14"] }

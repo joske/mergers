@@ -29,6 +29,7 @@ use gtk4::{
     StringObject, TextBuffer, TextTag, TextView, TreeExpander, TreeListModel, TreeListRow,
     WrapMode,
 };
+use sourceview5::prelude::*;
 
 use crate::myers::{self, DiffChunk, DiffTag};
 use crate::CompareMode;
@@ -512,6 +513,32 @@ fn setup_diff_tags(buffer: &TextBuffer) {
     );
 }
 
+fn create_source_buffer(file_path: &Path) -> TextBuffer {
+    let buf = sourceview5::Buffer::new(None::<&gtk4::TextTagTable>);
+    let lang_mgr = sourceview5::LanguageManager::default();
+    let filename = file_path.file_name().and_then(|n| n.to_str());
+    if let Some(lang) = lang_mgr.guess_language(filename, None::<&str>) {
+        buf.set_language(Some(&lang));
+    }
+    buf.set_highlight_syntax(true);
+    let scheme_mgr = sourceview5::StyleSchemeManager::default();
+    if let Some(scheme) = scheme_mgr.scheme("Adwaita") {
+        buf.set_style_scheme(Some(&scheme));
+    }
+    setup_diff_tags(buf.upcast_ref());
+    buf.upcast()
+}
+
+fn remove_diff_tags(buf: &TextBuffer) {
+    let start = buf.start_iter();
+    let end = buf.end_iter();
+    for name in &["changed", "deleted", "inserted", "conflict"] {
+        if let Some(tag) = buf.tag_table().lookup(name) {
+            buf.remove_tag(&tag, &start, &end);
+        }
+    }
+}
+
 /// Detect conflicts: overlapping non-Equal regions from two pairwise diffs on the middle file.
 /// `left_chunks`: diff(left, middle) — middle lines are `start_b..end_b`
 /// `right_chunks`: diff(middle, right) — middle lines are `start_a..end_a`
@@ -607,47 +634,25 @@ struct DiffPane {
 }
 
 fn make_diff_pane(buf: &TextBuffer, file_path: &Path, info: Option<&str>) -> DiffPane {
-    let tv = TextView::with_buffer(buf);
-    tv.set_editable(true);
-    tv.set_monospace(true);
-    tv.set_wrap_mode(WrapMode::None);
-    tv.set_left_margin(4);
-
-    // Line number gutter
-    let line_gutter = DrawingArea::new();
-    line_gutter.set_content_width(48);
-    line_gutter.set_vexpand(true);
-    {
-        let tv_ref = tv.clone();
-        let buf_ref = buf.clone();
-        line_gutter.set_draw_func(move |_area, cr, width, _height| {
-            draw_line_numbers(cr, width as f64, &tv_ref, &buf_ref);
-        });
-    }
-
-    // Wrap text view + line gutter in a horizontal box
-    let text_with_gutter = GtkBox::new(Orientation::Horizontal, 0);
-    text_with_gutter.append(&line_gutter);
-    text_with_gutter.append(&tv);
-    tv.set_hexpand(true);
+    let sv = sourceview5::View::with_buffer(
+        buf.downcast_ref::<sourceview5::Buffer>()
+            .expect("buffer must be a sourceview5::Buffer"),
+    );
+    sv.set_editable(true);
+    sv.set_monospace(true);
+    sv.set_wrap_mode(WrapMode::None);
+    sv.set_left_margin(4);
+    sv.set_show_line_numbers(true);
+    sv.set_highlight_current_line(true);
+    sv.set_hexpand(true);
 
     let scroll = ScrolledWindow::builder()
         .min_content_width(360)
         .vexpand(true)
-        .child(&text_with_gutter)
+        .child(&sv)
         .build();
 
-    // Redraw line numbers on scroll and buffer changes
-    {
-        let g = line_gutter.clone();
-        scroll
-            .vadjustment()
-            .connect_value_changed(move |_| g.queue_draw());
-    }
-    {
-        let g = line_gutter.clone();
-        buf.connect_changed(move |_| g.queue_draw());
-    }
+    let tv: gtk4::TextView = sv.upcast();
 
     let header = GtkBox::new(Orientation::Horizontal, 4);
     header.set_margin_start(4);
@@ -795,45 +800,6 @@ fn draw_edge_arrow(
     let _ = cr.fill();
 }
 
-fn draw_line_numbers(cr: &gtk4::cairo::Context, width: f64, tv: &TextView, buf: &TextBuffer) {
-    let tv_height = tv.height() as f64;
-
-    cr.set_source_rgb(0.93, 0.93, 0.93);
-    cr.rectangle(0.0, 0.0, width, tv_height);
-    let _ = cr.fill();
-
-    cr.set_source_rgb(0.5, 0.5, 0.5);
-    cr.set_font_size(11.0);
-
-    let total_lines = buf.line_count();
-    for line_num in 0..total_lines {
-        if let Some(iter) = buf.iter_at_line(line_num) {
-            let (y, h) = tv.line_yrange(&iter);
-            // Convert buffer coords to widget coords
-            let (_, widget_y) = tv.buffer_to_window_coords(gtk4::TextWindowType::Widget, 0, y);
-            if widget_y + h < 0 {
-                continue;
-            }
-            if widget_y > tv.height() {
-                break;
-            }
-            let text = format!("{}", line_num + 1);
-            let extents = cr.text_extents(&text).unwrap();
-            let x = width - extents.width() - 6.0;
-            let baseline = widget_y as f64 + f64::midpoint(h as f64, extents.height());
-            cr.move_to(x, baseline);
-            let _ = cr.show_text(&text);
-        }
-    }
-
-    // Draw separator line on right edge
-    cr.set_source_rgb(0.8, 0.8, 0.8);
-    cr.set_line_width(1.0);
-    cr.move_to(width - 0.5, 0.0);
-    cr.line_to(width - 0.5, tv_height);
-    let _ = cr.stroke();
-}
-
 fn get_lines_text(buf: &TextBuffer, start_line: usize, end_line: usize) -> String {
     if start_line >= end_line {
         return String::new();
@@ -881,8 +847,8 @@ fn refresh_diff(
     let lt = left_buf.text(&left_buf.start_iter(), &left_buf.end_iter(), false);
     let rt = right_buf.text(&right_buf.start_iter(), &right_buf.end_iter(), false);
 
-    left_buf.remove_all_tags(&left_buf.start_iter(), &left_buf.end_iter());
-    right_buf.remove_all_tags(&right_buf.start_iter(), &right_buf.end_iter());
+    remove_diff_tags(left_buf);
+    remove_diff_tags(right_buf);
 
     let new_chunks = if lt == rt {
         Vec::new()
@@ -967,10 +933,8 @@ fn build_diff_view(left_path: &Path, right_path: &Path) -> DiffViewResult {
     let left_content = fs::read_to_string(left_path).unwrap_or_default();
     let right_content = fs::read_to_string(right_path).unwrap_or_default();
 
-    let left_buf = TextBuffer::new(None::<&gtk4::TextTagTable>);
-    let right_buf = TextBuffer::new(None::<&gtk4::TextTagTable>);
-    setup_diff_tags(&left_buf);
-    setup_diff_tags(&right_buf);
+    let left_buf = create_source_buffer(left_path);
+    let right_buf = create_source_buffer(right_path);
     left_buf.set_text(&left_content);
     right_buf.set_text(&right_content);
 
@@ -1315,9 +1279,9 @@ fn refresh_merge_diffs(
     let mt = middle_buf.text(&middle_buf.start_iter(), &middle_buf.end_iter(), false);
     let rt = right_buf.text(&right_buf.start_iter(), &right_buf.end_iter(), false);
 
-    left_buf.remove_all_tags(&left_buf.start_iter(), &left_buf.end_iter());
-    middle_buf.remove_all_tags(&middle_buf.start_iter(), &middle_buf.end_iter());
-    right_buf.remove_all_tags(&right_buf.start_iter(), &right_buf.end_iter());
+    remove_diff_tags(left_buf);
+    remove_diff_tags(middle_buf);
+    remove_diff_tags(right_buf);
 
     let new_left = if lt == mt {
         Vec::new()
@@ -1448,12 +1412,9 @@ fn build_merge_view(
     let middle_content = fs::read_to_string(middle_display_path).unwrap_or_default();
     let right_content = fs::read_to_string(right_path).unwrap_or_default();
 
-    let left_buf = TextBuffer::new(None::<&gtk4::TextTagTable>);
-    let middle_buf = TextBuffer::new(None::<&gtk4::TextTagTable>);
-    let right_buf = TextBuffer::new(None::<&gtk4::TextTagTable>);
-    setup_diff_tags(&left_buf);
-    setup_diff_tags(&middle_buf);
-    setup_diff_tags(&right_buf);
+    let left_buf = create_source_buffer(left_path);
+    let middle_buf = create_source_buffer(middle_display_path);
+    let right_buf = create_source_buffer(right_path);
     left_buf.set_text(&left_content);
     middle_buf.set_text(&middle_content);
     right_buf.set_text(&right_content);
@@ -1882,12 +1843,7 @@ fn build_merge_window(
     right_path: std::path::PathBuf,
     output: Option<std::path::PathBuf>,
 ) {
-    let mv = build_merge_view(
-        &left_path,
-        &middle_path,
-        &right_path,
-        output.as_deref(),
-    );
+    let mv = build_merge_view(&left_path, &middle_path, &right_path, output.as_deref());
 
     // "Save Merged" button when --output is set
     if let Some(ref out_path) = output {
