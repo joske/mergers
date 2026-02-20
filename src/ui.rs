@@ -28,6 +28,7 @@ use gtk4::{
 };
 
 use crate::myers::{self, DiffChunk, DiffTag};
+use crate::CompareMode;
 
 const CSS: &str = r"
 .diff-changed { color: #729fcf; font-weight: bold; }
@@ -972,12 +973,10 @@ fn open_file_diff(
 
 // ─── Main UI ───────────────────────────────────────────────────────────────
 
-pub(crate) fn build_ui(application: &Application, left_dir: String, right_dir: String) {
-    let left_dir = Rc::new(left_dir);
-    let right_dir = Rc::new(right_dir);
+pub(crate) fn build_ui(application: &Application, mode: CompareMode) {
     application.connect_activate(move |app| {
-        let left_dir = left_dir.clone();
-        let right_dir = right_dir.clone();
+        let mode = mode.clone();
+
         // Load CSS
         let provider = CssProvider::new();
         provider.load_from_string(CSS);
@@ -987,203 +986,459 @@ pub(crate) fn build_ui(application: &Application, left_dir: String, right_dir: S
             gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
         );
 
-        // Build tree data (Rc<RefCell<…>> so the watcher callback can rebuild)
-        let children_map = Rc::new(RefCell::new(HashMap::new()));
-        let root_store = ListStore::new::<StringObject>();
-        {
-            let (store, _) = scan_level(
-                Path::new(left_dir.as_str()),
-                Path::new(right_dir.as_str()),
-                "",
-                &mut children_map.borrow_mut(),
-            );
-            for i in 0..store.n_items() {
-                if let Some(obj) = store.item(i) {
-                    root_store.append(&obj.downcast::<StringObject>().unwrap());
-                }
-            }
+        match mode {
+            CompareMode::Dirs { left, right } => build_dir_window(app, left, right),
+            CompareMode::Files { left, right } => build_file_window(app, left, right),
         }
+    });
+}
 
-        // Shared TreeListModel — both panes see the same tree structure
-        let cm = children_map.clone();
-        let tree_model = TreeListModel::new(root_store.clone(), false, false, move |item| {
-            let obj = item.downcast_ref::<StringObject>()?;
-            let raw = obj.string();
-            if decode_is_dir(&raw) {
-                let rel = decode_rel_path(&raw);
-                cm.borrow()
-                    .get(rel)
-                    .cloned()
-                    .map(gio::prelude::Cast::upcast::<gio::ListModel>)
-            } else {
-                None
+// ─── File comparison window ────────────────────────────────────────────────
+
+fn build_file_window(app: &Application, left_path: std::path::PathBuf, right_path: std::path::PathBuf) {
+    let left_content = fs::read_to_string(&left_path).unwrap_or_default();
+    let right_content = fs::read_to_string(&right_path).unwrap_or_default();
+
+    let left_buf = TextBuffer::new(None::<&gtk4::TextTagTable>);
+    let right_buf = TextBuffer::new(None::<&gtk4::TextTagTable>);
+    setup_diff_tags(&left_buf);
+    setup_diff_tags(&right_buf);
+    left_buf.set_text(&left_content);
+    right_buf.set_text(&right_content);
+
+    let identical = left_content == right_content;
+    let diff_chunks = if identical {
+        Vec::new()
+    } else {
+        myers::diff_lines(&left_content, &right_content)
+    };
+    apply_diff_tags(&left_buf, &right_buf, &diff_chunks);
+    let chunks = Rc::new(RefCell::new(diff_chunks));
+
+    let info_msg = if identical {
+        Some("Files are identical")
+    } else {
+        None
+    };
+
+    let left_pane = make_diff_pane(&left_buf, &left_path, info_msg);
+    let right_pane = make_diff_pane(&right_buf, &right_path, info_msg);
+
+    // Gutter (link map between left and right)
+    let gutter = DrawingArea::new();
+    gutter.set_content_width(48);
+    gutter.set_vexpand(true);
+
+    // Draw connecting bands + arrows
+    {
+        let ltv = left_pane.text_view.clone();
+        let rtv = right_pane.text_view.clone();
+        let lb = left_buf.clone();
+        let rb = right_buf.clone();
+        let ls = left_pane.scroll.clone();
+        let rs = right_pane.scroll.clone();
+        let ch = chunks.clone();
+        gutter.set_draw_func(move |area, cr, width, _height| {
+            draw_gutter(
+                cr,
+                width as f64,
+                &ltv,
+                &rtv,
+                &lb,
+                &rb,
+                &ls,
+                &rs,
+                area,
+                &ch.borrow(),
+            );
+        });
+    }
+
+    // Click handler for arrows
+    {
+        let gesture = GestureClick::new();
+        let ltv = left_pane.text_view.clone();
+        let rtv = right_pane.text_view.clone();
+        let lb = left_buf.clone();
+        let rb = right_buf.clone();
+        let ls = left_pane.scroll.clone();
+        let rs = right_pane.scroll.clone();
+        let ch = chunks.clone();
+        let g = gutter.clone();
+        gesture.connect_pressed(move |_, _, x, y| {
+            handle_gutter_click(
+                x,
+                y,
+                g.width() as f64,
+                &ltv,
+                &rtv,
+                &lb,
+                &rb,
+                &ls,
+                &rs,
+                &g,
+                &ch,
+            );
+        });
+        gutter.add_controller(gesture);
+    }
+
+    // Re-diff on any buffer change
+    {
+        let pending = Rc::new(Cell::new(false));
+        let connect_refresh = |buf: &TextBuffer| {
+            let lb = left_buf.clone();
+            let rb = right_buf.clone();
+            let ch = chunks.clone();
+            let g = gutter.clone();
+            let p = pending.clone();
+            buf.connect_changed(move |_| {
+                if !p.get() {
+                    p.set(true);
+                    let lb = lb.clone();
+                    let rb = rb.clone();
+                    let ch = ch.clone();
+                    let g = g.clone();
+                    let p = p.clone();
+                    gtk4::glib::idle_add_local_once(move || {
+                        refresh_diff(&lb, &rb, &ch, &g);
+                        p.set(false);
+                    });
+                }
+            });
+        };
+        connect_refresh(&left_buf);
+        connect_refresh(&right_buf);
+    }
+
+    // Redraw gutter on scroll
+    {
+        let g = gutter.clone();
+        left_pane
+            .scroll
+            .vadjustment()
+            .connect_value_changed(move |_| g.queue_draw());
+    }
+    {
+        let g = gutter.clone();
+        right_pane
+            .scroll
+            .vadjustment()
+            .connect_value_changed(move |_| g.queue_draw());
+    }
+
+    // Layout: [left pane] [gutter] [right pane]
+    let content = GtkBox::new(Orientation::Horizontal, 0);
+    left_pane.container.set_hexpand(true);
+    right_pane.container.set_hexpand(true);
+    content.append(&left_pane.container);
+    content.append(&gutter);
+    content.append(&right_pane.container);
+    content.set_vexpand(true);
+
+    // File watcher for both files
+    let (fs_tx, fs_rx) = mpsc::channel::<()>();
+    {
+        let lp = left_path.clone();
+        let rp = right_path.clone();
+        std::thread::spawn(move || {
+            use notify::{RecursiveMode, Watcher};
+            let _watcher = {
+                let mut w = notify::recommended_watcher(
+                    move |res: Result<notify::Event, notify::Error>| {
+                        if res.is_ok() {
+                            let _ = fs_tx.send(());
+                        }
+                    },
+                )
+                .expect("Failed to create file watcher");
+                // Watch parent directories (notify can't watch individual files reliably)
+                if let Some(parent) = lp.parent() {
+                    w.watch(parent, RecursiveMode::NonRecursive).ok();
+                }
+                if let Some(parent) = rp.parent() {
+                    w.watch(parent, RecursiveMode::NonRecursive).ok();
+                }
+                w
+            };
+            loop {
+                std::thread::park();
             }
         });
+    }
 
-        // ── Left pane ──────────────────────────────────────────────────
-        let left_sel = SingleSelection::new(Some(tree_model.clone()));
-        let left_view = ColumnView::new(Some(left_sel));
-        left_view.set_show_column_separators(true);
-        {
-            let col = ColumnViewColumn::new(Some("Name"), Some(make_name_factory(true)));
-            col.set_expand(true);
-            left_view.append_column(&col);
-            let col = ColumnViewColumn::new(Some("Size"), Some(make_field_factory(true, 4)));
-            col.set_fixed_width(80);
-            left_view.append_column(&col);
-            let col =
-                ColumnViewColumn::new(Some("Modification time"), Some(make_field_factory(true, 5)));
-            col.set_fixed_width(180);
-            left_view.append_column(&col);
-        }
-
-        // ── Right pane ─────────────────────────────────────────────────
-        let right_sel = SingleSelection::new(Some(tree_model.clone()));
-        let right_view = ColumnView::new(Some(right_sel));
-        right_view.set_show_column_separators(true);
-        {
-            let col = ColumnViewColumn::new(Some("Name"), Some(make_name_factory(false)));
-            col.set_expand(true);
-            right_view.append_column(&col);
-            let col = ColumnViewColumn::new(Some("Size"), Some(make_field_factory(false, 6)));
-            col.set_fixed_width(80);
-            right_view.append_column(&col);
-            let col = ColumnViewColumn::new(
-                Some("Modification time"),
-                Some(make_field_factory(false, 7)),
-            );
-            col.set_fixed_width(180);
-            right_view.append_column(&col);
-        }
-
-        // ScrolledWindows + Paned
-        let left_scroll = ScrolledWindow::builder()
-            .hscrollbar_policy(PolicyType::Automatic)
-            .min_content_width(360)
-            .child(&left_view)
-            .build();
-        let right_scroll = ScrolledWindow::builder()
-            .hscrollbar_policy(PolicyType::Automatic)
-            .min_content_width(360)
-            .child(&right_view)
-            .build();
-
-        let dir_paned = Paned::new(Orientation::Horizontal);
-        dir_paned.set_start_child(Some(&left_scroll));
-        dir_paned.set_end_child(Some(&right_scroll));
-
-        // ── Notebook (tabs) ────────────────────────────────────────────
-        let notebook = Notebook::new();
-        notebook.set_scrollable(true);
-        notebook.append_page(&dir_paned, Some(&Label::new(Some("Directory"))));
-
-        // Open file tabs tracking
-        let open_tabs: Rc<RefCell<Vec<FileTab>>> = Rc::new(RefCell::new(Vec::new()));
-
-        // Activate handlers — double-click a file row to open diff in new tab
-        {
-            let nb = notebook.clone();
-            let tm = tree_model.clone();
-            let tabs = open_tabs.clone();
-            let ld = left_dir.clone();
-            let rd = right_dir.clone();
-            left_view.connect_activate(move |_, pos| {
-                if let Some(item) = tm.item(pos) {
-                    let row = item.downcast::<TreeListRow>().unwrap();
-                    let obj = row.item().and_downcast::<StringObject>().unwrap();
-                    let raw = obj.string();
-                    if !decode_is_dir(&raw) {
-                        open_file_diff(&nb, decode_rel_path(&raw), decode_status(&raw), &tabs, &ld, &rd);
-                    }
-                }
-            });
-        }
-        {
-            let nb = notebook.clone();
-            let tm = tree_model.clone();
-            let tabs = open_tabs.clone();
-            let ld = left_dir.clone();
-            let rd = right_dir.clone();
-            right_view.connect_activate(move |_, pos| {
-                if let Some(item) = tm.item(pos) {
-                    let row = item.downcast::<TreeListRow>().unwrap();
-                    let obj = row.item().and_downcast::<StringObject>().unwrap();
-                    let raw = obj.string();
-                    if !decode_is_dir(&raw) {
-                        open_file_diff(&nb, decode_rel_path(&raw), decode_status(&raw), &tabs, &ld, &rd);
-                    }
-                }
-            });
-        }
-
-        // ── File watcher ───────────────────────────────────────────────
-        let (fs_tx, fs_rx) = mpsc::channel::<()>();
-        {
-            let ld = left_dir.to_string();
-            let rd = right_dir.to_string();
-            std::thread::spawn(move || {
-                use notify::{RecursiveMode, Watcher};
-                let _watcher = {
-                    let mut w = notify::recommended_watcher(
-                        move |res: Result<notify::Event, notify::Error>| {
-                            if res.is_ok() {
-                                let _ = fs_tx.send(());
-                            }
-                        },
-                    )
-                    .expect("Failed to create file watcher");
-                    w.watch(Path::new(&ld), RecursiveMode::Recursive).ok();
-                    w.watch(Path::new(&rd), RecursiveMode::Recursive).ok();
-                    w
-                };
-                loop {
-                    std::thread::park();
-                }
-            });
-        }
-
-        // Poll for filesystem changes and reload
-        let cm_reload = children_map.clone();
-        let rs_reload = root_store.clone();
-        let tabs_reload = open_tabs.clone();
-        let ld_reload = left_dir.clone();
-        let rd_reload = right_dir.clone();
+    // Poll for filesystem changes and reload
+    {
+        let lb = left_buf.clone();
+        let rb = right_buf.clone();
+        let ch = chunks.clone();
+        let g = gutter.clone();
+        let lp = left_path.clone();
+        let rp = right_path.clone();
+        let l_save = left_pane.save_btn.clone();
+        let r_save = right_pane.save_btn.clone();
         gtk4::glib::timeout_add_local(Duration::from_millis(500), move || {
             let mut changed = false;
             while fs_rx.try_recv().is_ok() {
                 changed = true;
             }
             if changed && !SAVING.load(std::sync::atomic::Ordering::Relaxed) {
-                // Build new tree into a temporary map (not inside borrow_mut)
-                let mut new_map = HashMap::new();
-                let (new_store, _) =
-                    scan_level(Path::new(ld_reload.as_str()), Path::new(rd_reload.as_str()), "", &mut new_map);
-                // Replace children_map, then drop the borrow before touching the store.
-                // Appending to root_store triggers TreeListModel's create_func which
-                // borrows children_map immutably — so we must not hold a mutable borrow.
-                *cm_reload.borrow_mut() = new_map;
-                rs_reload.remove_all();
-                for i in 0..new_store.n_items() {
-                    if let Some(obj) = new_store.item(i) {
-                        rs_reload.append(&obj.downcast::<StringObject>().unwrap());
-                    }
-                }
-                // Reload open file tabs
-                for tab in tabs_reload.borrow().iter() {
-                    reload_file_tab(tab, &ld_reload, &rd_reload);
+                let left_content = fs::read_to_string(&lp).unwrap_or_default();
+                let right_content = fs::read_to_string(&rp).unwrap_or_default();
+
+                let cur_left = lb.text(&lb.start_iter(), &lb.end_iter(), false);
+                let cur_right = rb.text(&rb.start_iter(), &rb.end_iter(), false);
+
+                if cur_left.as_str() != left_content || cur_right.as_str() != right_content {
+                    lb.set_text(&left_content);
+                    rb.set_text(&right_content);
+                    let new_chunks = if left_content == right_content {
+                        Vec::new()
+                    } else {
+                        myers::diff_lines(&left_content, &right_content)
+                    };
+                    apply_diff_tags(&lb, &rb, &new_chunks);
+                    *ch.borrow_mut() = new_chunks;
+                    g.queue_draw();
+                    l_save.set_sensitive(false);
+                    r_save.set_sensitive(false);
                 }
             }
             gtk4::glib::ControlFlow::Continue
         });
+    }
 
-        // Window
-        let window = ApplicationWindow::builder()
-            .application(app)
-            .title("Meld-rs")
-            .default_width(900)
-            .default_height(600)
-            .child(&notebook)
-            .build();
-        window.present();
+    // Window title
+    let left_name = left_path.file_name().map_or_else(
+        || left_path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    let right_name = right_path.file_name().map_or_else(
+        || right_path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    let title = format!("{left_name} — {right_name}");
+
+    let window = ApplicationWindow::builder()
+        .application(app)
+        .title(&title)
+        .default_width(900)
+        .default_height(600)
+        .child(&content)
+        .build();
+    window.present();
+}
+
+// ─── Directory comparison window ───────────────────────────────────────────
+
+fn build_dir_window(app: &Application, left_dir: std::path::PathBuf, right_dir: std::path::PathBuf) {
+    let left_dir = Rc::new(left_dir.to_string_lossy().into_owned());
+    let right_dir = Rc::new(right_dir.to_string_lossy().into_owned());
+
+    // Build tree data (Rc<RefCell<…>> so the watcher callback can rebuild)
+    let children_map = Rc::new(RefCell::new(HashMap::new()));
+    let root_store = ListStore::new::<StringObject>();
+    {
+        let (store, _) = scan_level(
+            Path::new(left_dir.as_str()),
+            Path::new(right_dir.as_str()),
+            "",
+            &mut children_map.borrow_mut(),
+        );
+        for i in 0..store.n_items() {
+            if let Some(obj) = store.item(i) {
+                root_store.append(&obj.downcast::<StringObject>().unwrap());
+            }
+        }
+    }
+
+    // Shared TreeListModel — both panes see the same tree structure
+    let cm = children_map.clone();
+    let tree_model = TreeListModel::new(root_store.clone(), false, false, move |item| {
+        let obj = item.downcast_ref::<StringObject>()?;
+        let raw = obj.string();
+        if decode_is_dir(&raw) {
+            let rel = decode_rel_path(&raw);
+            cm.borrow()
+                .get(rel)
+                .cloned()
+                .map(gio::prelude::Cast::upcast::<gio::ListModel>)
+        } else {
+            None
+        }
     });
+
+    // ── Left pane ──────────────────────────────────────────────────
+    let left_sel = SingleSelection::new(Some(tree_model.clone()));
+    let left_view = ColumnView::new(Some(left_sel));
+    left_view.set_show_column_separators(true);
+    {
+        let col = ColumnViewColumn::new(Some("Name"), Some(make_name_factory(true)));
+        col.set_expand(true);
+        left_view.append_column(&col);
+        let col = ColumnViewColumn::new(Some("Size"), Some(make_field_factory(true, 4)));
+        col.set_fixed_width(80);
+        left_view.append_column(&col);
+        let col =
+            ColumnViewColumn::new(Some("Modification time"), Some(make_field_factory(true, 5)));
+        col.set_fixed_width(180);
+        left_view.append_column(&col);
+    }
+
+    // ── Right pane ─────────────────────────────────────────────────
+    let right_sel = SingleSelection::new(Some(tree_model.clone()));
+    let right_view = ColumnView::new(Some(right_sel));
+    right_view.set_show_column_separators(true);
+    {
+        let col = ColumnViewColumn::new(Some("Name"), Some(make_name_factory(false)));
+        col.set_expand(true);
+        right_view.append_column(&col);
+        let col = ColumnViewColumn::new(Some("Size"), Some(make_field_factory(false, 6)));
+        col.set_fixed_width(80);
+        right_view.append_column(&col);
+        let col = ColumnViewColumn::new(
+            Some("Modification time"),
+            Some(make_field_factory(false, 7)),
+        );
+        col.set_fixed_width(180);
+        right_view.append_column(&col);
+    }
+
+    // ScrolledWindows + Paned
+    let left_scroll = ScrolledWindow::builder()
+        .hscrollbar_policy(PolicyType::Automatic)
+        .min_content_width(360)
+        .child(&left_view)
+        .build();
+    let right_scroll = ScrolledWindow::builder()
+        .hscrollbar_policy(PolicyType::Automatic)
+        .min_content_width(360)
+        .child(&right_view)
+        .build();
+
+    let dir_paned = Paned::new(Orientation::Horizontal);
+    dir_paned.set_start_child(Some(&left_scroll));
+    dir_paned.set_end_child(Some(&right_scroll));
+
+    // ── Notebook (tabs) ────────────────────────────────────────────
+    let notebook = Notebook::new();
+    notebook.set_scrollable(true);
+    notebook.append_page(&dir_paned, Some(&Label::new(Some("Directory"))));
+
+    // Open file tabs tracking
+    let open_tabs: Rc<RefCell<Vec<FileTab>>> = Rc::new(RefCell::new(Vec::new()));
+
+    // Activate handlers — double-click a file row to open diff in new tab
+    {
+        let nb = notebook.clone();
+        let tm = tree_model.clone();
+        let tabs = open_tabs.clone();
+        let ld = left_dir.clone();
+        let rd = right_dir.clone();
+        left_view.connect_activate(move |_, pos| {
+            if let Some(item) = tm.item(pos) {
+                let row = item.downcast::<TreeListRow>().unwrap();
+                let obj = row.item().and_downcast::<StringObject>().unwrap();
+                let raw = obj.string();
+                if !decode_is_dir(&raw) {
+                    open_file_diff(&nb, decode_rel_path(&raw), decode_status(&raw), &tabs, &ld, &rd);
+                }
+            }
+        });
+    }
+    {
+        let nb = notebook.clone();
+        let tm = tree_model.clone();
+        let tabs = open_tabs.clone();
+        let ld = left_dir.clone();
+        let rd = right_dir.clone();
+        right_view.connect_activate(move |_, pos| {
+            if let Some(item) = tm.item(pos) {
+                let row = item.downcast::<TreeListRow>().unwrap();
+                let obj = row.item().and_downcast::<StringObject>().unwrap();
+                let raw = obj.string();
+                if !decode_is_dir(&raw) {
+                    open_file_diff(&nb, decode_rel_path(&raw), decode_status(&raw), &tabs, &ld, &rd);
+                }
+            }
+        });
+    }
+
+    // ── File watcher ───────────────────────────────────────────────
+    let (fs_tx, fs_rx) = mpsc::channel::<()>();
+    {
+        let ld = left_dir.to_string();
+        let rd = right_dir.to_string();
+        std::thread::spawn(move || {
+            use notify::{RecursiveMode, Watcher};
+            let _watcher = {
+                let mut w = notify::recommended_watcher(
+                    move |res: Result<notify::Event, notify::Error>| {
+                        if res.is_ok() {
+                            let _ = fs_tx.send(());
+                        }
+                    },
+                )
+                .expect("Failed to create file watcher");
+                w.watch(Path::new(&ld), RecursiveMode::Recursive).ok();
+                w.watch(Path::new(&rd), RecursiveMode::Recursive).ok();
+                w
+            };
+            loop {
+                std::thread::park();
+            }
+        });
+    }
+
+    // Poll for filesystem changes and reload
+    let cm_reload = children_map.clone();
+    let rs_reload = root_store.clone();
+    let tabs_reload = open_tabs.clone();
+    let ld_reload = left_dir.clone();
+    let rd_reload = right_dir.clone();
+    gtk4::glib::timeout_add_local(Duration::from_millis(500), move || {
+        let mut changed = false;
+        while fs_rx.try_recv().is_ok() {
+            changed = true;
+        }
+        if changed && !SAVING.load(std::sync::atomic::Ordering::Relaxed) {
+            // Build new tree into a temporary map (not inside borrow_mut)
+            let mut new_map = HashMap::new();
+            let (new_store, _) =
+                scan_level(Path::new(ld_reload.as_str()), Path::new(rd_reload.as_str()), "", &mut new_map);
+            // Replace children_map, then drop the borrow before touching the store.
+            // Appending to root_store triggers TreeListModel's create_func which
+            // borrows children_map immutably — so we must not hold a mutable borrow.
+            *cm_reload.borrow_mut() = new_map;
+            rs_reload.remove_all();
+            for i in 0..new_store.n_items() {
+                if let Some(obj) = new_store.item(i) {
+                    rs_reload.append(&obj.downcast::<StringObject>().unwrap());
+                }
+            }
+            // Reload open file tabs
+            for tab in tabs_reload.borrow().iter() {
+                reload_file_tab(tab, &ld_reload, &rd_reload);
+            }
+        }
+        gtk4::glib::ControlFlow::Continue
+    });
+
+    // Window title
+    let left_name = Path::new(left_dir.as_str())
+        .file_name()
+        .map_or_else(|| left_dir.to_string(), |n| n.to_string_lossy().into_owned());
+    let right_name = Path::new(right_dir.as_str())
+        .file_name()
+        .map_or_else(|| right_dir.to_string(), |n| n.to_string_lossy().into_owned());
+    let title = format!("{left_name} — {right_name}");
+
+    let window = ApplicationWindow::builder()
+        .application(app)
+        .title(&title)
+        .default_width(900)
+        .default_height(600)
+        .child(&notebook)
+        .build();
+    window.present();
 }

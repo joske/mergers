@@ -10,3 +10,4 @@ gtk4 = { version = "0.9", features = ["v4_14"] }
 gio = { version = "0.20", features = ["v2_66"] }
 chrono = "0.4"
 notify = "6"
+clap = { version = "4", features = ["derive"] }
