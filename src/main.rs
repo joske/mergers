@@ -10,20 +10,54 @@ mod ui;
 #[derive(Parser)]
 #[command(name = "meld-rs", about = "Visual diff and merge tool")]
 struct Cli {
-    /// Paths to compare (2 files or 2 directories)
+    /// Paths to compare (2 files or 2 directories, or 3 files for merge)
     paths: Vec<PathBuf>,
+
+    /// Output file for 3-way merge result
+    #[arg(short, long)]
+    output: Option<PathBuf>,
 }
 
 #[derive(Clone)]
 pub enum CompareMode {
-    Files { left: PathBuf, right: PathBuf },
-    Dirs { left: PathBuf, right: PathBuf },
+    Files {
+        left: PathBuf,
+        right: PathBuf,
+    },
+    Dirs {
+        left: PathBuf,
+        right: PathBuf,
+    },
+    Merge {
+        left: PathBuf,
+        middle: PathBuf,
+        right: PathBuf,
+        output: Option<PathBuf>,
+    },
 }
 
 fn main() -> glib::ExitCode {
     let cli = Cli::parse();
 
-    let mode = if cli.paths.len() == 2 {
+    let mode = if cli.paths.len() == 3 {
+        let left = &cli.paths[0];
+        let middle = &cli.paths[1];
+        let right = &cli.paths[2];
+
+        for p in [left, middle, right] {
+            if !p.is_file() {
+                eprintln!("Error: '{}' is not a file", p.display());
+                std::process::exit(1);
+            }
+        }
+
+        CompareMode::Merge {
+            left: left.clone(),
+            middle: middle.clone(),
+            right: right.clone(),
+            output: cli.output,
+        }
+    } else if cli.paths.len() == 2 {
         let left = &cli.paths[0];
         let right = &cli.paths[1];
 
@@ -49,7 +83,8 @@ fn main() -> glib::ExitCode {
         }
     } else {
         eprintln!("Usage: meld-rs <LEFT> <RIGHT>");
-        eprintln!("Pass two files or two directories to compare.");
+        eprintln!("       meld-rs <LOCAL> <MERGED> <REMOTE>");
+        eprintln!("       meld-rs <LOCAL> <BASE> <REMOTE> --output MERGED");
         std::process::exit(1);
     };
 
