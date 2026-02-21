@@ -11,11 +11,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-      - name: Install cargo-audit
-        run: cargo install cargo-audit
-      - name: Run audit
-        run: cargo audit
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
