@@ -21,18 +21,18 @@ use std::{
 
 use chrono::{DateTime, Local};
 use gtk4::{
-    gdk::Display, gio, gio::ListStore, prelude::*, Adjustment, Application, ApplicationWindow,
-    Box as GtkBox, Button, ColumnView, ColumnViewColumn, CssProvider, DrawingArea, Entry,
-    EventControllerFocus, EventControllerKey, GestureClick, Image, Label, ListItem, Notebook,
-    Orientation, Paned, PolicyType, Revealer, ScrolledWindow, SignalListItemFactory,
-    SingleSelection, StringObject, TextBuffer, TextSearchFlags, TextTag, TextView, TreeExpander,
-    TreeListModel, TreeListRow, WrapMode,
+    Adjustment, Application, ApplicationWindow, Box as GtkBox, Button, ColumnView,
+    ColumnViewColumn, CssProvider, DrawingArea, Entry, EventControllerFocus, EventControllerKey,
+    GestureClick, Image, Label, ListItem, Notebook, Orientation, Paned, PolicyType, Revealer,
+    ScrolledWindow, SignalListItemFactory, SingleSelection, StringObject, TextBuffer,
+    TextSearchFlags, TextTag, TextView, TreeExpander, TreeListModel, TreeListRow, WrapMode,
+    gdk::Display, gio, gio::ListStore, prelude::*,
 };
 use sourceview5::prelude::*;
 
 use crate::{
-    myers::{self, DiffChunk, DiffTag},
     CompareMode,
+    myers::{self, DiffChunk, DiffTag},
 };
 
 const CSS: &str = r"
@@ -292,6 +292,19 @@ fn copy_path_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 
 // ─── Directory scanning ────────────────────────────────────────────────────
 
+/// Names filtered out of directory comparison (version control, build artifacts).
+const DIR_FILTER: &[&str] = &[
+    ".git",
+    ".svn",
+    ".hg",
+    ".bzr",
+    "_darcs",
+    ".CVS",
+    "__pycache__",
+    "node_modules",
+    ".DS_Store",
+];
+
 fn read_dir_entries(dir: &Path) -> BTreeMap<String, DirMeta> {
     let mut map = BTreeMap::new();
     if let Ok(rd) = fs::read_dir(dir) {
@@ -299,6 +312,9 @@ fn read_dir_entries(dir: &Path) -> BTreeMap<String, DirMeta> {
             let Ok(name) = entry.file_name().into_string() else {
                 continue;
             };
+            if DIR_FILTER.contains(&name.as_str()) {
+                continue;
+            }
             let meta = entry.metadata().ok();
             let is_dir = entry.path().is_dir();
             map.insert(
@@ -512,10 +528,14 @@ fn make_field_factory(is_left: bool, field_idx: usize) -> SignalListItemFactory 
         let raw = obj.string();
 
         let label = item.child().and_downcast::<Label>().unwrap();
-        let text = decode_field(&raw, field_idx);
         let status = decode_status(&raw);
+        let missing = (is_left && status == "R") || (!is_left && status == "L");
 
-        label.set_label(text);
+        label.set_label(if missing {
+            ""
+        } else {
+            decode_field(&raw, field_idx)
+        });
         apply_status_class(&label, status, is_left);
     });
 
@@ -3046,10 +3066,10 @@ fn build_merge_window(
             });
         }
         // Insert the save button into toolbar (first child of the widget is the toolbar)
-        if let Some(toolbar) = mv.widget.first_child() {
-            if let Some(toolbar_box) = toolbar.downcast_ref::<GtkBox>() {
-                toolbar_box.append(&save_btn);
-            }
+        if let Some(toolbar) = mv.widget.first_child()
+            && let Some(toolbar_box) = toolbar.downcast_ref::<GtkBox>()
+        {
+            toolbar_box.append(&save_btn);
         }
     }
 
@@ -3533,27 +3553,17 @@ fn build_dir_window(
         right_view.append_column(&col);
     }
 
-    // Synchronize selections between panes
+    // Track which pane was last focused (true = left, false = right)
+    let focused_left = Rc::new(Cell::new(true));
     {
-        let syncing = Rc::new(Cell::new(false));
-        let rs = right_sel.clone();
-        let s = syncing.clone();
-        left_sel.connect_selected_notify(move |sel| {
-            if !s.get() {
-                s.set(true);
-                rs.set_selected(sel.selected());
-                s.set(false);
-            }
-        });
-        let ls = left_sel.clone();
-        let s = syncing;
-        right_sel.connect_selected_notify(move |sel| {
-            if !s.get() {
-                s.set(true);
-                ls.set_selected(sel.selected());
-                s.set(false);
-            }
-        });
+        let fl = focused_left.clone();
+        let fc = EventControllerFocus::new();
+        fc.connect_enter(move |_| fl.set(true));
+        left_view.add_controller(fc);
+        let fl = focused_left.clone();
+        let fc = EventControllerFocus::new();
+        fc.connect_enter(move |_| fl.set(false));
+        right_view.add_controller(fc);
     }
 
     // ScrolledWindows + Paned
@@ -3618,12 +3628,39 @@ fn build_dir_window(
     dir_toolbar.append(&dir_copy_box);
     dir_toolbar.append(&delete_btn);
 
-    // Helper: get selected row's encoded data from the tree model
+    // Helper: rescan directories and refresh the tree model
+    let reload_dir = {
+        let cm = children_map.clone();
+        let rs = root_store.clone();
+        let ld = left_dir.clone();
+        let rd = right_dir.clone();
+        move || {
+            let mut new_map = HashMap::new();
+            let (new_store, _) = scan_level(
+                Path::new(ld.as_str()),
+                Path::new(rd.as_str()),
+                "",
+                &mut new_map,
+            );
+            *cm.borrow_mut() = new_map;
+            rs.remove_all();
+            for i in 0..new_store.n_items() {
+                if let Some(obj) = new_store.item(i) {
+                    rs.append(&obj.downcast::<StringObject>().unwrap());
+                }
+            }
+        }
+    };
+
+    // Helper: get selected row's encoded data from the focused pane
     let get_selected_row = {
         let tm = tree_model.clone();
         let ls = left_sel.clone();
+        let rs = right_sel.clone();
+        let fl = focused_left.clone();
         move || -> Option<String> {
-            let pos = ls.selected();
+            let sel = if fl.get() { &ls } else { &rs };
+            let pos = sel.selected();
             let item = tm.item(pos)?;
             let row = item.downcast::<TreeListRow>().ok()?;
             let obj = row.item().and_downcast::<StringObject>()?;
@@ -3636,15 +3673,16 @@ fn build_dir_window(
         let get_row = get_selected_row.clone();
         let ld = left_dir.clone();
         let rd = right_dir.clone();
+        let reload = reload_dir.clone();
         copy_left_btn.connect_clicked(move |_| {
             if let Some(raw) = get_row() {
                 let rel = decode_rel_path(&raw);
                 let status = decode_status(&raw);
-                // Can copy left if item exists on the right side
                 if status == "R" || status == "D" {
                     let src = Path::new(rd.as_str()).join(rel);
                     let dst = Path::new(ld.as_str()).join(rel);
                     let _ = copy_path_recursive(&src, &dst);
+                    reload();
                 }
             }
         });
@@ -3655,46 +3693,45 @@ fn build_dir_window(
         let get_row = get_selected_row.clone();
         let ld = left_dir.clone();
         let rd = right_dir.clone();
+        let reload = reload_dir.clone();
         copy_right_btn.connect_clicked(move |_| {
             if let Some(raw) = get_row() {
                 let rel = decode_rel_path(&raw);
                 let status = decode_status(&raw);
-                // Can copy right if item exists on the left side
                 if status == "L" || status == "D" {
                     let src = Path::new(ld.as_str()).join(rel);
                     let dst = Path::new(rd.as_str()).join(rel);
                     let _ = copy_path_recursive(&src, &dst);
+                    reload();
                 }
             }
         });
     }
 
-    // Delete selected
+    // Delete selected (trash; for items on both sides, use focused pane)
     {
         let get_row = get_selected_row.clone();
         let ld = left_dir.clone();
         let rd = right_dir.clone();
+        let reload = reload_dir.clone();
+        let fl = focused_left.clone();
         delete_btn.connect_clicked(move |_| {
             if let Some(raw) = get_row() {
                 let rel = decode_rel_path(&raw);
                 let status = decode_status(&raw);
-                let is_dir = decode_is_dir(&raw);
-                // Delete from whichever side has it (or both for Different)
-                let remove = |path: &Path| {
-                    if is_dir {
-                        let _ = fs::remove_dir_all(path);
-                    } else {
-                        let _ = fs::remove_file(path);
-                    }
+                let lp = Path::new(ld.as_str()).join(rel);
+                let rp = Path::new(rd.as_str()).join(rel);
+                let path = match status {
+                    "L" => Some(lp),
+                    "R" => Some(rp),
+                    "D" | "S" => Some(if fl.get() { lp } else { rp }),
+                    _ => None,
                 };
-                match status {
-                    "L" => remove(&Path::new(ld.as_str()).join(rel)),
-                    "R" => remove(&Path::new(rd.as_str()).join(rel)),
-                    "D" | "S" => {
-                        remove(&Path::new(ld.as_str()).join(rel));
-                        remove(&Path::new(rd.as_str()).join(rel));
+                if let Some(p) = path {
+                    if let Err(e) = gio::File::for_path(&p).trash(gio::Cancellable::NONE) {
+                        eprintln!("Trash failed: {e}");
                     }
-                    _ => {}
+                    reload();
                 }
             }
         });
@@ -3707,6 +3744,7 @@ fn build_dir_window(
         let get_row = get_selected_row.clone();
         let ld = left_dir.clone();
         let rd = right_dir.clone();
+        let reload = reload_dir.clone();
         action.connect_activate(move |_, _| {
             if let Some(raw) = get_row() {
                 let rel = decode_rel_path(&raw);
@@ -3715,6 +3753,7 @@ fn build_dir_window(
                     let src = Path::new(rd.as_str()).join(rel);
                     let dst = Path::new(ld.as_str()).join(rel);
                     let _ = copy_path_recursive(&src, &dst);
+                    reload();
                 }
             }
         });
@@ -3725,6 +3764,7 @@ fn build_dir_window(
         let get_row = get_selected_row.clone();
         let ld = left_dir.clone();
         let rd = right_dir.clone();
+        let reload = reload_dir.clone();
         action.connect_activate(move |_, _| {
             if let Some(raw) = get_row() {
                 let rel = decode_rel_path(&raw);
@@ -3733,6 +3773,7 @@ fn build_dir_window(
                     let src = Path::new(ld.as_str()).join(rel);
                     let dst = Path::new(rd.as_str()).join(rel);
                     let _ = copy_path_recursive(&src, &dst);
+                    reload();
                 }
             }
         });
@@ -3743,26 +3784,25 @@ fn build_dir_window(
         let get_row = get_selected_row.clone();
         let ld = left_dir.clone();
         let rd = right_dir.clone();
+        let reload = reload_dir.clone();
+        let fl = focused_left.clone();
         action.connect_activate(move |_, _| {
             if let Some(raw) = get_row() {
                 let rel = decode_rel_path(&raw);
                 let status = decode_status(&raw);
-                let is_dir = decode_is_dir(&raw);
-                let remove = |path: &Path| {
-                    if is_dir {
-                        let _ = fs::remove_dir_all(path);
-                    } else {
-                        let _ = fs::remove_file(path);
-                    }
+                let lp = Path::new(ld.as_str()).join(rel);
+                let rp = Path::new(rd.as_str()).join(rel);
+                let path = match status {
+                    "L" => Some(lp),
+                    "R" => Some(rp),
+                    "D" | "S" => Some(if fl.get() { lp } else { rp }),
+                    _ => None,
                 };
-                match status {
-                    "L" => remove(&Path::new(ld.as_str()).join(rel)),
-                    "R" => remove(&Path::new(rd.as_str()).join(rel)),
-                    "D" | "S" => {
-                        remove(&Path::new(ld.as_str()).join(rel));
-                        remove(&Path::new(rd.as_str()).join(rel));
+                if let Some(p) = path {
+                    if let Err(e) = gio::File::for_path(&p).trash(gio::Cancellable::NONE) {
+                        eprintln!("Trash failed: {e}");
                     }
-                    _ => {}
+                    reload();
                 }
             }
         });

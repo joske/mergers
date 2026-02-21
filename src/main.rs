@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use gio::prelude::ApplicationExtManual;
-use gtk4::{glib, Application};
+use gtk4::{Application, glib};
 
 mod myers;
 mod ui;
