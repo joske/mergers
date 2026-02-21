@@ -13,8 +13,7 @@
     clippy::too_many_lines
 )]
 
-use std::collections::HashSet;
-use std::hash::Hash;
+use std::{collections::HashSet, hash::Hash};
 
 /// Classification of a diff region.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
