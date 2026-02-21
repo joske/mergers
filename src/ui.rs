@@ -264,6 +264,32 @@ fn decode_rel_path(raw: &str) -> &str {
     decode_field(raw, 3)
 }
 
+// ─── Directory copy helper ──────────────────────────────────────────────────
+
+fn copy_path_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    if src.is_file() {
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(src, dst)?;
+    } else if src.is_dir() {
+        for entry in walkdir::WalkDir::new(src) {
+            let entry = entry.map_err(std::io::Error::other)?;
+            let rel = entry.path().strip_prefix(src).unwrap();
+            let target = dst.join(rel);
+            if entry.file_type().is_dir() {
+                fs::create_dir_all(&target)?;
+            } else {
+                if let Some(parent) = target.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::copy(entry.path(), &target)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 // ─── Directory scanning ────────────────────────────────────────────────────
 
 fn read_dir_entries(dir: &Path) -> BTreeMap<String, DirMeta> {
@@ -3473,7 +3499,7 @@ fn build_dir_window(
 
     // ── Left pane ──────────────────────────────────────────────────
     let left_sel = SingleSelection::new(Some(tree_model.clone()));
-    let left_view = ColumnView::new(Some(left_sel));
+    let left_view = ColumnView::new(Some(left_sel.clone()));
     left_view.set_show_column_separators(true);
     {
         let col = ColumnViewColumn::new(Some("Name"), Some(make_name_factory(true)));
@@ -3490,7 +3516,7 @@ fn build_dir_window(
 
     // ── Right pane ─────────────────────────────────────────────────
     let right_sel = SingleSelection::new(Some(tree_model.clone()));
-    let right_view = ColumnView::new(Some(right_sel));
+    let right_view = ColumnView::new(Some(right_sel.clone()));
     right_view.set_show_column_separators(true);
     {
         let col = ColumnViewColumn::new(Some("Name"), Some(make_name_factory(false)));
@@ -3505,6 +3531,29 @@ fn build_dir_window(
         );
         col.set_fixed_width(180);
         right_view.append_column(&col);
+    }
+
+    // Synchronize selections between panes
+    {
+        let syncing = Rc::new(Cell::new(false));
+        let rs = right_sel.clone();
+        let s = syncing.clone();
+        left_sel.connect_selected_notify(move |sel| {
+            if !s.get() {
+                s.set(true);
+                rs.set_selected(sel.selected());
+                s.set(false);
+            }
+        });
+        let ls = left_sel.clone();
+        let s = syncing;
+        right_sel.connect_selected_notify(move |sel| {
+            if !s.get() {
+                s.set(true);
+                ls.set_selected(sel.selected());
+                s.set(false);
+            }
+        });
     }
 
     // ScrolledWindows + Paned
@@ -3548,10 +3597,191 @@ fn build_dir_window(
     dir_paned.set_start_child(Some(&left_scroll));
     dir_paned.set_end_child(Some(&right_scroll));
 
+    // ── Directory toolbar with copy buttons ───────────────────────
+    let copy_left_btn = Button::from_icon_name("go-previous-symbolic");
+    copy_left_btn.set_tooltip_text(Some("Copy to left (Alt+Left)"));
+    let copy_right_btn = Button::from_icon_name("go-next-symbolic");
+    copy_right_btn.set_tooltip_text(Some("Copy to right (Alt+Right)"));
+    let delete_btn = Button::from_icon_name("user-trash-symbolic");
+    delete_btn.set_tooltip_text(Some("Delete selected (Delete)"));
+
+    let dir_copy_box = GtkBox::new(Orientation::Horizontal, 0);
+    dir_copy_box.add_css_class("linked");
+    dir_copy_box.append(&copy_left_btn);
+    dir_copy_box.append(&copy_right_btn);
+
+    let dir_toolbar = GtkBox::new(Orientation::Horizontal, 8);
+    dir_toolbar.set_margin_start(6);
+    dir_toolbar.set_margin_end(6);
+    dir_toolbar.set_margin_top(4);
+    dir_toolbar.set_margin_bottom(4);
+    dir_toolbar.append(&dir_copy_box);
+    dir_toolbar.append(&delete_btn);
+
+    // Helper: get selected row's encoded data from the tree model
+    let get_selected_row = {
+        let tm = tree_model.clone();
+        let ls = left_sel.clone();
+        move || -> Option<String> {
+            let pos = ls.selected();
+            let item = tm.item(pos)?;
+            let row = item.downcast::<TreeListRow>().ok()?;
+            let obj = row.item().and_downcast::<StringObject>()?;
+            Some(obj.string().to_string())
+        }
+    };
+
+    // Copy to left: right → left
+    {
+        let get_row = get_selected_row.clone();
+        let ld = left_dir.clone();
+        let rd = right_dir.clone();
+        copy_left_btn.connect_clicked(move |_| {
+            if let Some(raw) = get_row() {
+                let rel = decode_rel_path(&raw);
+                let status = decode_status(&raw);
+                // Can copy left if item exists on the right side
+                if status == "R" || status == "D" {
+                    let src = Path::new(rd.as_str()).join(rel);
+                    let dst = Path::new(ld.as_str()).join(rel);
+                    let _ = copy_path_recursive(&src, &dst);
+                }
+            }
+        });
+    }
+
+    // Copy to right: left → right
+    {
+        let get_row = get_selected_row.clone();
+        let ld = left_dir.clone();
+        let rd = right_dir.clone();
+        copy_right_btn.connect_clicked(move |_| {
+            if let Some(raw) = get_row() {
+                let rel = decode_rel_path(&raw);
+                let status = decode_status(&raw);
+                // Can copy right if item exists on the left side
+                if status == "L" || status == "D" {
+                    let src = Path::new(ld.as_str()).join(rel);
+                    let dst = Path::new(rd.as_str()).join(rel);
+                    let _ = copy_path_recursive(&src, &dst);
+                }
+            }
+        });
+    }
+
+    // Delete selected
+    {
+        let get_row = get_selected_row.clone();
+        let ld = left_dir.clone();
+        let rd = right_dir.clone();
+        delete_btn.connect_clicked(move |_| {
+            if let Some(raw) = get_row() {
+                let rel = decode_rel_path(&raw);
+                let status = decode_status(&raw);
+                let is_dir = decode_is_dir(&raw);
+                // Delete from whichever side has it (or both for Different)
+                let remove = |path: &Path| {
+                    if is_dir {
+                        let _ = fs::remove_dir_all(path);
+                    } else {
+                        let _ = fs::remove_file(path);
+                    }
+                };
+                match status {
+                    "L" => remove(&Path::new(ld.as_str()).join(rel)),
+                    "R" => remove(&Path::new(rd.as_str()).join(rel)),
+                    "D" | "S" => {
+                        remove(&Path::new(ld.as_str()).join(rel));
+                        remove(&Path::new(rd.as_str()).join(rel));
+                    }
+                    _ => {}
+                }
+            }
+        });
+    }
+
+    // Directory action group for keyboard shortcuts
+    let dir_action_group = gio::SimpleActionGroup::new();
+    {
+        let action = gio::SimpleAction::new("folder-copy-left", None);
+        let get_row = get_selected_row.clone();
+        let ld = left_dir.clone();
+        let rd = right_dir.clone();
+        action.connect_activate(move |_, _| {
+            if let Some(raw) = get_row() {
+                let rel = decode_rel_path(&raw);
+                let status = decode_status(&raw);
+                if status == "R" || status == "D" {
+                    let src = Path::new(rd.as_str()).join(rel);
+                    let dst = Path::new(ld.as_str()).join(rel);
+                    let _ = copy_path_recursive(&src, &dst);
+                }
+            }
+        });
+        dir_action_group.add_action(&action);
+    }
+    {
+        let action = gio::SimpleAction::new("folder-copy-right", None);
+        let get_row = get_selected_row.clone();
+        let ld = left_dir.clone();
+        let rd = right_dir.clone();
+        action.connect_activate(move |_, _| {
+            if let Some(raw) = get_row() {
+                let rel = decode_rel_path(&raw);
+                let status = decode_status(&raw);
+                if status == "L" || status == "D" {
+                    let src = Path::new(ld.as_str()).join(rel);
+                    let dst = Path::new(rd.as_str()).join(rel);
+                    let _ = copy_path_recursive(&src, &dst);
+                }
+            }
+        });
+        dir_action_group.add_action(&action);
+    }
+    {
+        let action = gio::SimpleAction::new("folder-delete", None);
+        let get_row = get_selected_row.clone();
+        let ld = left_dir.clone();
+        let rd = right_dir.clone();
+        action.connect_activate(move |_, _| {
+            if let Some(raw) = get_row() {
+                let rel = decode_rel_path(&raw);
+                let status = decode_status(&raw);
+                let is_dir = decode_is_dir(&raw);
+                let remove = |path: &Path| {
+                    if is_dir {
+                        let _ = fs::remove_dir_all(path);
+                    } else {
+                        let _ = fs::remove_file(path);
+                    }
+                };
+                match status {
+                    "L" => remove(&Path::new(ld.as_str()).join(rel)),
+                    "R" => remove(&Path::new(rd.as_str()).join(rel)),
+                    "D" | "S" => {
+                        remove(&Path::new(ld.as_str()).join(rel));
+                        remove(&Path::new(rd.as_str()).join(rel));
+                    }
+                    _ => {}
+                }
+            }
+        });
+        dir_action_group.add_action(&action);
+    }
+
+    // ── Dir tab: toolbar + paned ──────────────────────────────────
+    let dir_tab = GtkBox::new(Orientation::Vertical, 0);
+    dir_tab.append(&dir_toolbar);
+    dir_tab.append(&gtk4::Separator::new(Orientation::Horizontal));
+    dir_tab.append(&dir_paned);
+    dir_tab.set_vexpand(true);
+    dir_paned.set_vexpand(true);
+    dir_tab.insert_action_group("dir", Some(&dir_action_group));
+
     // ── Notebook (tabs) ────────────────────────────────────────────
     let notebook = Notebook::new();
     notebook.set_scrollable(true);
-    notebook.append_page(&dir_paned, Some(&Label::new(Some("Directory"))));
+    notebook.append_page(&dir_tab, Some(&Label::new(Some("Directory"))));
 
     // Open file tabs tracking
     let open_tabs: Rc<RefCell<Vec<FileTab>>> = Rc::new(RefCell::new(Vec::new()));
@@ -3689,8 +3919,9 @@ fn build_dir_window(
         .child(&notebook)
         .build();
 
-    // Register keyboard accelerators for diff navigation (used by file diff tabs)
+    // Register keyboard accelerators
     if let Some(gtk_app) = window.application() {
+        // Diff navigation (used by file diff tabs)
         gtk_app.set_accels_for_action("diff.prev-chunk", &["<Alt>Up", "<Ctrl>e"]);
         gtk_app.set_accels_for_action("diff.next-chunk", &["<Alt>Down", "<Ctrl>d"]);
         gtk_app.set_accels_for_action("diff.find", &["<Ctrl>f"]);
@@ -3698,6 +3929,10 @@ fn build_dir_window(
         gtk_app.set_accels_for_action("diff.find-next", &["F3"]);
         gtk_app.set_accels_for_action("diff.find-prev", &["<Shift>F3"]);
         gtk_app.set_accels_for_action("diff.go-to-line", &["<Ctrl>l"]);
+        // Directory copy actions
+        gtk_app.set_accels_for_action("dir.folder-copy-left", &["<Alt>Left"]);
+        gtk_app.set_accels_for_action("dir.folder-copy-right", &["<Alt>Right"]);
+        gtk_app.set_accels_for_action("dir.folder-delete", &["Delete"]);
     }
 
     window.present();
