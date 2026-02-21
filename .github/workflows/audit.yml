@@ -1,0 +1,21 @@
+name: Security Audit
+on:
+  push:
+    paths:
+      - Cargo.lock
+  pull_request:
+    paths:
+      - Cargo.lock
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+      - name: Run audit
+        run: cargo audit
