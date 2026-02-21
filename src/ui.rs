@@ -1047,8 +1047,12 @@ fn refresh_diff(
     chunks: &Rc<RefCell<Vec<DiffChunk>>>,
     gutter: &DrawingArea,
 ) {
-    let lt = left_buf.text(&left_buf.start_iter(), &left_buf.end_iter(), false).to_string();
-    let rt = right_buf.text(&right_buf.start_iter(), &right_buf.end_iter(), false).to_string();
+    let lt = left_buf
+        .text(&left_buf.start_iter(), &left_buf.end_iter(), false)
+        .to_string();
+    let rt = right_buf
+        .text(&right_buf.start_iter(), &right_buf.end_iter(), false)
+        .to_string();
 
     remove_diff_tags(left_buf);
     remove_diff_tags(right_buf);
@@ -2067,9 +2071,15 @@ fn refresh_merge_diffs(
     left_gutter: &DrawingArea,
     right_gutter: &DrawingArea,
 ) {
-    let lt = left_buf.text(&left_buf.start_iter(), &left_buf.end_iter(), false).to_string();
-    let mt = middle_buf.text(&middle_buf.start_iter(), &middle_buf.end_iter(), false).to_string();
-    let rt = right_buf.text(&right_buf.start_iter(), &right_buf.end_iter(), false).to_string();
+    let lt = left_buf
+        .text(&left_buf.start_iter(), &left_buf.end_iter(), false)
+        .to_string();
+    let mt = middle_buf
+        .text(&middle_buf.start_iter(), &middle_buf.end_iter(), false)
+        .to_string();
+    let rt = right_buf
+        .text(&right_buf.start_iter(), &right_buf.end_iter(), false)
+        .to_string();
 
     remove_diff_tags(left_buf);
     remove_diff_tags(middle_buf);
