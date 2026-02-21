@@ -9,6 +9,6 @@ dircmp = "0"
 gtk4 = { version = "0.11", features = ["v4_14"] }
 gio = { version = "0.22", features = ["v2_66"] }
 chrono = "0.4"
-notify = "6"
+notify = "8"
 clap = { version = "4", features = ["derive"] }
-sourceview5 = { version = "0.11.0-alpha.1", features = ["gtk_v4_14"] }
+sourceview5 = { version = "0.11.0", features = ["gtk_v4_14"] }
