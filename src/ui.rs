@@ -192,17 +192,28 @@ fn reload_file_tab(tab: &FileTab, left_dir: &str, right_dir: &str) {
     tab.left_buf.set_text(&left_content);
     tab.right_buf.set_text(&right_content);
 
-    let new_chunks = if left_content == right_content {
-        Vec::new()
-    } else {
-        myers::diff_lines(&left_content, &right_content)
-    };
-    apply_diff_tags(&tab.left_buf, &tab.right_buf, &new_chunks);
-    *tab.chunks.borrow_mut() = new_chunks;
-    tab.gutter.queue_draw();
-    // Buffer now matches disk — no unsaved changes
-    tab.left_save.set_sensitive(false);
-    tab.right_save.set_sensitive(false);
+    let lb = tab.left_buf.clone();
+    let rb = tab.right_buf.clone();
+    let ch = tab.chunks.clone();
+    let g = tab.gutter.clone();
+    let ls = tab.left_save.clone();
+    let rs = tab.right_save.clone();
+
+    gtk4::glib::spawn_future_local(async move {
+        let new_chunks = if left_content == right_content {
+            Vec::new()
+        } else {
+            gio::spawn_blocking(move || myers::diff_lines(&left_content, &right_content))
+                .await
+                .unwrap_or_default()
+        };
+        apply_diff_tags(&lb, &rb, &new_chunks);
+        *ch.borrow_mut() = new_chunks;
+        g.queue_draw();
+        // Buffer now matches disk — no unsaved changes
+        ls.set_sensitive(false);
+        rs.set_sensitive(false);
+    });
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
@@ -1036,20 +1047,29 @@ fn refresh_diff(
     chunks: &Rc<RefCell<Vec<DiffChunk>>>,
     gutter: &DrawingArea,
 ) {
-    let lt = left_buf.text(&left_buf.start_iter(), &left_buf.end_iter(), false);
-    let rt = right_buf.text(&right_buf.start_iter(), &right_buf.end_iter(), false);
+    let lt = left_buf.text(&left_buf.start_iter(), &left_buf.end_iter(), false).to_string();
+    let rt = right_buf.text(&right_buf.start_iter(), &right_buf.end_iter(), false).to_string();
 
     remove_diff_tags(left_buf);
     remove_diff_tags(right_buf);
 
-    let new_chunks = if lt == rt {
-        Vec::new()
-    } else {
-        myers::diff_lines(&lt, &rt)
-    };
-    apply_diff_tags(left_buf, right_buf, &new_chunks);
-    *chunks.borrow_mut() = new_chunks;
-    gutter.queue_draw();
+    let lb = left_buf.clone();
+    let rb = right_buf.clone();
+    let ch = chunks.clone();
+    let g = gutter.clone();
+
+    gtk4::glib::spawn_future_local(async move {
+        let new_chunks = if lt == rt {
+            Vec::new()
+        } else {
+            gio::spawn_blocking(move || myers::diff_lines(&lt, &rt))
+                .await
+                .unwrap_or_default()
+        };
+        apply_diff_tags(&lb, &rb, &new_chunks);
+        *ch.borrow_mut() = new_chunks;
+        g.queue_draw();
+    });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1249,13 +1269,7 @@ fn build_diff_view(left_path: &Path, right_path: &Path) -> DiffViewResult {
     right_buf.set_text(&right_content);
 
     let identical = left_content == right_content;
-    let diff_chunks = if identical {
-        Vec::new()
-    } else {
-        myers::diff_lines(&left_content, &right_content)
-    };
-    apply_diff_tags(&left_buf, &right_buf, &diff_chunks);
-    let chunks = Rc::new(RefCell::new(diff_chunks));
+    let chunks = Rc::new(RefCell::new(Vec::new()));
 
     let info_msg = if identical {
         Some("Files are identical")
@@ -1344,6 +1358,23 @@ fn build_diff_view(left_path: &Path, right_path: &Path) -> DiffViewResult {
             );
         });
         gutter.add_controller(gesture);
+    }
+
+    // Initial async diff
+    if !identical {
+        let lb = left_buf.clone();
+        let rb = right_buf.clone();
+        let ch = chunks.clone();
+        let g = gutter.clone();
+        gtk4::glib::spawn_future_local(async move {
+            let new_chunks =
+                gio::spawn_blocking(move || myers::diff_lines(&left_content, &right_content))
+                    .await
+                    .unwrap_or_default();
+            apply_diff_tags(&lb, &rb, &new_chunks);
+            *ch.borrow_mut() = new_chunks;
+            g.queue_draw();
+        });
     }
 
     // Re-diff on any buffer change
@@ -2036,31 +2067,48 @@ fn refresh_merge_diffs(
     left_gutter: &DrawingArea,
     right_gutter: &DrawingArea,
 ) {
-    let lt = left_buf.text(&left_buf.start_iter(), &left_buf.end_iter(), false);
-    let mt = middle_buf.text(&middle_buf.start_iter(), &middle_buf.end_iter(), false);
-    let rt = right_buf.text(&right_buf.start_iter(), &right_buf.end_iter(), false);
+    let lt = left_buf.text(&left_buf.start_iter(), &left_buf.end_iter(), false).to_string();
+    let mt = middle_buf.text(&middle_buf.start_iter(), &middle_buf.end_iter(), false).to_string();
+    let rt = right_buf.text(&right_buf.start_iter(), &right_buf.end_iter(), false).to_string();
 
     remove_diff_tags(left_buf);
     remove_diff_tags(middle_buf);
     remove_diff_tags(right_buf);
 
-    let new_left = if lt == mt {
-        Vec::new()
-    } else {
-        myers::diff_lines(&lt, &mt)
-    };
-    let new_right = if mt == rt {
-        Vec::new()
-    } else {
-        myers::diff_lines(&mt, &rt)
-    };
+    let lb = left_buf.clone();
+    let mb = middle_buf.clone();
+    let rb = right_buf.clone();
+    let lch = left_chunks.clone();
+    let rch = right_chunks.clone();
+    let lg = left_gutter.clone();
+    let rg = right_gutter.clone();
 
-    apply_merge_tags(left_buf, middle_buf, right_buf, &new_left, &new_right);
+    gtk4::glib::spawn_future_local(async move {
+        let left_identical = lt == mt;
+        let right_identical = mt == rt;
+        let (new_left, new_right) = gio::spawn_blocking(move || {
+            let nl = if left_identical {
+                Vec::new()
+            } else {
+                myers::diff_lines(&lt, &mt)
+            };
+            let nr = if right_identical {
+                Vec::new()
+            } else {
+                myers::diff_lines(&mt, &rt)
+            };
+            (nl, nr)
+        })
+        .await
+        .unwrap_or_default();
 
-    *left_chunks.borrow_mut() = new_left;
-    *right_chunks.borrow_mut() = new_right;
-    left_gutter.queue_draw();
-    right_gutter.queue_draw();
+        apply_merge_tags(&lb, &mb, &rb, &new_left, &new_right);
+
+        *lch.borrow_mut() = new_left;
+        *rch.borrow_mut() = new_right;
+        lg.queue_draw();
+        rg.queue_draw();
+    });
 }
 
 fn setup_scroll_sync_3way(
@@ -2180,22 +2228,11 @@ fn build_merge_view(
     middle_buf.set_text(&middle_content);
     right_buf.set_text(&right_content);
 
-    // Two pairwise diffs
-    let lc = if left_content == middle_content {
-        Vec::new()
-    } else {
-        myers::diff_lines(&left_content, &middle_content)
-    };
-    let rc = if middle_content == right_content {
-        Vec::new()
-    } else {
-        myers::diff_lines(&middle_content, &right_content)
-    };
+    let left_identical = left_content == middle_content;
+    let right_identical = middle_content == right_content;
 
-    apply_merge_tags(&left_buf, &middle_buf, &right_buf, &lc, &rc);
-
-    let left_chunks = Rc::new(RefCell::new(lc));
-    let right_chunks = Rc::new(RefCell::new(rc));
+    let left_chunks = Rc::new(RefCell::new(Vec::new()));
+    let right_chunks = Rc::new(RefCell::new(Vec::new()));
 
     let left_pane = make_diff_pane(&left_buf, left_path, None);
     let middle_pane = make_diff_pane(&middle_buf, middle_display_path, None);
@@ -2331,6 +2368,40 @@ fn build_merge_view(
             );
         });
         right_gutter.add_controller(gesture);
+    }
+
+    // Initial async diff
+    if !left_identical || !right_identical {
+        let lb = left_buf.clone();
+        let mb = middle_buf.clone();
+        let rb = right_buf.clone();
+        let lch = left_chunks.clone();
+        let rch = right_chunks.clone();
+        let lg = left_gutter.clone();
+        let rg = right_gutter.clone();
+        gtk4::glib::spawn_future_local(async move {
+            let (new_left, new_right) = gio::spawn_blocking(move || {
+                let nl = if left_identical {
+                    Vec::new()
+                } else {
+                    myers::diff_lines(&left_content, &middle_content)
+                };
+                let nr = if right_identical {
+                    Vec::new()
+                } else {
+                    myers::diff_lines(&middle_content, &right_content)
+                };
+                (nl, nr)
+            })
+            .await
+            .unwrap_or_default();
+
+            apply_merge_tags(&lb, &mb, &rb, &new_left, &new_right);
+            *lch.borrow_mut() = new_left;
+            *rch.borrow_mut() = new_right;
+            lg.queue_draw();
+            rg.queue_draw();
+        });
     }
 
     // Re-diff on any buffer change (debounced)
@@ -3424,16 +3495,28 @@ fn build_file_window(
                 if cur_left.as_str() != left_content || cur_right.as_str() != right_content {
                     lb.set_text(&left_content);
                     rb.set_text(&right_content);
-                    let new_chunks = if left_content == right_content {
-                        Vec::new()
-                    } else {
-                        myers::diff_lines(&left_content, &right_content)
-                    };
-                    apply_diff_tags(&lb, &rb, &new_chunks);
-                    *ch.borrow_mut() = new_chunks;
-                    g.queue_draw();
-                    l_save.set_sensitive(false);
-                    r_save.set_sensitive(false);
+                    let lb = lb.clone();
+                    let rb = rb.clone();
+                    let ch = ch.clone();
+                    let g = g.clone();
+                    let l_save = l_save.clone();
+                    let r_save = r_save.clone();
+                    gtk4::glib::spawn_future_local(async move {
+                        let new_chunks = if left_content == right_content {
+                            Vec::new()
+                        } else {
+                            gio::spawn_blocking(move || {
+                                myers::diff_lines(&left_content, &right_content)
+                            })
+                            .await
+                            .unwrap_or_default()
+                        };
+                        apply_diff_tags(&lb, &rb, &new_chunks);
+                        *ch.borrow_mut() = new_chunks;
+                        g.queue_draw();
+                        l_save.set_sensitive(false);
+                        r_save.set_sensitive(false);
+                    });
                 }
             }
             gtk4::glib::ControlFlow::Continue
