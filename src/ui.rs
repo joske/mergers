@@ -12,6 +12,7 @@
 use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, BTreeSet, HashMap},
+    fmt::Write as _,
     fs,
     path::Path,
     rc::Rc,
@@ -25,8 +26,8 @@ use gtk4::{
     ColumnViewColumn, CssProvider, DrawingArea, Entry, EventControllerFocus, EventControllerKey,
     GestureClick, Image, Label, ListItem, Notebook, Orientation, Paned, PolicyType, Revealer,
     ScrolledWindow, SignalListItemFactory, SingleSelection, StringObject, TextBuffer,
-    TextSearchFlags, TextTag, TextView, TreeExpander, TreeListModel, TreeListRow, WrapMode,
-    gdk::Display, gio, gio::ListStore, prelude::*,
+    TextSearchFlags, TextTag, TextView, ToggleButton, TreeExpander, TreeListModel, TreeListRow,
+    WrapMode, gdk::Display, gio, gio::ListStore, prelude::*,
 };
 use sourceview5::prelude::*;
 
@@ -85,8 +86,6 @@ struct FileTab {
     right_buf: TextBuffer,
     left_save: Button,
     right_save: Button,
-    chunks: Rc<RefCell<Vec<DiffChunk>>>,
-    gutter: DrawingArea,
 }
 
 static NEXT_TAB_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -170,6 +169,11 @@ fn apply_merge_tags(
 }
 
 fn reload_file_tab(tab: &FileTab, left_dir: &str, right_dir: &str) {
+    // Don't overwrite unsaved user edits
+    if tab.left_save.is_sensitive() || tab.right_save.is_sensitive() {
+        return;
+    }
+
     let left_content =
         fs::read_to_string(Path::new(left_dir).join(&tab.rel_path)).unwrap_or_default();
     let right_content =
@@ -189,34 +193,85 @@ fn reload_file_tab(tab: &FileTab, left_dir: &str, right_dir: &str) {
         return; // nothing changed on disk vs buffer
     }
 
+    // set_text triggers connect_changed which schedules refresh_diff with
+    // the current filter state (ignore_blanks / ignore_whitespace).
+    // We must NOT run a separate diff here — it would race and potentially
+    // overwrite the filtered result with an unfiltered one.
     tab.left_buf.set_text(&left_content);
     tab.right_buf.set_text(&right_content);
-
-    let lb = tab.left_buf.clone();
-    let rb = tab.right_buf.clone();
-    let ch = tab.chunks.clone();
-    let g = tab.gutter.clone();
-    let ls = tab.left_save.clone();
-    let rs = tab.right_save.clone();
-
-    gtk4::glib::spawn_future_local(async move {
-        let new_chunks = if left_content == right_content {
-            Vec::new()
-        } else {
-            gio::spawn_blocking(move || myers::diff_lines(&left_content, &right_content))
-                .await
-                .unwrap_or_default()
-        };
-        apply_diff_tags(&lb, &rb, &new_chunks);
-        *ch.borrow_mut() = new_chunks;
-        g.queue_draw();
-        // Buffer now matches disk — no unsaved changes
-        ls.set_sensitive(false);
-        rs.set_sensitive(false);
-    });
+    // Buffer now matches disk — clear unsaved-changes indicator.
+    // (set_text triggers the save-button connect_changed which sets
+    // sensitive=true, so we reset it after.)
+    tab.left_save.set_sensitive(false);
+    tab.right_save.set_sensitive(false);
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
+
+/// Check if a file appears to be binary by looking for NUL bytes in the first 8KB.
+fn is_binary(path: &Path) -> bool {
+    fs::read(path)
+        .map(|bytes| bytes.iter().take(8192).any(|&b| b == 0))
+        .unwrap_or(false)
+}
+
+/// Read a file as text, returning content and whether it was binary.
+/// Binary files return an empty string and `true`.
+fn read_file_content(path: &Path) -> (String, bool) {
+    if is_binary(path) {
+        (String::new(), true)
+    } else {
+        (fs::read_to_string(path).unwrap_or_default(), false)
+    }
+}
+
+/// Pre-filter text for diff comparison.
+/// Returns `(filtered_text, line_map)` where `line_map[filtered_idx] = original_idx`.
+/// - `ignore_whitespace`: collapse each line's whitespace to single spaces.
+/// - `ignore_blanks`: remove blank lines (the line map tracks where they were).
+fn filter_for_diff(
+    text: &str,
+    ignore_whitespace: bool,
+    ignore_blanks: bool,
+) -> (String, Vec<usize>) {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut filtered = Vec::with_capacity(lines.len());
+    let mut line_map = Vec::with_capacity(lines.len());
+
+    for (i, line) in lines.iter().enumerate() {
+        if ignore_blanks && line.trim().is_empty() {
+            continue;
+        }
+        if ignore_whitespace {
+            filtered.push(line.split_whitespace().collect::<Vec<_>>().join(" "));
+        } else {
+            filtered.push((*line).to_string());
+        }
+        line_map.push(i);
+    }
+
+    (filtered.join("\n"), line_map)
+}
+
+/// Remap diff chunks from filtered line numbers back to original line numbers.
+fn remap_chunks(
+    chunks: Vec<DiffChunk>,
+    left_map: &[usize],
+    left_total: usize,
+    right_map: &[usize],
+    right_total: usize,
+) -> Vec<DiffChunk> {
+    chunks
+        .into_iter()
+        .map(|mut chunk| {
+            chunk.start_a = left_map.get(chunk.start_a).copied().unwrap_or(left_total);
+            chunk.end_a = left_map.get(chunk.end_a).copied().unwrap_or(left_total);
+            chunk.start_b = right_map.get(chunk.start_b).copied().unwrap_or(right_total);
+            chunk.end_b = right_map.get(chunk.end_b).copied().unwrap_or(right_total);
+            chunk
+        })
+        .collect()
+}
 
 fn format_size(bytes: u64) -> String {
     if bytes < 1000 {
@@ -233,6 +288,91 @@ fn format_size(bytes: u64) -> String {
 fn format_mtime(t: SystemTime) -> String {
     let dt: DateTime<Local> = t.into();
     dt.format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+/// Generate a unified diff (patch) string from chunks and source texts.
+fn generate_unified_diff(
+    left_label: &str,
+    right_label: &str,
+    left_text: &str,
+    right_text: &str,
+    chunks: &[DiffChunk],
+) -> String {
+    let left_lines: Vec<&str> = left_text.lines().collect();
+    let right_lines: Vec<&str> = right_text.lines().collect();
+    let mut out = String::new();
+    let _ = writeln!(out, "--- {left_label}");
+    let _ = writeln!(out, "+++ {right_label}");
+
+    // Group non-Equal chunks into hunks with 3 lines of context
+    let context = 3_usize;
+    let changes: Vec<&DiffChunk> = chunks.iter().filter(|c| c.tag != DiffTag::Equal).collect();
+    if changes.is_empty() {
+        return out;
+    }
+
+    // Build hunks: merge nearby changes
+    let mut hunks: Vec<(usize, usize, usize, usize, Vec<&DiffChunk>)> = Vec::new();
+    for &ch in &changes {
+        let ctx_start_a = ch.start_a.saturating_sub(context);
+        let ctx_start_b = ch.start_b.saturating_sub(context);
+        let ctx_end_a = (ch.end_a + context).min(left_lines.len());
+        let ctx_end_b = (ch.end_b + context).min(right_lines.len());
+
+        if let Some(last) = hunks.last_mut() {
+            // Merge if overlapping
+            if ctx_start_a <= last.1 {
+                last.1 = ctx_end_a;
+                last.3 = ctx_end_b;
+                last.4.push(ch);
+                continue;
+            }
+        }
+        hunks.push((ctx_start_a, ctx_end_a, ctx_start_b, ctx_end_b, vec![ch]));
+    }
+
+    for (hunk_start_a, hunk_end_a, hunk_start_b, hunk_end_b, hunk_chunks) in &hunks {
+        let count_a = hunk_end_a - hunk_start_a;
+        let count_b = hunk_end_b - hunk_start_b;
+        let _ = writeln!(
+            out,
+            "@@ -{},{count_a} +{},{count_b} @@",
+            hunk_start_a + 1,
+            hunk_start_b + 1
+        );
+
+        let mut pos_a = *hunk_start_a;
+        for ch in hunk_chunks {
+            // Context lines before this change
+            while pos_a < ch.start_a {
+                if let Some(line) = left_lines.get(pos_a) {
+                    let _ = writeln!(out, " {line}");
+                }
+                pos_a += 1;
+            }
+            // Removed lines
+            for i in ch.start_a..ch.end_a {
+                if let Some(line) = left_lines.get(i) {
+                    let _ = writeln!(out, "-{line}");
+                }
+            }
+            // Added lines
+            for i in ch.start_b..ch.end_b {
+                if let Some(line) = right_lines.get(i) {
+                    let _ = writeln!(out, "+{line}");
+                }
+            }
+            pos_a = ch.end_a;
+        }
+        // Trailing context
+        while pos_a < *hunk_end_a {
+            if let Some(line) = left_lines.get(pos_a) {
+                let _ = writeln!(out, " {line}");
+            }
+            pos_a += 1;
+        }
+    }
+    out
 }
 
 // ─── Row encoding ──────────────────────────────────────────────────────────
@@ -834,9 +974,15 @@ struct DiffPane {
     text_view: TextView,
     scroll: ScrolledWindow,
     save_btn: Button,
+    path_label: Label,
 }
 
-fn make_diff_pane(buf: &TextBuffer, file_path: &Path, info: Option<&str>) -> DiffPane {
+fn make_diff_pane(
+    buf: &TextBuffer,
+    file_path: &Path,
+    info: Option<&str>,
+    label_override: Option<&str>,
+) -> DiffPane {
     let sv = sourceview5::View::with_buffer(
         buf.downcast_ref::<sourceview5::Buffer>()
             .expect("buffer must be a sourceview5::Buffer"),
@@ -865,7 +1011,8 @@ fn make_diff_pane(buf: &TextBuffer, file_path: &Path, info: Option<&str>) -> Dif
     let save_btn = Button::from_icon_name("document-save-symbolic");
     save_btn.set_tooltip_text(Some("Save"));
     save_btn.set_sensitive(false);
-    let path_label = Label::new(Some(&shortened_path(file_path)));
+    let display_name = label_override.map_or_else(|| shortened_path(file_path), String::from);
+    let path_label = Label::new(Some(&display_name));
     path_label.set_hexpand(true);
     path_label.set_halign(gtk4::Align::Center);
     header.append(&save_btn);
@@ -905,6 +1052,7 @@ fn make_diff_pane(buf: &TextBuffer, file_path: &Path, info: Option<&str>) -> Dif
         text_view: tv,
         scroll,
         save_btn,
+        path_label,
     }
 }
 
@@ -1045,7 +1193,9 @@ fn refresh_diff(
     left_buf: &TextBuffer,
     right_buf: &TextBuffer,
     chunks: &Rc<RefCell<Vec<DiffChunk>>>,
-    gutter: &DrawingArea,
+    on_complete: impl Fn() + 'static,
+    ignore_blanks: bool,
+    ignore_whitespace: bool,
 ) {
     let lt = left_buf
         .text(&left_buf.start_iter(), &left_buf.end_iter(), false)
@@ -1060,19 +1210,23 @@ fn refresh_diff(
     let lb = left_buf.clone();
     let rb = right_buf.clone();
     let ch = chunks.clone();
-    let g = gutter.clone();
 
     gtk4::glib::spawn_future_local(async move {
-        let new_chunks = if lt == rt {
+        let (lt_cmp, lt_map) = filter_for_diff(&lt, ignore_whitespace, ignore_blanks);
+        let (rt_cmp, rt_map) = filter_for_diff(&rt, ignore_whitespace, ignore_blanks);
+        let lt_total = lt.lines().count();
+        let rt_total = rt.lines().count();
+        let new_chunks = if lt_cmp == rt_cmp {
             Vec::new()
         } else {
-            gio::spawn_blocking(move || myers::diff_lines(&lt, &rt))
+            let raw = gio::spawn_blocking(move || myers::diff_lines(&lt_cmp, &rt_cmp))
                 .await
-                .unwrap_or_default()
+                .unwrap_or_default();
+            remap_chunks(raw, &lt_map, lt_total, &rt_map, rt_total)
         };
         apply_diff_tags(&lb, &rb, &new_chunks);
         *ch.borrow_mut() = new_chunks;
-        g.queue_draw();
+        on_complete();
     });
 }
 
@@ -1256,33 +1410,41 @@ struct DiffViewResult {
     right_buf: TextBuffer,
     left_save: Button,
     right_save: Button,
-    chunks: Rc<RefCell<Vec<DiffChunk>>>,
-    gutter: DrawingArea,
     action_group: gio::SimpleActionGroup,
 }
 
 /// Build a complete diff view widget for two files.
 /// Returns the top-level widget (toolbar + diff panes) and associated state.
-fn build_diff_view(left_path: &Path, right_path: &Path) -> DiffViewResult {
-    let left_content = fs::read_to_string(left_path).unwrap_or_default();
-    let right_content = fs::read_to_string(right_path).unwrap_or_default();
+fn build_diff_view(left_path: &Path, right_path: &Path, labels: &[String]) -> DiffViewResult {
+    let (left_content, left_binary) = read_file_content(left_path);
+    let (right_content, right_binary) = read_file_content(right_path);
+    let any_binary = left_binary || right_binary;
 
     let left_buf = create_source_buffer(left_path);
     let right_buf = create_source_buffer(right_path);
     left_buf.set_text(&left_content);
     right_buf.set_text(&right_content);
 
-    let identical = left_content == right_content;
+    let identical = !any_binary && left_content == right_content;
     let chunks = Rc::new(RefCell::new(Vec::new()));
 
-    let info_msg = if identical {
+    let info_msg = if any_binary {
+        Some("Binary file — cannot display diff")
+    } else if identical {
         Some("Files are identical")
     } else {
         None
     };
 
-    let left_pane = make_diff_pane(&left_buf, left_path, info_msg);
-    let right_pane = make_diff_pane(&right_buf, right_path, info_msg);
+    let left_label = labels.first().map(String::as_str);
+    let right_label = labels.get(1).map(String::as_str);
+    let left_pane = make_diff_pane(&left_buf, left_path, info_msg, left_label);
+    let right_pane = make_diff_pane(&right_buf, right_path, info_msg, right_label);
+
+    if any_binary {
+        left_pane.text_view.set_editable(false);
+        right_pane.text_view.set_editable(false);
+    }
 
     // Track which text view was last focused (for undo/redo, find, go-to-line)
     let active_view: Rc<RefCell<TextView>> = Rc::new(RefCell::new(left_pane.text_view.clone()));
@@ -1365,7 +1527,7 @@ fn build_diff_view(left_path: &Path, right_path: &Path) -> DiffViewResult {
     }
 
     // Initial async diff
-    if !identical {
+    if !identical && !any_binary {
         let lb = left_buf.clone();
         let rb = right_buf.clone();
         let ch = chunks.clone();
@@ -1381,33 +1543,9 @@ fn build_diff_view(left_path: &Path, right_path: &Path) -> DiffViewResult {
         });
     }
 
-    // Re-diff on any buffer change
-    {
-        let pending = Rc::new(Cell::new(false));
-        let connect_refresh = |buf: &TextBuffer| {
-            let lb = left_buf.clone();
-            let rb = right_buf.clone();
-            let ch = chunks.clone();
-            let g = gutter.clone();
-            let p = pending.clone();
-            buf.connect_changed(move |_| {
-                if !p.get() {
-                    p.set(true);
-                    let lb = lb.clone();
-                    let rb = rb.clone();
-                    let ch = ch.clone();
-                    let g = g.clone();
-                    let p = p.clone();
-                    gtk4::glib::idle_add_local_once(move || {
-                        refresh_diff(&lb, &rb, &ch, &g);
-                        p.set(false);
-                    });
-                }
-            });
-        };
-        connect_refresh(&left_buf);
-        connect_refresh(&right_buf);
-    }
+    // Text filter state (created early so connect_changed can use it)
+    let ignore_blanks: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+    let ignore_whitespace: Rc<Cell<bool>> = Rc::new(Cell::new(false));
 
     // Scroll synchronization
     setup_scroll_sync(&left_pane.scroll, &right_pane.scroll, &gutter);
@@ -1502,9 +1640,47 @@ fn build_diff_view(left_path: &Path, right_path: &Path) -> DiffViewResult {
     toolbar.set_margin_top(4);
     toolbar.set_margin_bottom(4);
     toolbar.append(&undo_redo_box);
+    let swap_btn = Button::from_icon_name("object-flip-horizontal-symbolic");
+    swap_btn.set_tooltip_text(Some("Swap panes"));
+
+    // Text filter toggles
+    let blank_toggle = ToggleButton::with_label("Blanks");
+    blank_toggle.set_tooltip_text(Some("Ignore blank lines"));
+    let ws_toggle = ToggleButton::with_label("Spaces");
+    ws_toggle.set_tooltip_text(Some("Ignore whitespace differences"));
+
+    let filter_box = GtkBox::new(Orientation::Horizontal, 0);
+    filter_box.add_css_class("linked");
+    filter_box.append(&blank_toggle);
+    filter_box.append(&ws_toggle);
+
+    let patch_btn = Button::from_icon_name("document-save-as-symbolic");
+    patch_btn.set_tooltip_text(Some("Export patch (Ctrl+Shift+P)"));
+
     toolbar.append(&nav_box);
     toolbar.append(&chunk_label);
     toolbar.append(&goto_entry);
+    toolbar.append(&filter_box);
+    toolbar.append(&patch_btn);
+    toolbar.append(&swap_btn);
+
+    // Swap panes: swap buffer text + labels, re-diff happens via connect_changed
+    {
+        let lb = left_buf.clone();
+        let rb = right_buf.clone();
+        let ll = left_pane.path_label.clone();
+        let rl = right_pane.path_label.clone();
+        swap_btn.connect_clicked(move |_| {
+            let lt = lb.text(&lb.start_iter(), &lb.end_iter(), false).to_string();
+            let rt = rb.text(&rb.start_iter(), &rb.end_iter(), false).to_string();
+            lb.set_text(&rt);
+            rb.set_text(&lt);
+            let ll_text = ll.text().to_string();
+            let rl_text = rl.text().to_string();
+            ll.set_text(&rl_text);
+            rl.set_text(&ll_text);
+        });
+    }
 
     // Prev chunk
     {
@@ -1532,35 +1708,6 @@ fn build_diff_view(left_path: &Path, right_path: &Path) -> DiffViewResult {
             navigate_chunk(&ch.borrow(), &cur, 1, &ltv, &lb, &ls);
             update_chunk_label(&lbl, &ch.borrow(), cur.get());
         });
-    }
-
-    // Update chunk label when diff changes
-    {
-        let ch = chunks.clone();
-        let cur = current_chunk.clone();
-        let lbl = chunk_label.clone();
-        let refresh_label = move || {
-            cur.set(None);
-            update_chunk_label(&lbl, &ch.borrow(), None);
-        };
-        let pending = Rc::new(Cell::new(false));
-        let connect_label_refresh = |buf: &TextBuffer| {
-            let r = Rc::new(refresh_label.clone());
-            let p = pending.clone();
-            buf.connect_changed(move |_| {
-                if !p.get() {
-                    p.set(true);
-                    let r = r.clone();
-                    let p = p.clone();
-                    gtk4::glib::idle_add_local_once(move || {
-                        r();
-                        p.set(false);
-                    });
-                }
-            });
-        };
-        connect_label_refresh(&left_buf);
-        connect_label_refresh(&right_buf);
     }
 
     // ── Chunk maps (overview strips) ─────────────────────────────
@@ -1647,6 +1794,87 @@ fn build_diff_view(left_path: &Path, right_path: &Path) -> DiffViewResult {
                 lcm.queue_draw();
                 rcm.queue_draw();
             });
+    }
+
+    // Re-diff on any buffer change, and update all visuals when diff completes
+    {
+        let make_on_complete = {
+            let g = gutter.clone();
+            let lcm = left_chunk_map.clone();
+            let rcm = right_chunk_map.clone();
+            let lbl = chunk_label.clone();
+            let ch = chunks.clone();
+            let cur = current_chunk.clone();
+            move || {
+                let g = g.clone();
+                let lcm = lcm.clone();
+                let rcm = rcm.clone();
+                let lbl = lbl.clone();
+                let ch = ch.clone();
+                let cur = cur.clone();
+                move || {
+                    g.queue_draw();
+                    lcm.queue_draw();
+                    rcm.queue_draw();
+                    cur.set(None);
+                    update_chunk_label(&lbl, &ch.borrow(), None);
+                }
+            }
+        };
+
+        let pending = Rc::new(Cell::new(false));
+        let connect_refresh = |buf: &TextBuffer| {
+            let lb = left_buf.clone();
+            let rb = right_buf.clone();
+            let ch = chunks.clone();
+            let p = pending.clone();
+            let ib = ignore_blanks.clone();
+            let iw = ignore_whitespace.clone();
+            let make_cb = make_on_complete.clone();
+            buf.connect_changed(move |_| {
+                if !p.get() {
+                    p.set(true);
+                    let lb = lb.clone();
+                    let rb = rb.clone();
+                    let ch = ch.clone();
+                    let p = p.clone();
+                    let ib = ib.clone();
+                    let iw = iw.clone();
+                    let cb = make_cb();
+                    gtk4::glib::idle_add_local_once(move || {
+                        refresh_diff(&lb, &rb, &ch, cb, ib.get(), iw.get());
+                        p.set(false);
+                    });
+                }
+            });
+        };
+        connect_refresh(&left_buf);
+        connect_refresh(&right_buf);
+
+        // Toggle handlers for filter buttons
+        {
+            let ib = ignore_blanks.clone();
+            let iw = ignore_whitespace.clone();
+            let lb = left_buf.clone();
+            let rb = right_buf.clone();
+            let ch = chunks.clone();
+            let make_cb = make_on_complete.clone();
+            blank_toggle.connect_toggled(move |btn| {
+                ib.set(btn.is_active());
+                refresh_diff(&lb, &rb, &ch, make_cb(), ib.get(), iw.get());
+            });
+        }
+        {
+            let ib = ignore_blanks.clone();
+            let iw = ignore_whitespace.clone();
+            let lb = left_buf.clone();
+            let rb = right_buf.clone();
+            let ch = chunks.clone();
+            ws_toggle.connect_toggled(move |btn| {
+                iw.set(btn.is_active());
+                refresh_diff(&lb, &rb, &ch, make_on_complete(), ib.get(), iw.get());
+            });
+        }
     }
 
     // ── Find bar ──────────────────────────────────────────────────
@@ -1969,14 +2197,62 @@ fn build_diff_view(left_path: &Path, right_path: &Path) -> DiffViewResult {
         action_group.add_action(&action);
     }
 
+    // Export patch
+    {
+        let export_patch = {
+            let lb = left_buf.clone();
+            let rb = right_buf.clone();
+            let ch = chunks.clone();
+            let ll = left_pane.path_label.clone();
+            let rl = right_pane.path_label.clone();
+            let pb = patch_btn.clone();
+            move || {
+                let lt = lb.text(&lb.start_iter(), &lb.end_iter(), false).to_string();
+                let rt = rb.text(&rb.start_iter(), &rb.end_iter(), false).to_string();
+                let patch = generate_unified_diff(
+                    &format!("a/{}", ll.text()),
+                    &format!("b/{}", rl.text()),
+                    &lt,
+                    &rt,
+                    &ch.borrow(),
+                );
+                let dialog = gtk4::FileDialog::builder()
+                    .title("Export Patch")
+                    .initial_name("diff.patch")
+                    .build();
+                let win = pb
+                    .root()
+                    .and_then(|r| r.downcast::<ApplicationWindow>().ok());
+                let dialog_ref = dialog.clone();
+                dialog_ref.save(win.as_ref(), gio::Cancellable::NONE, move |result| {
+                    if let Ok(file) = result
+                        && let Some(path) = file.path()
+                    {
+                        let _ = fs::write(&path, &patch);
+                    }
+                });
+            }
+        };
+
+        let export = Rc::new(export_patch);
+        {
+            let e = export.clone();
+            patch_btn.connect_clicked(move |_| e());
+        }
+        {
+            let action = gio::SimpleAction::new("export-patch", None);
+            let e = export.clone();
+            action.connect_activate(move |_, _| e());
+            action_group.add_action(&action);
+        }
+    }
+
     DiffViewResult {
         widget,
         left_buf,
         right_buf,
         left_save: left_pane.save_btn,
         right_save: right_pane.save_btn,
-        chunks,
-        gutter,
         action_group,
     }
 }
@@ -1994,7 +2270,7 @@ fn open_file_diff(
     let left_path = Path::new(left_dir).join(rel_path);
     let right_path = Path::new(right_dir).join(rel_path);
 
-    let dv = build_diff_view(&left_path, &right_path);
+    let dv = build_diff_view(&left_path, &right_path, &[]);
     dv.widget
         .insert_action_group("diff", Some(&dv.action_group));
 
@@ -2007,8 +2283,6 @@ fn open_file_diff(
         right_buf: dv.right_buf,
         left_save: dv.left_save,
         right_save: dv.right_save,
-        chunks: dv.chunks,
-        gutter: dv.gutter,
     });
 
     // Tab label
@@ -2055,21 +2329,19 @@ struct MergeViewResult {
     middle_buf: TextBuffer,
     right_buf: TextBuffer,
     middle_save: Button,
-    left_chunks: Rc<RefCell<Vec<DiffChunk>>>,
-    right_chunks: Rc<RefCell<Vec<DiffChunk>>>,
-    left_gutter: DrawingArea,
-    right_gutter: DrawingArea,
     action_group: gio::SimpleActionGroup,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn refresh_merge_diffs(
     left_buf: &TextBuffer,
     middle_buf: &TextBuffer,
     right_buf: &TextBuffer,
     left_chunks: &Rc<RefCell<Vec<DiffChunk>>>,
     right_chunks: &Rc<RefCell<Vec<DiffChunk>>>,
-    left_gutter: &DrawingArea,
-    right_gutter: &DrawingArea,
+    on_complete: impl Fn() + 'static,
+    ignore_blanks: bool,
+    ignore_whitespace: bool,
 ) {
     let lt = left_buf
         .text(&left_buf.start_iter(), &left_buf.end_iter(), false)
@@ -2090,34 +2362,40 @@ fn refresh_merge_diffs(
     let rb = right_buf.clone();
     let lch = left_chunks.clone();
     let rch = right_chunks.clone();
-    let lg = left_gutter.clone();
-    let rg = right_gutter.clone();
 
     gtk4::glib::spawn_future_local(async move {
-        let left_identical = lt == mt;
-        let right_identical = mt == rt;
+        let (lt_cmp, lt_map) = filter_for_diff(&lt, ignore_whitespace, ignore_blanks);
+        let (mt_cmp, mt_map) = filter_for_diff(&mt, ignore_whitespace, ignore_blanks);
+        let (rt_cmp, rt_map) = filter_for_diff(&rt, ignore_whitespace, ignore_blanks);
+        let lt_total = lt.lines().count();
+        let mt_total = mt.lines().count();
+        let rt_total = rt.lines().count();
+        let left_identical = lt_cmp == mt_cmp;
+        let right_identical = mt_cmp == rt_cmp;
         let (new_left, new_right) = gio::spawn_blocking(move || {
             let nl = if left_identical {
                 Vec::new()
             } else {
-                myers::diff_lines(&lt, &mt)
+                myers::diff_lines(&lt_cmp, &mt_cmp)
             };
             let nr = if right_identical {
                 Vec::new()
             } else {
-                myers::diff_lines(&mt, &rt)
+                myers::diff_lines(&mt_cmp, &rt_cmp)
             };
             (nl, nr)
         })
         .await
         .unwrap_or_default();
 
+        let new_left = remap_chunks(new_left, &lt_map, lt_total, &mt_map, mt_total);
+        let new_right = remap_chunks(new_right, &mt_map, mt_total, &rt_map, rt_total);
+
         apply_merge_tags(&lb, &mb, &rb, &new_left, &new_right);
 
         *lch.borrow_mut() = new_left;
         *rch.borrow_mut() = new_right;
-        lg.queue_draw();
-        rg.queue_draw();
+        on_complete();
     });
 }
 
@@ -2223,13 +2501,15 @@ fn build_merge_view(
     middle_path: &Path,
     right_path: &Path,
     output: Option<&Path>,
+    labels: &[String],
 ) -> MergeViewResult {
-    let left_content = fs::read_to_string(left_path).unwrap_or_default();
+    let (left_content, left_binary) = read_file_content(left_path);
     // When --output is set, the middle pane shows the merged file (with conflict markers),
     // not the base. This matches git mergetool semantics: you edit $MERGED, not $BASE.
     let middle_display_path = output.unwrap_or(middle_path);
-    let middle_content = fs::read_to_string(middle_display_path).unwrap_or_default();
-    let right_content = fs::read_to_string(right_path).unwrap_or_default();
+    let (middle_content, middle_binary) = read_file_content(middle_display_path);
+    let (right_content, right_binary) = read_file_content(right_path);
+    let any_binary = left_binary || middle_binary || right_binary;
 
     let left_buf = create_source_buffer(left_path);
     let middle_buf = create_source_buffer(middle_display_path);
@@ -2238,15 +2518,30 @@ fn build_merge_view(
     middle_buf.set_text(&middle_content);
     right_buf.set_text(&right_content);
 
-    let left_identical = left_content == middle_content;
-    let right_identical = middle_content == right_content;
+    let left_identical = !any_binary && left_content == middle_content;
+    let right_identical = !any_binary && middle_content == right_content;
 
     let left_chunks = Rc::new(RefCell::new(Vec::new()));
     let right_chunks = Rc::new(RefCell::new(Vec::new()));
 
-    let left_pane = make_diff_pane(&left_buf, left_path, None);
-    let middle_pane = make_diff_pane(&middle_buf, middle_display_path, None);
-    let right_pane = make_diff_pane(&right_buf, right_path, None);
+    let left_pane = make_diff_pane(
+        &left_buf,
+        left_path,
+        None,
+        labels.first().map(String::as_str),
+    );
+    let middle_pane = make_diff_pane(
+        &middle_buf,
+        middle_display_path,
+        None,
+        labels.get(1).map(String::as_str),
+    );
+    let right_pane = make_diff_pane(
+        &right_buf,
+        right_path,
+        None,
+        labels.get(2).map(String::as_str),
+    );
 
     // Track which text view was last focused
     let active_view: Rc<RefCell<TextView>> = Rc::new(RefCell::new(middle_pane.text_view.clone()));
@@ -2381,7 +2676,7 @@ fn build_merge_view(
     }
 
     // Initial async diff
-    if !left_identical || !right_identical {
+    if !any_binary && (!left_identical || !right_identical) {
         let lb = left_buf.clone();
         let mb = middle_buf.clone();
         let rb = right_buf.clone();
@@ -2414,40 +2709,9 @@ fn build_merge_view(
         });
     }
 
-    // Re-diff on any buffer change (debounced)
-    {
-        let pending = Rc::new(Cell::new(false));
-        let connect_refresh = |buf: &TextBuffer| {
-            let lb = left_buf.clone();
-            let mb = middle_buf.clone();
-            let rb = right_buf.clone();
-            let lch = left_chunks.clone();
-            let rch = right_chunks.clone();
-            let lg = left_gutter.clone();
-            let rg = right_gutter.clone();
-            let p = pending.clone();
-            buf.connect_changed(move |_| {
-                if !p.get() {
-                    p.set(true);
-                    let lb = lb.clone();
-                    let mb = mb.clone();
-                    let rb = rb.clone();
-                    let lch = lch.clone();
-                    let rch = rch.clone();
-                    let lg = lg.clone();
-                    let rg = rg.clone();
-                    let p = p.clone();
-                    gtk4::glib::idle_add_local_once(move || {
-                        refresh_merge_diffs(&lb, &mb, &rb, &lch, &rch, &lg, &rg);
-                        p.set(false);
-                    });
-                }
-            });
-        };
-        connect_refresh(&left_buf);
-        connect_refresh(&middle_buf);
-        connect_refresh(&right_buf);
-    }
+    // Text filter state
+    let ignore_blanks: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+    let ignore_whitespace: Rc<Cell<bool>> = Rc::new(Cell::new(false));
 
     // Scroll sync
     setup_scroll_sync_3way(
@@ -2553,10 +2817,21 @@ fn build_merge_view(
     toolbar.set_margin_end(6);
     toolbar.set_margin_top(4);
     toolbar.set_margin_bottom(4);
+    // Text filter toggles
+    let blank_toggle = ToggleButton::with_label("Blanks");
+    blank_toggle.set_tooltip_text(Some("Ignore blank lines"));
+    let ws_toggle = ToggleButton::with_label("Spaces");
+    ws_toggle.set_tooltip_text(Some("Ignore whitespace differences"));
+    let filter_box = GtkBox::new(Orientation::Horizontal, 0);
+    filter_box.add_css_class("linked");
+    filter_box.append(&blank_toggle);
+    filter_box.append(&ws_toggle);
+
     toolbar.append(&undo_redo_box);
     toolbar.append(&nav_box);
     toolbar.append(&chunk_label);
     toolbar.append(&goto_entry);
+    toolbar.append(&filter_box);
 
     // Navigate helper for merge view
     let navigate_merge_chunk = |lch: &[DiffChunk],
@@ -2666,38 +2941,6 @@ fn build_merge_view(
         });
     }
 
-    // Update chunk label when diff changes
-    {
-        let lch = left_chunks.clone();
-        let rch = right_chunks.clone();
-        let cur = current_chunk.clone();
-        let lbl = chunk_label.clone();
-        let upd = update_merge_label;
-        let refresh_label = move || {
-            cur.set(None);
-            upd(&lbl, &lch.borrow(), &rch.borrow(), None);
-        };
-        let pending = Rc::new(Cell::new(false));
-        let connect_label_refresh = |buf: &TextBuffer| {
-            let r = Rc::new(refresh_label.clone());
-            let p = pending.clone();
-            buf.connect_changed(move |_| {
-                if !p.get() {
-                    p.set(true);
-                    let r = r.clone();
-                    let p = p.clone();
-                    gtk4::glib::idle_add_local_once(move || {
-                        r();
-                        p.set(false);
-                    });
-                }
-            });
-        };
-        connect_label_refresh(&left_buf);
-        connect_label_refresh(&middle_buf);
-        connect_label_refresh(&right_buf);
-    }
-
     // ── Chunk maps for merge view ────────────────────────────────
     let left_chunk_map = DrawingArea::new();
     left_chunk_map.set_content_width(12);
@@ -2770,6 +3013,110 @@ fn build_merge_view(
                 lcm.queue_draw();
                 rcm.queue_draw();
             });
+    }
+
+    // Re-diff on any buffer change, and update all visuals when diff completes
+    {
+        let make_on_complete = {
+            let lg = left_gutter.clone();
+            let rg = right_gutter.clone();
+            let lcm = left_chunk_map.clone();
+            let rcm = right_chunk_map.clone();
+            let lbl = chunk_label.clone();
+            let lch = left_chunks.clone();
+            let rch = right_chunks.clone();
+            let cur = current_chunk.clone();
+            move || {
+                let lg = lg.clone();
+                let rg = rg.clone();
+                let lcm = lcm.clone();
+                let rcm = rcm.clone();
+                let lbl = lbl.clone();
+                let lch = lch.clone();
+                let rch = rch.clone();
+                let cur = cur.clone();
+                move || {
+                    lg.queue_draw();
+                    rg.queue_draw();
+                    lcm.queue_draw();
+                    rcm.queue_draw();
+                    cur.set(None);
+                    update_merge_label(&lbl, &lch.borrow(), &rch.borrow(), None);
+                }
+            }
+        };
+
+        let pending = Rc::new(Cell::new(false));
+        let connect_refresh = |buf: &TextBuffer| {
+            let lb = left_buf.clone();
+            let mb = middle_buf.clone();
+            let rb = right_buf.clone();
+            let lch = left_chunks.clone();
+            let rch = right_chunks.clone();
+            let p = pending.clone();
+            let ib = ignore_blanks.clone();
+            let iw = ignore_whitespace.clone();
+            let make_cb = make_on_complete.clone();
+            buf.connect_changed(move |_| {
+                if !p.get() {
+                    p.set(true);
+                    let lb = lb.clone();
+                    let mb = mb.clone();
+                    let rb = rb.clone();
+                    let lch = lch.clone();
+                    let rch = rch.clone();
+                    let p = p.clone();
+                    let ib = ib.clone();
+                    let iw = iw.clone();
+                    let cb = make_cb();
+                    gtk4::glib::idle_add_local_once(move || {
+                        refresh_merge_diffs(&lb, &mb, &rb, &lch, &rch, cb, ib.get(), iw.get());
+                        p.set(false);
+                    });
+                }
+            });
+        };
+        connect_refresh(&left_buf);
+        connect_refresh(&middle_buf);
+        connect_refresh(&right_buf);
+
+        // Toggle handlers for filter buttons
+        {
+            let ib = ignore_blanks.clone();
+            let iw = ignore_whitespace.clone();
+            let lb = left_buf.clone();
+            let mb = middle_buf.clone();
+            let rb = right_buf.clone();
+            let lch = left_chunks.clone();
+            let rch = right_chunks.clone();
+            let make_cb = make_on_complete.clone();
+            blank_toggle.connect_toggled(move |btn| {
+                ib.set(btn.is_active());
+                refresh_merge_diffs(&lb, &mb, &rb, &lch, &rch, make_cb(), ib.get(), iw.get());
+            });
+        }
+        {
+            let ib = ignore_blanks.clone();
+            let iw = ignore_whitespace.clone();
+            let lb = left_buf.clone();
+            let mb = middle_buf.clone();
+            let rb = right_buf.clone();
+            let lch = left_chunks.clone();
+            let rch = right_chunks.clone();
+            ws_toggle.connect_toggled(move |btn| {
+                iw.set(btn.is_active());
+                refresh_merge_diffs(
+                    &lb,
+                    &mb,
+                    &rb,
+                    &lch,
+                    &rch,
+                    make_on_complete(),
+                    ib.get(),
+                    iw.get(),
+                );
+            });
+        }
     }
 
     // ── Find bar for merge view ───────────────────────────────────
@@ -3106,10 +3453,6 @@ fn build_merge_view(
         middle_buf,
         right_buf,
         middle_save: middle_pane.save_btn,
-        left_chunks,
-        right_chunks,
-        left_gutter,
-        right_gutter,
         action_group,
     }
 }
@@ -3120,8 +3463,15 @@ fn build_merge_window(
     middle_path: std::path::PathBuf,
     right_path: std::path::PathBuf,
     output: Option<std::path::PathBuf>,
+    labels: &[String],
 ) {
-    let mv = build_merge_view(&left_path, &middle_path, &right_path, output.as_deref());
+    let mv = build_merge_view(
+        &left_path,
+        &middle_path,
+        &right_path,
+        output.as_deref(),
+        labels,
+    );
 
     // "Save Merged" button when --output is set
     if let Some(ref out_path) = output {
@@ -3189,10 +3539,6 @@ fn build_merge_window(
         let lb = mv.left_buf.clone();
         let mb = mv.middle_buf.clone();
         let rb = mv.right_buf.clone();
-        let lch = mv.left_chunks.clone();
-        let rch = mv.right_chunks.clone();
-        let lg = mv.left_gutter.clone();
-        let rg = mv.right_gutter.clone();
         let lp = left_path.clone();
         let mp = output.clone().unwrap_or_else(|| middle_path.clone());
         let rp = right_path.clone();
@@ -3202,7 +3548,10 @@ fn build_merge_window(
             while fs_rx.try_recv().is_ok() {
                 changed = true;
             }
-            if changed && !SAVING.load(std::sync::atomic::Ordering::Relaxed) {
+            if changed
+                && !SAVING.load(std::sync::atomic::Ordering::Relaxed)
+                && !m_save.is_sensitive()
+            {
                 let left_content = fs::read_to_string(&lp).unwrap_or_default();
                 let middle_content = fs::read_to_string(&mp).unwrap_or_default();
                 let right_content = fs::read_to_string(&rp).unwrap_or_default();
@@ -3215,10 +3564,11 @@ fn build_merge_window(
                     || cur_m.as_str() != middle_content
                     || cur_r.as_str() != right_content
                 {
+                    // set_text triggers connect_changed which schedules
+                    // refresh_merge_diffs with the current filter state.
                     lb.set_text(&left_content);
                     mb.set_text(&middle_content);
                     rb.set_text(&right_content);
-                    refresh_merge_diffs(&lb, &mb, &rb, &lch, &rch, &lg, &rg);
                     m_save.set_sensitive(false);
                 }
             }
@@ -3258,6 +3608,7 @@ fn build_merge_window(
         gtk_app.set_accels_for_action("diff.find-next", &["F3"]);
         gtk_app.set_accels_for_action("diff.find-prev", &["<Shift>F3"]);
         gtk_app.set_accels_for_action("diff.go-to-line", &["<Ctrl>l"]);
+        gtk_app.set_accels_for_action("diff.export-patch", &["<Ctrl><Shift>p"]);
     }
 
     window.present();
@@ -3279,14 +3630,23 @@ pub(crate) fn build_ui(application: &Application, mode: CompareMode) {
         );
 
         match mode {
-            CompareMode::Dirs { left, right } => build_dir_window(app, left, right),
-            CompareMode::Files { left, right } => build_file_window(app, left, right),
+            CompareMode::Dirs {
+                left,
+                right,
+                labels,
+            } => build_dir_window(app, left, right, &labels),
+            CompareMode::Files {
+                left,
+                right,
+                labels,
+            } => build_file_window(app, left, right, &labels),
             CompareMode::Merge {
                 left,
                 middle,
                 right,
                 output,
-            } => build_merge_window(app, left, middle, right, output),
+                labels,
+            } => build_merge_window(app, left, middle, right, output, &labels),
         }
     });
 }
@@ -3447,8 +3807,9 @@ fn build_file_window(
     app: &Application,
     left_path: std::path::PathBuf,
     right_path: std::path::PathBuf,
+    labels: &[String],
 ) {
-    let dv = build_diff_view(&left_path, &right_path);
+    let dv = build_diff_view(&left_path, &right_path, labels);
 
     // File watcher for both files
     let (fs_tx, fs_rx) = mpsc::channel::<()>();
@@ -3484,8 +3845,6 @@ fn build_file_window(
     {
         let lb = dv.left_buf.clone();
         let rb = dv.right_buf.clone();
-        let ch = dv.chunks.clone();
-        let g = dv.gutter.clone();
         let lp = left_path.clone();
         let rp = right_path.clone();
         let l_save = dv.left_save.clone();
@@ -3495,7 +3854,11 @@ fn build_file_window(
             while fs_rx.try_recv().is_ok() {
                 changed = true;
             }
-            if changed && !SAVING.load(std::sync::atomic::Ordering::Relaxed) {
+            if changed
+                && !SAVING.load(std::sync::atomic::Ordering::Relaxed)
+                && !l_save.is_sensitive()
+                && !r_save.is_sensitive()
+            {
                 let left_content = fs::read_to_string(&lp).unwrap_or_default();
                 let right_content = fs::read_to_string(&rp).unwrap_or_default();
 
@@ -3503,30 +3866,12 @@ fn build_file_window(
                 let cur_right = rb.text(&rb.start_iter(), &rb.end_iter(), false);
 
                 if cur_left.as_str() != left_content || cur_right.as_str() != right_content {
+                    // set_text triggers connect_changed which schedules
+                    // refresh_diff with the current filter state.
                     lb.set_text(&left_content);
                     rb.set_text(&right_content);
-                    let lb = lb.clone();
-                    let rb = rb.clone();
-                    let ch = ch.clone();
-                    let g = g.clone();
-                    let l_save = l_save.clone();
-                    let r_save = r_save.clone();
-                    gtk4::glib::spawn_future_local(async move {
-                        let new_chunks = if left_content == right_content {
-                            Vec::new()
-                        } else {
-                            gio::spawn_blocking(move || {
-                                myers::diff_lines(&left_content, &right_content)
-                            })
-                            .await
-                            .unwrap_or_default()
-                        };
-                        apply_diff_tags(&lb, &rb, &new_chunks);
-                        *ch.borrow_mut() = new_chunks;
-                        g.queue_draw();
-                        l_save.set_sensitive(false);
-                        r_save.set_sensitive(false);
-                    });
+                    l_save.set_sensitive(false);
+                    r_save.set_sensitive(false);
                 }
             }
             gtk4::glib::ControlFlow::Continue
@@ -3562,6 +3907,7 @@ fn build_file_window(
         gtk_app.set_accels_for_action("diff.find-next", &["F3"]);
         gtk_app.set_accels_for_action("diff.find-prev", &["<Shift>F3"]);
         gtk_app.set_accels_for_action("diff.go-to-line", &["<Ctrl>l"]);
+        gtk_app.set_accels_for_action("diff.export-patch", &["<Ctrl><Shift>p"]);
     }
 
     window.present();
@@ -3573,17 +3919,18 @@ fn build_dir_window(
     app: &Application,
     left_dir: std::path::PathBuf,
     right_dir: std::path::PathBuf,
+    _labels: &[String],
 ) {
-    let left_dir = Rc::new(left_dir.to_string_lossy().into_owned());
-    let right_dir = Rc::new(right_dir.to_string_lossy().into_owned());
+    let left_dir = Rc::new(RefCell::new(left_dir.to_string_lossy().into_owned()));
+    let right_dir = Rc::new(RefCell::new(right_dir.to_string_lossy().into_owned()));
 
     // Build tree data (Rc<RefCell<…>> so the watcher callback can rebuild)
     let children_map = Rc::new(RefCell::new(HashMap::new()));
     let root_store = ListStore::new::<StringObject>();
     {
         let (store, _) = scan_level(
-            Path::new(left_dir.as_str()),
-            Path::new(right_dir.as_str()),
+            Path::new(left_dir.borrow().as_str()),
+            Path::new(right_dir.borrow().as_str()),
             "",
             &mut children_map.borrow_mut(),
         );
@@ -3718,8 +4065,11 @@ fn build_dir_window(
     dir_toolbar.set_margin_end(6);
     dir_toolbar.set_margin_top(4);
     dir_toolbar.set_margin_bottom(4);
+    let dir_swap_btn = Button::from_icon_name("object-flip-horizontal-symbolic");
+    dir_swap_btn.set_tooltip_text(Some("Swap panes"));
     dir_toolbar.append(&dir_copy_box);
     dir_toolbar.append(&delete_btn);
+    dir_toolbar.append(&dir_swap_btn);
 
     // Helper: rescan directories and refresh the tree model
     let reload_dir = {
@@ -3730,8 +4080,8 @@ fn build_dir_window(
         move || {
             let mut new_map = HashMap::new();
             let (new_store, _) = scan_level(
-                Path::new(ld.as_str()),
-                Path::new(rd.as_str()),
+                Path::new(ld.borrow().as_str()),
+                Path::new(rd.borrow().as_str()),
                 "",
                 &mut new_map,
             );
@@ -3744,6 +4094,19 @@ fn build_dir_window(
             }
         }
     };
+
+    // Swap panes: swap left/right directories and rescan
+    {
+        let ld = left_dir.clone();
+        let rd = right_dir.clone();
+        let reload = reload_dir.clone();
+        dir_swap_btn.connect_clicked(move |_| {
+            let tmp = ld.borrow().clone();
+            (*ld.borrow_mut()).clone_from(&rd.borrow());
+            *rd.borrow_mut() = tmp;
+            reload();
+        });
+    }
 
     // Helper: get selected row's encoded data from the focused pane
     let get_selected_row = {
@@ -3772,8 +4135,8 @@ fn build_dir_window(
                 let rel = decode_rel_path(&raw);
                 let status = decode_status(&raw);
                 if status == "R" || status == "D" {
-                    let src = Path::new(rd.as_str()).join(rel);
-                    let dst = Path::new(ld.as_str()).join(rel);
+                    let src = Path::new(rd.borrow().as_str()).join(rel);
+                    let dst = Path::new(ld.borrow().as_str()).join(rel);
                     let _ = copy_path_recursive(&src, &dst);
                     reload();
                 }
@@ -3792,8 +4155,8 @@ fn build_dir_window(
                 let rel = decode_rel_path(&raw);
                 let status = decode_status(&raw);
                 if status == "L" || status == "D" {
-                    let src = Path::new(ld.as_str()).join(rel);
-                    let dst = Path::new(rd.as_str()).join(rel);
+                    let src = Path::new(ld.borrow().as_str()).join(rel);
+                    let dst = Path::new(rd.borrow().as_str()).join(rel);
                     let _ = copy_path_recursive(&src, &dst);
                     reload();
                 }
@@ -3812,8 +4175,8 @@ fn build_dir_window(
             if let Some(raw) = get_row() {
                 let rel = decode_rel_path(&raw);
                 let status = decode_status(&raw);
-                let lp = Path::new(ld.as_str()).join(rel);
-                let rp = Path::new(rd.as_str()).join(rel);
+                let lp = Path::new(ld.borrow().as_str()).join(rel);
+                let rp = Path::new(rd.borrow().as_str()).join(rel);
                 let path = match status {
                     "L" => Some(lp),
                     "R" => Some(rp),
@@ -3843,8 +4206,8 @@ fn build_dir_window(
                 let rel = decode_rel_path(&raw);
                 let status = decode_status(&raw);
                 if status == "R" || status == "D" {
-                    let src = Path::new(rd.as_str()).join(rel);
-                    let dst = Path::new(ld.as_str()).join(rel);
+                    let src = Path::new(rd.borrow().as_str()).join(rel);
+                    let dst = Path::new(ld.borrow().as_str()).join(rel);
                     let _ = copy_path_recursive(&src, &dst);
                     reload();
                 }
@@ -3863,8 +4226,8 @@ fn build_dir_window(
                 let rel = decode_rel_path(&raw);
                 let status = decode_status(&raw);
                 if status == "L" || status == "D" {
-                    let src = Path::new(ld.as_str()).join(rel);
-                    let dst = Path::new(rd.as_str()).join(rel);
+                    let src = Path::new(ld.borrow().as_str()).join(rel);
+                    let dst = Path::new(rd.borrow().as_str()).join(rel);
                     let _ = copy_path_recursive(&src, &dst);
                     reload();
                 }
@@ -3883,8 +4246,8 @@ fn build_dir_window(
             if let Some(raw) = get_row() {
                 let rel = decode_rel_path(&raw);
                 let status = decode_status(&raw);
-                let lp = Path::new(ld.as_str()).join(rel);
-                let rp = Path::new(rd.as_str()).join(rel);
+                let lp = Path::new(ld.borrow().as_str()).join(rel);
+                let rp = Path::new(rd.borrow().as_str()).join(rel);
                 let path = match status {
                     "L" => Some(lp),
                     "R" => Some(rp),
@@ -3937,8 +4300,8 @@ fn build_dir_window(
                         decode_rel_path(&raw),
                         decode_status(&raw),
                         &tabs,
-                        &ld,
-                        &rd,
+                        &ld.borrow(),
+                        &rd.borrow(),
                     );
                 }
             }
@@ -3961,8 +4324,8 @@ fn build_dir_window(
                         decode_rel_path(&raw),
                         decode_status(&raw),
                         &tabs,
-                        &ld,
-                        &rd,
+                        &ld.borrow(),
+                        &rd.borrow(),
                     );
                 }
             }
@@ -3972,8 +4335,8 @@ fn build_dir_window(
     // ── File watcher ───────────────────────────────────────────────
     let (fs_tx, fs_rx) = mpsc::channel::<()>();
     {
-        let ld = left_dir.to_string();
-        let rd = right_dir.to_string();
+        let ld = left_dir.borrow().clone();
+        let rd = right_dir.borrow().clone();
         std::thread::spawn(move || {
             use notify::{RecursiveMode, Watcher};
             let _watcher = {
@@ -4010,38 +4373,59 @@ fn build_dir_window(
             // Build new tree into a temporary map (not inside borrow_mut)
             let mut new_map = HashMap::new();
             let (new_store, _) = scan_level(
-                Path::new(ld_reload.as_str()),
-                Path::new(rd_reload.as_str()),
+                Path::new(ld_reload.borrow().as_str()),
+                Path::new(rd_reload.borrow().as_str()),
                 "",
                 &mut new_map,
             );
-            // Replace children_map, then drop the borrow before touching the store.
-            // Appending to root_store triggers TreeListModel's create_func which
-            // borrows children_map immutably — so we must not hold a mutable borrow.
+            // Only rebuild the tree if root-level data actually changed.
+            // remove_all()+re-append destroys expansion and selection state,
+            // so we skip it when the scan results are identical.
+            let root_changed = new_store.n_items() != rs_reload.n_items()
+                || (0..new_store.n_items()).any(|i| {
+                    new_store
+                        .item(i)
+                        .and_downcast::<StringObject>()
+                        .map(|o| o.string())
+                        != rs_reload
+                            .item(i)
+                            .and_downcast::<StringObject>()
+                            .map(|o| o.string())
+                });
+            // Always update children_map so re-expanded dirs show fresh data.
             *cm_reload.borrow_mut() = new_map;
-            rs_reload.remove_all();
-            for i in 0..new_store.n_items() {
-                if let Some(obj) = new_store.item(i) {
-                    rs_reload.append(&obj.downcast::<StringObject>().unwrap());
+            if root_changed {
+                // Drop children_map borrow before touching the store.
+                // Appending to root_store triggers TreeListModel's create_func which
+                // borrows children_map immutably — so we must not hold a mutable borrow.
+                rs_reload.remove_all();
+                for i in 0..new_store.n_items() {
+                    if let Some(obj) = new_store.item(i) {
+                        rs_reload.append(&obj.downcast::<StringObject>().unwrap());
+                    }
                 }
             }
             // Reload open file tabs
             for tab in tabs_reload.borrow().iter() {
-                reload_file_tab(tab, &ld_reload, &rd_reload);
+                reload_file_tab(tab, &ld_reload.borrow(), &rd_reload.borrow());
             }
         }
         gtk4::glib::ControlFlow::Continue
     });
 
     // Window title
-    let left_name = Path::new(left_dir.as_str()).file_name().map_or_else(
-        || left_dir.to_string(),
-        |n| n.to_string_lossy().into_owned(),
-    );
-    let right_name = Path::new(right_dir.as_str()).file_name().map_or_else(
-        || right_dir.to_string(),
-        |n| n.to_string_lossy().into_owned(),
-    );
+    let left_name = Path::new(left_dir.borrow().as_str())
+        .file_name()
+        .map_or_else(
+            || left_dir.borrow().clone(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+    let right_name = Path::new(right_dir.borrow().as_str())
+        .file_name()
+        .map_or_else(
+            || right_dir.borrow().clone(),
+            |n| n.to_string_lossy().into_owned(),
+        );
     let title = format!("{left_name} — {right_name}");
 
     let window = ApplicationWindow::builder()
@@ -4062,6 +4446,7 @@ fn build_dir_window(
         gtk_app.set_accels_for_action("diff.find-next", &["F3"]);
         gtk_app.set_accels_for_action("diff.find-prev", &["<Shift>F3"]);
         gtk_app.set_accels_for_action("diff.go-to-line", &["<Ctrl>l"]);
+        gtk_app.set_accels_for_action("diff.export-patch", &["<Ctrl><Shift>p"]);
         // Directory copy actions
         gtk_app.set_accels_for_action("dir.folder-copy-left", &["<Alt>Left"]);
         gtk_app.set_accels_for_action("dir.folder-copy-right", &["<Alt>Right"]);

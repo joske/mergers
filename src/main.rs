@@ -16,6 +16,10 @@ struct Cli {
     /// Output file for 3-way merge result
     #[arg(short, long)]
     output: Option<PathBuf>,
+
+    /// Custom labels for panes (one per pane)
+    #[arg(short = 'L', long = "label")]
+    labels: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -23,16 +27,19 @@ pub enum CompareMode {
     Files {
         left: PathBuf,
         right: PathBuf,
+        labels: Vec<String>,
     },
     Dirs {
         left: PathBuf,
         right: PathBuf,
+        labels: Vec<String>,
     },
     Merge {
         left: PathBuf,
         middle: PathBuf,
         right: PathBuf,
         output: Option<PathBuf>,
+        labels: Vec<String>,
     },
 }
 
@@ -56,6 +63,7 @@ fn main() -> glib::ExitCode {
             middle: middle.clone(),
             right: right.clone(),
             output: cli.output,
+            labels: cli.labels.clone(),
         }
     } else if cli.paths.len() == 2 {
         let left = &cli.paths[0];
@@ -65,11 +73,13 @@ fn main() -> glib::ExitCode {
             CompareMode::Files {
                 left: left.clone(),
                 right: right.clone(),
+                labels: cli.labels.clone(),
             }
         } else if left.is_dir() && right.is_dir() {
             CompareMode::Dirs {
                 left: left.clone(),
                 right: right.clone(),
+                labels: cli.labels.clone(),
             }
         } else if !left.exists() {
             eprintln!("Error: '{}' does not exist", left.display());
