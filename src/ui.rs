@@ -804,6 +804,237 @@ fn remove_diff_tags(buf: &TextBuffer) {
             buf.remove_tag(&tag, &start, &end);
         }
     }
+    remove_filler_tags(buf);
+}
+
+// ─── Filler (placeholder) lines ────────────────────────────────────────────
+
+// Colors matching the diff tag backgrounds
+const FILLER_DELETE: (f64, f64, f64) = (0.973, 0.843, 0.855); // #f8d7da
+const FILLER_INSERT: (f64, f64, f64) = (0.831, 0.929, 0.855); // #d4edda
+const FILLER_REPLACE: (f64, f64, f64) = (1.0, 0.953, 0.804); // #fff3cd
+
+/// Draw thin colored lines at filler (pixel-padding) gaps to indicate missing content.
+/// The line is drawn at the boundary between the filler gap and the anchor line,
+/// which aligns with where the gutter arrow points.
+#[allow(clippy::too_many_arguments)]
+fn draw_fillers(
+    cr: &gtk4::cairo::Context,
+    width: f64,
+    tv: &TextView,
+    scroll: &ScrolledWindow,
+    chunks: &[DiffChunk],
+    side_is_left: bool,
+    _line_height: i32,
+) {
+    let scroll_y = scroll.vadjustment().value();
+    let view_h = scroll.vadjustment().page_size();
+    let line_thickness = 2.0_f64;
+
+    for chunk in chunks {
+        if chunk.tag == DiffTag::Equal {
+            continue;
+        }
+        let left_lines = chunk.end_a - chunk.start_a;
+        let right_lines = chunk.end_b - chunk.start_b;
+        if left_lines == right_lines {
+            continue;
+        }
+
+        // Determine if this pane needs a filler for this chunk
+        let (need_filler, anchor) = if side_is_left && right_lines > left_lines {
+            (true, chunk.end_a)
+        } else if !side_is_left && left_lines > right_lines {
+            (true, chunk.end_b)
+        } else {
+            (false, 0)
+        };
+        if !need_filler {
+            continue;
+        }
+
+        let color = match chunk.tag {
+            DiffTag::Delete => FILLER_DELETE,
+            DiffTag::Insert => FILLER_INSERT,
+            DiffTag::Replace => FILLER_REPLACE,
+            DiffTag::Equal => unreachable!(),
+        };
+
+        // The anchor line is right after the filler gap. Draw the thin line
+        // at the top of the anchor line (= bottom of the filler gap), which
+        // matches where the gutter arrow/band points.
+        let buf = tv.buffer();
+        let anchor_y_buf = {
+            let anchor_i32 = anchor.min(buf.line_count().max(0) as usize) as i32;
+            if let Some(iter) = buf.iter_at_line(anchor_i32) {
+                tv.line_yrange(&iter).0 as f64
+            } else {
+                let iter = buf.end_iter();
+                let (y, h) = tv.line_yrange(&iter);
+                (y + h) as f64
+            }
+        };
+
+        let line_y = anchor_y_buf - scroll_y;
+
+        // Skip if not visible
+        if line_y + line_thickness < 0.0 || line_y - line_thickness > view_h {
+            continue;
+        }
+
+        cr.set_source_rgb(color.0, color.1, color.2);
+        cr.rectangle(0.0, line_y - line_thickness / 2.0, width, line_thickness);
+        let _ = cr.fill();
+    }
+}
+
+fn get_line_height(tv: &TextView) -> i32 {
+    let buf = tv.buffer();
+    if buf.line_count() > 0
+        && let Some(iter) = buf.iter_at_line(0)
+    {
+        let (_y, h) = tv.line_yrange(&iter);
+        if h > 0 {
+            return h;
+        }
+    }
+    16 // fallback
+}
+
+fn remove_filler_tags(buf: &TextBuffer) {
+    let table = buf.tag_table();
+    let to_remove: Rc<RefCell<Vec<TextTag>>> = Rc::new(RefCell::new(Vec::new()));
+    let tr = to_remove.clone();
+    table.foreach(move |tag| {
+        if tag.name().is_some_and(|n| n.starts_with("filler-")) {
+            tr.borrow_mut().push(tag.clone());
+        }
+    });
+    let (start, end) = (buf.start_iter(), buf.end_iter());
+    for tag in to_remove.borrow().iter() {
+        buf.remove_tag(tag, &start, &end);
+        table.remove(tag);
+    }
+}
+
+fn apply_single_filler(buf: &TextBuffer, anchor_line: usize, pixels: i32) {
+    if pixels <= 0 {
+        return;
+    }
+    let name = format!("filler-{anchor_line}");
+    let tag = if anchor_line == 0 {
+        TextTag::builder()
+            .name(&name)
+            .pixels_above_lines(pixels)
+            .build()
+    } else {
+        TextTag::builder()
+            .name(&name)
+            .pixels_below_lines(pixels)
+            .build()
+    };
+    buf.tag_table().add(&tag);
+
+    let target_line = if anchor_line == 0 {
+        0
+    } else {
+        anchor_line as i32 - 1
+    };
+    if let Some(start) = buf.iter_at_line(target_line) {
+        let end = buf.iter_at_line(target_line + 1).unwrap_or(buf.end_iter());
+        buf.apply_tag(&tag, &start, &end);
+    }
+}
+
+fn apply_filler_tags(
+    left_buf: &TextBuffer,
+    right_buf: &TextBuffer,
+    chunks: &[DiffChunk],
+    line_height: i32,
+) {
+    remove_filler_tags(left_buf);
+    remove_filler_tags(right_buf);
+
+    for chunk in chunks {
+        if chunk.tag == DiffTag::Equal {
+            continue;
+        }
+        let left_lines = chunk.end_a - chunk.start_a;
+        let right_lines = chunk.end_b - chunk.start_b;
+        if left_lines == right_lines {
+            continue;
+        }
+        if left_lines > right_lines {
+            let pixels = (left_lines - right_lines) as i32 * line_height;
+            apply_single_filler(right_buf, chunk.end_b, pixels);
+        } else {
+            let pixels = (right_lines - left_lines) as i32 * line_height;
+            apply_single_filler(left_buf, chunk.end_a, pixels);
+        }
+    }
+}
+
+fn apply_merge_filler_tags(
+    left_buf: &TextBuffer,
+    middle_buf: &TextBuffer,
+    right_buf: &TextBuffer,
+    left_chunks: &[DiffChunk],
+    right_chunks: &[DiffChunk],
+    line_height: i32,
+) {
+    remove_filler_tags(left_buf);
+    remove_filler_tags(middle_buf);
+    remove_filler_tags(right_buf);
+
+    // Middle buffer may get fillers from both diff pairs — accumulate
+    let mut middle_fillers: HashMap<usize, i32> = HashMap::new();
+
+    // left_chunks = diff(left, middle): a-side = left, b-side = middle
+    for chunk in left_chunks {
+        if chunk.tag == DiffTag::Equal {
+            continue;
+        }
+        let left_lines = chunk.end_a - chunk.start_a;
+        let mid_lines = chunk.end_b - chunk.start_b;
+        if left_lines == mid_lines {
+            continue;
+        }
+        if left_lines > mid_lines {
+            let pixels = (left_lines - mid_lines) as i32 * line_height;
+            *middle_fillers.entry(chunk.end_b).or_insert(0) += pixels;
+            // Right side also needs this filler to stay aligned
+            apply_single_filler(right_buf, chunk.end_b, pixels);
+        } else {
+            let pixels = (mid_lines - left_lines) as i32 * line_height;
+            apply_single_filler(left_buf, chunk.end_a, pixels);
+        }
+    }
+
+    // right_chunks = diff(middle, right): a-side = middle, b-side = right
+    for chunk in right_chunks {
+        if chunk.tag == DiffTag::Equal {
+            continue;
+        }
+        let mid_lines = chunk.end_a - chunk.start_a;
+        let right_lines = chunk.end_b - chunk.start_b;
+        if mid_lines == right_lines {
+            continue;
+        }
+        if mid_lines > right_lines {
+            let pixels = (mid_lines - right_lines) as i32 * line_height;
+            apply_single_filler(right_buf, chunk.end_b, pixels);
+        } else {
+            let pixels = (right_lines - mid_lines) as i32 * line_height;
+            *middle_fillers.entry(chunk.end_a).or_insert(0) += pixels;
+            // Left side also needs this filler to stay aligned
+            apply_single_filler(left_buf, chunk.end_a, pixels);
+        }
+    }
+
+    // Apply accumulated middle fillers
+    for (anchor, pixels) in &middle_fillers {
+        apply_single_filler(middle_buf, *anchor, *pixels);
+    }
 }
 
 /// Detect conflicts: overlapping non-Equal regions from two pairwise diffs on the middle file.
@@ -990,6 +1221,7 @@ struct DiffPane {
     container: GtkBox,
     text_view: TextView,
     scroll: ScrolledWindow,
+    filler_overlay: DrawingArea,
     save_btn: Button,
     path_label: Label,
 }
@@ -1060,17 +1292,25 @@ fn make_diff_pane(
         });
     });
 
+    let filler_overlay = DrawingArea::new();
+    filler_overlay.set_can_target(false);
+
+    let overlay = gtk4::Overlay::new();
+    overlay.set_child(Some(&scroll));
+    overlay.add_overlay(&filler_overlay);
+
     let vbox = GtkBox::new(Orientation::Vertical, 0);
     vbox.append(&header);
     if let Some(msg) = info {
         vbox.append(&make_info_bar(msg));
     }
-    vbox.append(&scroll);
+    vbox.append(&overlay);
 
     DiffPane {
         container: vbox,
         text_view: tv,
         scroll,
+        filler_overlay,
         save_btn,
         path_label,
     }
@@ -1207,10 +1447,13 @@ fn copy_chunk(
     dst_buf.insert(&mut ds, &src_text);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn refresh_diff(
     left_buf: &TextBuffer,
     right_buf: &TextBuffer,
+    left_tv: &TextView,
     chunks: &Rc<RefCell<Vec<DiffChunk>>>,
+    line_height_cell: &Rc<Cell<i32>>,
     on_complete: impl Fn() + 'static,
     ignore_blanks: bool,
     ignore_whitespace: bool,
@@ -1228,6 +1471,9 @@ fn refresh_diff(
     let lb = left_buf.clone();
     let rb = right_buf.clone();
     let ch = chunks.clone();
+    // Capture line height AFTER filler tags are removed but BEFORE new ones are applied
+    let lh = get_line_height(left_tv);
+    line_height_cell.set(lh);
 
     gtk4::glib::spawn_future_local(async move {
         let (lt_cmp, lt_map) = filter_for_diff(&lt, ignore_whitespace, ignore_blanks);
@@ -1243,6 +1489,7 @@ fn refresh_diff(
             remap_chunks(raw, &lt_map, lt_total, &rt_map, rt_total)
         };
         apply_diff_tags(&lb, &rb, &new_chunks);
+        apply_filler_tags(&lb, &rb, &new_chunks, lh);
         *ch.borrow_mut() = new_chunks;
         on_complete();
     });
@@ -1644,6 +1891,54 @@ fn build_diff_view(
     // Scroll synchronization
     setup_scroll_sync(&left_pane.scroll, &right_pane.scroll, &gutter);
 
+    // ── Filler overlay drawing ──────────────────────────────────
+    let filler_lh: Rc<Cell<i32>> = Rc::new(Cell::new(get_line_height(&left_pane.text_view)));
+    {
+        let ltv = left_pane.text_view.clone();
+        let ls = left_pane.scroll.clone();
+        let ch = chunks.clone();
+        let lh = filler_lh.clone();
+        left_pane
+            .filler_overlay
+            .set_draw_func(move |_area, cr, w, _h| {
+                draw_fillers(cr, w as f64, &ltv, &ls, &ch.borrow(), true, lh.get());
+            });
+    }
+    {
+        let rtv = right_pane.text_view.clone();
+        let rs = right_pane.scroll.clone();
+        let ch = chunks.clone();
+        let lh = filler_lh.clone();
+        right_pane
+            .filler_overlay
+            .set_draw_func(move |_area, cr, w, _h| {
+                draw_fillers(cr, w as f64, &rtv, &rs, &ch.borrow(), false, lh.get());
+            });
+    }
+    // Redraw filler overlays on scroll
+    {
+        let lf = left_pane.filler_overlay.clone();
+        let rf = right_pane.filler_overlay.clone();
+        left_pane
+            .scroll
+            .vadjustment()
+            .connect_value_changed(move |_| {
+                lf.queue_draw();
+                rf.queue_draw();
+            });
+    }
+    {
+        let lf = left_pane.filler_overlay.clone();
+        let rf = right_pane.filler_overlay.clone();
+        right_pane
+            .scroll
+            .vadjustment()
+            .connect_value_changed(move |_| {
+                lf.queue_draw();
+                rf.queue_draw();
+            });
+    }
+
     // ── Toolbar with chunk navigation ───────────────────────────
     let current_chunk: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
 
@@ -1903,6 +2198,8 @@ fn build_diff_view(
             let lbl = chunk_label.clone();
             let ch = chunks.clone();
             let cur = current_chunk.clone();
+            let lf = left_pane.filler_overlay.clone();
+            let rf = right_pane.filler_overlay.clone();
             move || {
                 let g = g.clone();
                 let lcm = lcm.clone();
@@ -1910,10 +2207,14 @@ fn build_diff_view(
                 let lbl = lbl.clone();
                 let ch = ch.clone();
                 let cur = cur.clone();
+                let lf = lf.clone();
+                let rf = rf.clone();
                 move || {
                     g.queue_draw();
                     lcm.queue_draw();
                     rcm.queue_draw();
+                    lf.queue_draw();
+                    rf.queue_draw();
                     cur.set(None);
                     update_chunk_label(&lbl, &ch.borrow(), None);
                 }
@@ -1924,7 +2225,9 @@ fn build_diff_view(
         let connect_refresh = |buf: &TextBuffer| {
             let lb = left_buf.clone();
             let rb = right_buf.clone();
+            let ltv = left_pane.text_view.clone();
             let ch = chunks.clone();
+            let flh = filler_lh.clone();
             let p = pending.clone();
             let ib = ignore_blanks.clone();
             let iw = ignore_whitespace.clone();
@@ -1934,13 +2237,15 @@ fn build_diff_view(
                     p.set(true);
                     let lb = lb.clone();
                     let rb = rb.clone();
+                    let ltv = ltv.clone();
                     let ch = ch.clone();
+                    let flh = flh.clone();
                     let p = p.clone();
                     let ib = ib.clone();
                     let iw = iw.clone();
                     let cb = make_cb();
                     gtk4::glib::idle_add_local_once(move || {
-                        refresh_diff(&lb, &rb, &ch, cb, ib.get(), iw.get());
+                        refresh_diff(&lb, &rb, &ltv, &ch, &flh, cb, ib.get(), iw.get());
                         p.set(false);
                     });
                 }
@@ -1953,14 +2258,19 @@ fn build_diff_view(
         if !identical && !any_binary {
             let lb = left_buf.clone();
             let rb = right_buf.clone();
+            let ltv = left_pane.text_view.clone();
             let ch = chunks.clone();
+            let flh = filler_lh.clone();
             let on_complete = make_on_complete();
             gtk4::glib::spawn_future_local(async move {
                 let new_chunks =
                     gio::spawn_blocking(move || myers::diff_lines(&left_content, &right_content))
                         .await
                         .unwrap_or_default();
+                let lh = get_line_height(&ltv);
+                flh.set(lh);
                 apply_diff_tags(&lb, &rb, &new_chunks);
+                apply_filler_tags(&lb, &rb, &new_chunks, lh);
                 *ch.borrow_mut() = new_chunks;
                 on_complete();
             });
@@ -1972,11 +2282,13 @@ fn build_diff_view(
             let iw = ignore_whitespace.clone();
             let lb = left_buf.clone();
             let rb = right_buf.clone();
+            let ltv = left_pane.text_view.clone();
             let ch = chunks.clone();
+            let flh = filler_lh.clone();
             let make_cb = make_on_complete.clone();
             blank_toggle.connect_toggled(move |btn| {
                 ib.set(btn.is_active());
-                refresh_diff(&lb, &rb, &ch, make_cb(), ib.get(), iw.get());
+                refresh_diff(&lb, &rb, &ltv, &ch, &flh, make_cb(), ib.get(), iw.get());
             });
         }
         {
@@ -1984,10 +2296,21 @@ fn build_diff_view(
             let iw = ignore_whitespace.clone();
             let lb = left_buf.clone();
             let rb = right_buf.clone();
+            let ltv = left_pane.text_view.clone();
             let ch = chunks.clone();
+            let flh = filler_lh.clone();
             ws_toggle.connect_toggled(move |btn| {
                 iw.set(btn.is_active());
-                refresh_diff(&lb, &rb, &ch, make_on_complete(), ib.get(), iw.get());
+                refresh_diff(
+                    &lb,
+                    &rb,
+                    &ltv,
+                    &ch,
+                    &flh,
+                    make_on_complete(),
+                    ib.get(),
+                    iw.get(),
+                );
             });
         }
     }
@@ -2453,8 +2776,10 @@ fn refresh_merge_diffs(
     left_buf: &TextBuffer,
     middle_buf: &TextBuffer,
     right_buf: &TextBuffer,
+    left_tv: &TextView,
     left_chunks: &Rc<RefCell<Vec<DiffChunk>>>,
     right_chunks: &Rc<RefCell<Vec<DiffChunk>>>,
+    line_height_cell: &Rc<Cell<i32>>,
     on_complete: impl Fn() + 'static,
     ignore_blanks: bool,
     ignore_whitespace: bool,
@@ -2478,6 +2803,8 @@ fn refresh_merge_diffs(
     let rb = right_buf.clone();
     let lch = left_chunks.clone();
     let rch = right_chunks.clone();
+    let lh = get_line_height(left_tv);
+    line_height_cell.set(lh);
 
     gtk4::glib::spawn_future_local(async move {
         let (lt_cmp, lt_map) = filter_for_diff(&lt, ignore_whitespace, ignore_blanks);
@@ -2508,6 +2835,7 @@ fn refresh_merge_diffs(
         let new_right = remap_chunks(new_right, &mt_map, mt_total, &rt_map, rt_total);
 
         apply_merge_tags(&lb, &mb, &rb, &new_left, &new_right);
+        apply_merge_filler_tags(&lb, &mb, &rb, &new_left, &new_right, lh);
 
         *lch.borrow_mut() = new_left;
         *rch.borrow_mut() = new_right;
@@ -2982,6 +3310,67 @@ fn build_merge_view(
         &right_gutter,
     );
 
+    // ── Filler overlay drawing (3-way) ──────────────────────────
+    let filler_lh: Rc<Cell<i32>> = Rc::new(Cell::new(get_line_height(&left_pane.text_view)));
+    {
+        let ltv = left_pane.text_view.clone();
+        let ls = left_pane.scroll.clone();
+        let lch = left_chunks.clone();
+        let rch = right_chunks.clone();
+        let flh = filler_lh.clone();
+        left_pane
+            .filler_overlay
+            .set_draw_func(move |_area, cr, w, _h| {
+                let lh = flh.get();
+                draw_fillers(cr, w as f64, &ltv, &ls, &lch.borrow(), true, lh);
+                draw_fillers(cr, w as f64, &ltv, &ls, &rch.borrow(), true, lh);
+            });
+    }
+    {
+        let rtv = right_pane.text_view.clone();
+        let rs = right_pane.scroll.clone();
+        let lch = left_chunks.clone();
+        let rch = right_chunks.clone();
+        let flh = filler_lh.clone();
+        right_pane
+            .filler_overlay
+            .set_draw_func(move |_area, cr, w, _h| {
+                let lh = flh.get();
+                draw_fillers(cr, w as f64, &rtv, &rs, &rch.borrow(), false, lh);
+                draw_fillers(cr, w as f64, &rtv, &rs, &lch.borrow(), false, lh);
+            });
+    }
+    {
+        let mtv = middle_pane.text_view.clone();
+        let ms = middle_pane.scroll.clone();
+        let lch = left_chunks.clone();
+        let rch = right_chunks.clone();
+        let flh = filler_lh.clone();
+        middle_pane
+            .filler_overlay
+            .set_draw_func(move |_area, cr, w, _h| {
+                let lh = flh.get();
+                draw_fillers(cr, w as f64, &mtv, &ms, &lch.borrow(), false, lh);
+                draw_fillers(cr, w as f64, &mtv, &ms, &rch.borrow(), true, lh);
+            });
+    }
+    // Redraw filler overlays on scroll
+    {
+        let lf = left_pane.filler_overlay.clone();
+        let mf = middle_pane.filler_overlay.clone();
+        let rf = right_pane.filler_overlay.clone();
+        for scroll in [&left_pane.scroll, &middle_pane.scroll, &right_pane.scroll] {
+            let lf = lf.clone();
+            let mf = mf.clone();
+            let rf = rf.clone();
+            scroll.vadjustment().connect_value_changed(move |_| {
+                lf.queue_draw();
+                mf.queue_draw();
+                rf.queue_draw();
+            });
+        }
+    }
+
     // ── Toolbar with chunk navigation ───────────────────────────
     let current_chunk: Rc<Cell<Option<(usize, bool)>>> = Rc::new(Cell::new(None));
 
@@ -3291,6 +3680,9 @@ fn build_merge_view(
             let lch = left_chunks.clone();
             let rch = right_chunks.clone();
             let cur = current_chunk.clone();
+            let lf = left_pane.filler_overlay.clone();
+            let mf = middle_pane.filler_overlay.clone();
+            let rf = right_pane.filler_overlay.clone();
             move || {
                 let lg = lg.clone();
                 let rg = rg.clone();
@@ -3300,11 +3692,17 @@ fn build_merge_view(
                 let lch = lch.clone();
                 let rch = rch.clone();
                 let cur = cur.clone();
+                let lf = lf.clone();
+                let mf = mf.clone();
+                let rf = rf.clone();
                 move || {
                     lg.queue_draw();
                     rg.queue_draw();
                     lcm.queue_draw();
                     rcm.queue_draw();
+                    lf.queue_draw();
+                    mf.queue_draw();
+                    rf.queue_draw();
                     cur.set(None);
                     update_merge_label(&lbl, &lch.borrow(), &rch.borrow(), None);
                 }
@@ -3316,8 +3714,10 @@ fn build_merge_view(
             let lb = left_buf.clone();
             let mb = middle_buf.clone();
             let rb = right_buf.clone();
+            let ltv = left_pane.text_view.clone();
             let lch = left_chunks.clone();
             let rch = right_chunks.clone();
+            let flh = filler_lh.clone();
             let p = pending.clone();
             let ib = ignore_blanks.clone();
             let iw = ignore_whitespace.clone();
@@ -3328,14 +3728,27 @@ fn build_merge_view(
                     let lb = lb.clone();
                     let mb = mb.clone();
                     let rb = rb.clone();
+                    let ltv = ltv.clone();
                     let lch = lch.clone();
                     let rch = rch.clone();
+                    let flh = flh.clone();
                     let p = p.clone();
                     let ib = ib.clone();
                     let iw = iw.clone();
                     let cb = make_cb();
                     gtk4::glib::idle_add_local_once(move || {
-                        refresh_merge_diffs(&lb, &mb, &rb, &lch, &rch, cb, ib.get(), iw.get());
+                        refresh_merge_diffs(
+                            &lb,
+                            &mb,
+                            &rb,
+                            &ltv,
+                            &lch,
+                            &rch,
+                            &flh,
+                            cb,
+                            ib.get(),
+                            iw.get(),
+                        );
                         p.set(false);
                     });
                 }
@@ -3350,8 +3763,10 @@ fn build_merge_view(
             let lb = left_buf.clone();
             let mb = middle_buf.clone();
             let rb = right_buf.clone();
+            let ltv = left_pane.text_view.clone();
             let lch = left_chunks.clone();
             let rch = right_chunks.clone();
+            let flh = filler_lh.clone();
             let on_complete = make_on_complete();
             gtk4::glib::spawn_future_local(async move {
                 let (new_left, new_right) = gio::spawn_blocking(move || {
@@ -3370,7 +3785,10 @@ fn build_merge_view(
                 .await
                 .unwrap_or_default();
 
+                let lh = get_line_height(&ltv);
+                flh.set(lh);
                 apply_merge_tags(&lb, &mb, &rb, &new_left, &new_right);
+                apply_merge_filler_tags(&lb, &mb, &rb, &new_left, &new_right, lh);
                 *lch.borrow_mut() = new_left;
                 *rch.borrow_mut() = new_right;
                 on_complete();
@@ -3384,12 +3802,25 @@ fn build_merge_view(
             let lb = left_buf.clone();
             let mb = middle_buf.clone();
             let rb = right_buf.clone();
+            let ltv = left_pane.text_view.clone();
             let lch = left_chunks.clone();
             let rch = right_chunks.clone();
+            let flh = filler_lh.clone();
             let make_cb = make_on_complete.clone();
             blank_toggle.connect_toggled(move |btn| {
                 ib.set(btn.is_active());
-                refresh_merge_diffs(&lb, &mb, &rb, &lch, &rch, make_cb(), ib.get(), iw.get());
+                refresh_merge_diffs(
+                    &lb,
+                    &mb,
+                    &rb,
+                    &ltv,
+                    &lch,
+                    &rch,
+                    &flh,
+                    make_cb(),
+                    ib.get(),
+                    iw.get(),
+                );
             });
         }
         {
@@ -3398,16 +3829,20 @@ fn build_merge_view(
             let lb = left_buf.clone();
             let mb = middle_buf.clone();
             let rb = right_buf.clone();
+            let ltv = left_pane.text_view.clone();
             let lch = left_chunks.clone();
             let rch = right_chunks.clone();
+            let flh = filler_lh.clone();
             ws_toggle.connect_toggled(move |btn| {
                 iw.set(btn.is_active());
                 refresh_merge_diffs(
                     &lb,
                     &mb,
                     &rb,
+                    &ltv,
                     &lch,
                     &rch,
+                    &flh,
                     make_on_complete(),
                     ib.get(),
                     iw.get(),
