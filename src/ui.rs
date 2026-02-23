@@ -24,8 +24,8 @@ use chrono::{DateTime, Local};
 use gtk4::{
     Adjustment, Application, ApplicationWindow, Box as GtkBox, Button, ColumnView,
     ColumnViewColumn, CssProvider, DrawingArea, Entry, EventControllerFocus, EventControllerKey,
-    GestureClick, Image, Label, ListItem, Notebook, Orientation, Paned, PolicyType, Revealer,
-    ScrolledWindow, SignalListItemFactory, SingleSelection, StringObject, TextBuffer,
+    GestureClick, Image, Label, ListItem, Notebook, Orientation, Paned, PolicyType, PopoverMenu,
+    Revealer, ScrolledWindow, SignalListItemFactory, SingleSelection, StringObject, TextBuffer,
     TextSearchFlags, TextTag, TextView, ToggleButton, TreeExpander, TreeListModel, TreeListRow,
     gdk::Display, gio, gio::ListStore, prelude::*,
 };
@@ -1550,6 +1550,92 @@ fn build_diff_view(
         gutter.add_controller(gesture);
     }
 
+    // Right-click context menu for gutter
+    {
+        let gutter_pending: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let gutter_ctx = gio::SimpleActionGroup::new();
+        {
+            let action = gio::SimpleAction::new("copy-left-right", None);
+            let pc = gutter_pending.clone();
+            let ch = chunks.clone();
+            let lb = left_buf.clone();
+            let rb = right_buf.clone();
+            action.connect_activate(move |_, _| {
+                if let Some(idx) = pc.get() {
+                    let snapshot = ch.borrow();
+                    if let Some(c) = snapshot.get(idx) {
+                        copy_chunk(&lb, c.start_a, c.end_a, &rb, c.start_b, c.end_b);
+                    }
+                }
+            });
+            gutter_ctx.add_action(&action);
+        }
+        {
+            let action = gio::SimpleAction::new("copy-right-left", None);
+            let pc = gutter_pending.clone();
+            let ch = chunks.clone();
+            let lb = left_buf.clone();
+            let rb = right_buf.clone();
+            action.connect_activate(move |_, _| {
+                if let Some(idx) = pc.get() {
+                    let snapshot = ch.borrow();
+                    if let Some(c) = snapshot.get(idx) {
+                        copy_chunk(&rb, c.start_b, c.end_b, &lb, c.start_a, c.end_a);
+                    }
+                }
+            });
+            gutter_ctx.add_action(&action);
+        }
+        gutter.insert_action_group("gutter", Some(&gutter_ctx));
+
+        let gutter_menu = gio::Menu::new();
+        gutter_menu.append(
+            Some("Copy Left \u{2192} Right"),
+            Some("gutter.copy-left-right"),
+        );
+        gutter_menu.append(
+            Some("Copy Right \u{2192} Left"),
+            Some("gutter.copy-right-left"),
+        );
+        let gutter_popover = PopoverMenu::from_model(Some(&gutter_menu));
+        gutter_popover.set_parent(&gutter);
+        gutter_popover.set_has_arrow(false);
+
+        let gesture = GestureClick::new();
+        gesture.set_button(3);
+        let ltv = left_pane.text_view.clone();
+        let rtv = right_pane.text_view.clone();
+        let lb = left_buf.clone();
+        let rb = right_buf.clone();
+        let ls = left_pane.scroll.clone();
+        let rs = right_pane.scroll.clone();
+        let ch = chunks.clone();
+        let g = gutter.clone();
+        let pc = gutter_pending.clone();
+        let pop = gutter_popover;
+        gesture.connect_pressed(move |_, _, x, y| {
+            let snapshot = ch.borrow();
+            for (idx, chunk) in snapshot.iter().enumerate() {
+                if chunk.tag == DiffTag::Equal {
+                    continue;
+                }
+                let lt = line_to_gutter_y(&ltv, &lb, chunk.start_a, &ls, &g);
+                let lb_y = line_to_gutter_y(&ltv, &lb, chunk.end_a, &ls, &g);
+                let rt = line_to_gutter_y(&rtv, &rb, chunk.start_b, &rs, &g);
+                let rb_y = line_to_gutter_y(&rtv, &rb, chunk.end_b, &rs, &g);
+                let top = lt.min(rt) - 6.0;
+                let bottom = lb_y.max(rb_y) + 6.0;
+                if y >= top && y <= bottom {
+                    pc.set(Some(idx));
+                    pop.set_pointing_to(Some(&gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+                    pop.popup();
+                    return;
+                }
+            }
+        });
+        gutter.add_controller(gesture);
+    }
+
     // Text filter state (created early so connect_changed can use it)
     let ignore_blanks: Rc<Cell<bool>> = Rc::new(Cell::new(false));
     let ignore_whitespace: Rc<Cell<bool>> = Rc::new(Cell::new(false));
@@ -2652,6 +2738,92 @@ fn build_merge_view(
         left_gutter.add_controller(gesture);
     }
 
+    // Left gutter right-click context menu
+    {
+        let lg_pending: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let lg_ctx = gio::SimpleActionGroup::new();
+        {
+            let action = gio::SimpleAction::new("copy-left-middle", None);
+            let pc = lg_pending.clone();
+            let ch = left_chunks.clone();
+            let lb = left_buf.clone();
+            let mb = middle_buf.clone();
+            action.connect_activate(move |_, _| {
+                if let Some(idx) = pc.get() {
+                    let s = ch.borrow();
+                    if let Some(c) = s.get(idx) {
+                        copy_chunk(&lb, c.start_a, c.end_a, &mb, c.start_b, c.end_b);
+                    }
+                }
+            });
+            lg_ctx.add_action(&action);
+        }
+        {
+            let action = gio::SimpleAction::new("copy-middle-left", None);
+            let pc = lg_pending.clone();
+            let ch = left_chunks.clone();
+            let lb = left_buf.clone();
+            let mb = middle_buf.clone();
+            action.connect_activate(move |_, _| {
+                if let Some(idx) = pc.get() {
+                    let s = ch.borrow();
+                    if let Some(c) = s.get(idx) {
+                        copy_chunk(&mb, c.start_b, c.end_b, &lb, c.start_a, c.end_a);
+                    }
+                }
+            });
+            lg_ctx.add_action(&action);
+        }
+        left_gutter.insert_action_group("lgutter", Some(&lg_ctx));
+
+        let lg_menu = gio::Menu::new();
+        lg_menu.append(
+            Some("Copy Left \u{2192} Middle"),
+            Some("lgutter.copy-left-middle"),
+        );
+        lg_menu.append(
+            Some("Copy Middle \u{2192} Left"),
+            Some("lgutter.copy-middle-left"),
+        );
+        let lg_popover = PopoverMenu::from_model(Some(&lg_menu));
+        lg_popover.set_parent(&left_gutter);
+        lg_popover.set_has_arrow(false);
+
+        let gesture = GestureClick::new();
+        gesture.set_button(3);
+        let ltv = left_pane.text_view.clone();
+        let mtv = middle_pane.text_view.clone();
+        let lb = left_buf.clone();
+        let mb = middle_buf.clone();
+        let ls = left_pane.scroll.clone();
+        let ms = middle_pane.scroll.clone();
+        let ch = left_chunks.clone();
+        let g = left_gutter.clone();
+        let pc = lg_pending;
+        let pop = lg_popover;
+        gesture.connect_pressed(move |_, _, x, y| {
+            let snapshot = ch.borrow();
+            for (idx, chunk) in snapshot.iter().enumerate() {
+                if chunk.tag == DiffTag::Equal {
+                    continue;
+                }
+                let lt = line_to_gutter_y(&ltv, &lb, chunk.start_a, &ls, &g);
+                let lb_y = line_to_gutter_y(&ltv, &lb, chunk.end_a, &ls, &g);
+                let mt = line_to_gutter_y(&mtv, &mb, chunk.start_b, &ms, &g);
+                let mb_y = line_to_gutter_y(&mtv, &mb, chunk.end_b, &ms, &g);
+                let top = lt.min(mt) - 6.0;
+                let bottom = lb_y.max(mb_y) + 6.0;
+                if y >= top && y <= bottom {
+                    pc.set(Some(idx));
+                    pop.set_pointing_to(Some(&gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+                    pop.popup();
+                    return;
+                }
+            }
+        });
+        left_gutter.add_controller(gesture);
+    }
+
     // Right gutter (middle ↔ right)
     let right_gutter = DrawingArea::new();
     right_gutter.set_content_width(48);
@@ -2706,6 +2878,92 @@ fn build_merge_view(
                 &g,
                 &ch,
             );
+        });
+        right_gutter.add_controller(gesture);
+    }
+
+    // Right gutter right-click context menu
+    {
+        let rg_pending: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let rg_ctx = gio::SimpleActionGroup::new();
+        {
+            let action = gio::SimpleAction::new("copy-middle-right", None);
+            let pc = rg_pending.clone();
+            let ch = right_chunks.clone();
+            let mb = middle_buf.clone();
+            let rb = right_buf.clone();
+            action.connect_activate(move |_, _| {
+                if let Some(idx) = pc.get() {
+                    let s = ch.borrow();
+                    if let Some(c) = s.get(idx) {
+                        copy_chunk(&mb, c.start_a, c.end_a, &rb, c.start_b, c.end_b);
+                    }
+                }
+            });
+            rg_ctx.add_action(&action);
+        }
+        {
+            let action = gio::SimpleAction::new("copy-right-middle", None);
+            let pc = rg_pending.clone();
+            let ch = right_chunks.clone();
+            let mb = middle_buf.clone();
+            let rb = right_buf.clone();
+            action.connect_activate(move |_, _| {
+                if let Some(idx) = pc.get() {
+                    let s = ch.borrow();
+                    if let Some(c) = s.get(idx) {
+                        copy_chunk(&rb, c.start_b, c.end_b, &mb, c.start_a, c.end_a);
+                    }
+                }
+            });
+            rg_ctx.add_action(&action);
+        }
+        right_gutter.insert_action_group("rgutter", Some(&rg_ctx));
+
+        let rg_menu = gio::Menu::new();
+        rg_menu.append(
+            Some("Copy Middle \u{2192} Right"),
+            Some("rgutter.copy-middle-right"),
+        );
+        rg_menu.append(
+            Some("Copy Right \u{2192} Middle"),
+            Some("rgutter.copy-right-middle"),
+        );
+        let rg_popover = PopoverMenu::from_model(Some(&rg_menu));
+        rg_popover.set_parent(&right_gutter);
+        rg_popover.set_has_arrow(false);
+
+        let gesture = GestureClick::new();
+        gesture.set_button(3);
+        let mtv = middle_pane.text_view.clone();
+        let rtv = right_pane.text_view.clone();
+        let mb = middle_buf.clone();
+        let rb = right_buf.clone();
+        let ms = middle_pane.scroll.clone();
+        let rs = right_pane.scroll.clone();
+        let ch = right_chunks.clone();
+        let g = right_gutter.clone();
+        let pc = rg_pending;
+        let pop = rg_popover;
+        gesture.connect_pressed(move |_, _, x, y| {
+            let snapshot = ch.borrow();
+            for (idx, chunk) in snapshot.iter().enumerate() {
+                if chunk.tag == DiffTag::Equal {
+                    continue;
+                }
+                let mt = line_to_gutter_y(&mtv, &mb, chunk.start_a, &ms, &g);
+                let mb_y = line_to_gutter_y(&mtv, &mb, chunk.end_a, &ms, &g);
+                let rt = line_to_gutter_y(&rtv, &rb, chunk.start_b, &rs, &g);
+                let rb_y = line_to_gutter_y(&rtv, &rb, chunk.end_b, &rs, &g);
+                let top = mt.min(rt) - 6.0;
+                let bottom = mb_y.max(rb_y) + 6.0;
+                if y >= top && y <= bottom {
+                    pc.set(Some(idx));
+                    pop.set_pointing_to(Some(&gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+                    pop.popup();
+                    return;
+                }
+            }
         });
         right_gutter.add_controller(gesture);
     }
@@ -4279,12 +4537,12 @@ fn build_vcs_window(app: &Application, dir: std::path::PathBuf, settings: Rc<Ref
     }
 
     // Refresh handler
-    {
+    let refresh: Rc<dyn Fn()> = {
         let rr = repo_root.clone();
         let st_ref = store.clone();
         let cl = count_label.clone();
         let le = last_encoded.clone();
-        let refresh = Rc::new(move || {
+        Rc::new(move || {
             let entries = crate::vcs::changed_files(&rr);
             let new_encoded: Vec<String> = entries
                 .iter()
@@ -4303,11 +4561,15 @@ fn build_vcs_window(app: &Application, dir: std::path::PathBuf, settings: Rc<Ref
                 entries.len(),
                 if entries.len() == 1 { "" } else { "s" }
             ));
-        });
+        })
+    };
+    {
         let r = refresh.clone();
         refresh_btn.connect_clicked(move |_| r());
+    }
 
-        // File watcher
+    // File watcher
+    {
         let (fs_tx, fs_rx) = mpsc::channel::<()>();
         {
             let rr = repo_root.clone();
@@ -4338,16 +4600,118 @@ fn build_vcs_window(app: &Application, dir: std::path::PathBuf, settings: Rc<Ref
                 }
             });
         }
+        let r = refresh.clone();
         gtk4::glib::timeout_add_local(Duration::from_millis(500), move || {
             let mut changed = false;
             while fs_rx.try_recv().is_ok() {
                 changed = true;
             }
             if changed {
-                refresh();
+                r();
             }
             gtk4::glib::ControlFlow::Continue
         });
+    }
+
+    // ── VCS context menu ──────────────────────────────────────────
+    let vcs_action_group = gio::SimpleActionGroup::new();
+    {
+        let action = gio::SimpleAction::new("open-diff", None);
+        let open = open_selected.clone();
+        action.connect_activate(move |_, _| {
+            open(None);
+        });
+        vcs_action_group.add_action(&action);
+    }
+    {
+        let action = gio::SimpleAction::new("discard", None);
+        let s = sel.clone();
+        let rr = repo_root.clone();
+        let r = refresh.clone();
+        action.connect_activate(move |_, _| {
+            if let Some(item) = s.selected_item() {
+                let obj = item.downcast::<StringObject>().unwrap();
+                let raw = obj.string();
+                crate::vcs::discard_changes(&rr, decode_vcs_path(&raw));
+                r();
+            }
+        });
+        vcs_action_group.add_action(&action);
+    }
+    {
+        let action = gio::SimpleAction::new("stage", None);
+        let s = sel.clone();
+        let rr = repo_root.clone();
+        let r = refresh.clone();
+        action.connect_activate(move |_, _| {
+            if let Some(item) = s.selected_item() {
+                let obj = item.downcast::<StringObject>().unwrap();
+                let raw = obj.string();
+                crate::vcs::stage_file(&rr, decode_vcs_path(&raw));
+                r();
+            }
+        });
+        vcs_action_group.add_action(&action);
+    }
+    {
+        let action = gio::SimpleAction::new("trash", None);
+        let s = sel.clone();
+        let rr = repo_root.clone();
+        let r = refresh.clone();
+        action.connect_activate(move |_, _| {
+            if let Some(item) = s.selected_item() {
+                let obj = item.downcast::<StringObject>().unwrap();
+                let raw = obj.string();
+                let path = rr.join(decode_vcs_path(&raw));
+                let _ = gio::File::for_path(&path).trash(gio::Cancellable::NONE);
+                r();
+            }
+        });
+        vcs_action_group.add_action(&action);
+    }
+    vcs_tab.insert_action_group("vcs", Some(&vcs_action_group));
+
+    let vcs_menu = gio::Menu::new();
+    vcs_menu.append(Some("Open Diff"), Some("vcs.open-diff"));
+    vcs_menu.append(Some("Discard Changes"), Some("vcs.discard"));
+    vcs_menu.append(Some("Stage"), Some("vcs.stage"));
+    vcs_menu.append(Some("Trash"), Some("vcs.trash"));
+
+    let vcs_popover = PopoverMenu::from_model(Some(&vcs_menu));
+    vcs_popover.set_parent(&view);
+    vcs_popover.set_has_arrow(false);
+
+    {
+        let gesture = GestureClick::new();
+        gesture.set_button(3);
+        let s = sel.clone();
+        let act_open = vcs_action_group
+            .lookup_action("open-diff")
+            .and_downcast::<gio::SimpleAction>()
+            .unwrap();
+        let act_discard = vcs_action_group
+            .lookup_action("discard")
+            .and_downcast::<gio::SimpleAction>()
+            .unwrap();
+        let act_trash = vcs_action_group
+            .lookup_action("trash")
+            .and_downcast::<gio::SimpleAction>()
+            .unwrap();
+        let pop = vcs_popover.clone();
+        gesture.connect_pressed(move |_, _, x, y| {
+            if let Some(item) = s.selected_item() {
+                let obj = item.downcast::<StringObject>().unwrap();
+                let raw = obj.string();
+                let code = decode_vcs_code(&raw);
+                let untracked = code == "U";
+                act_open.set_enabled(!untracked);
+                act_discard.set_enabled(!untracked);
+                act_trash.set_enabled(untracked);
+                pop.set_pointing_to(Some(&gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+                pop.popup();
+            }
+        });
+        view.add_controller(gesture);
     }
 
     // Window
@@ -5084,7 +5448,32 @@ fn build_dir_window(
         let ld = left_dir.clone();
         let rd = right_dir.clone();
         let st = settings.clone();
+        let tm = tree_model.clone();
+        let ls = left_sel.clone();
+        let rsel = right_sel.clone();
         move || {
+            // Save selected rel_paths
+            let sel_rel = |sel: &SingleSelection| -> Option<String> {
+                let pos = sel.selected();
+                let row = tm.item(pos)?.downcast::<TreeListRow>().ok()?;
+                let obj = row.item().and_downcast::<StringObject>()?;
+                Some(decode_rel_path(&obj.string()).to_string())
+            };
+            let left_rel = sel_rel(&ls);
+            let right_rel = sel_rel(&rsel);
+
+            // Save expanded rel_paths
+            let mut expanded: Vec<String> = Vec::new();
+            for i in 0..tm.n_items() {
+                if let Some(row) = tm.item(i).and_then(|o| o.downcast::<TreeListRow>().ok())
+                    && row.is_expanded()
+                    && let Some(obj) = row.item().and_downcast::<StringObject>()
+                {
+                    expanded.push(decode_rel_path(&obj.string()).to_string());
+                }
+            }
+
+            // Rebuild
             let mut new_map = HashMap::new();
             let (new_store, _) = scan_level(
                 Path::new(ld.borrow().as_str()),
@@ -5100,6 +5489,37 @@ fn build_dir_window(
                     rs.append(&obj.downcast::<StringObject>().unwrap());
                 }
             }
+
+            // Restore expanded state (must iterate after each expand since
+            // expanding a row inserts children and shifts positions)
+            for rel in &expanded {
+                for i in 0..tm.n_items() {
+                    if let Some(row) = tm.item(i).and_then(|o| o.downcast::<TreeListRow>().ok())
+                        && let Some(obj) = row.item().and_downcast::<StringObject>()
+                        && decode_rel_path(&obj.string()) == rel.as_str()
+                    {
+                        row.set_expanded(true);
+                        break;
+                    }
+                }
+            }
+
+            // Restore selection by rel_path
+            let restore_sel = |sel: &SingleSelection, target: &Option<String>| {
+                if let Some(ref rel) = *target {
+                    for i in 0..tm.n_items() {
+                        if let Some(row) = tm.item(i).and_then(|o| o.downcast::<TreeListRow>().ok())
+                            && let Some(obj) = row.item().and_downcast::<StringObject>()
+                            && decode_rel_path(&obj.string()) == rel.as_str()
+                        {
+                            sel.set_selected(i);
+                            return;
+                        }
+                    }
+                }
+            };
+            restore_sel(&ls, &left_rel);
+            restore_sel(&rsel, &right_rel);
         }
     };
 
@@ -5289,6 +5709,86 @@ fn build_dir_window(
 
     // Open file tabs tracking
     let open_tabs: Rc<RefCell<Vec<FileTab>>> = Rc::new(RefCell::new(Vec::new()));
+
+    // Add "folder-open-diff" action now that notebook and open_tabs exist
+    {
+        let action = gio::SimpleAction::new("folder-open-diff", None);
+        let get_row = get_selected_row.clone();
+        let nb = notebook.clone();
+        let tabs = open_tabs.clone();
+        let ld = left_dir.clone();
+        let rd = right_dir.clone();
+        let st = settings.clone();
+        action.connect_activate(move |_, _| {
+            if let Some(raw) = get_row()
+                && !decode_is_dir(&raw)
+            {
+                open_file_diff(
+                    &nb,
+                    decode_rel_path(&raw),
+                    decode_status(&raw),
+                    &tabs,
+                    &ld.borrow(),
+                    &rd.borrow(),
+                    &st,
+                );
+            }
+        });
+        dir_action_group.add_action(&action);
+    }
+
+    // ── Dir context menu ────────────────────────────────────────────
+    {
+        let dir_menu = gio::Menu::new();
+        dir_menu.append(Some("Open Diff"), Some("dir.folder-open-diff"));
+        dir_menu.append(Some("Copy to Left"), Some("dir.folder-copy-left"));
+        dir_menu.append(Some("Copy to Right"), Some("dir.folder-copy-right"));
+        dir_menu.append(Some("Delete"), Some("dir.folder-delete"));
+
+        let dir_popover_l = PopoverMenu::from_model(Some(&dir_menu));
+        dir_popover_l.set_parent(&left_view);
+        dir_popover_l.set_has_arrow(false);
+        let dir_popover_r = PopoverMenu::from_model(Some(&dir_menu));
+        dir_popover_r.set_parent(&right_view);
+        dir_popover_r.set_has_arrow(false);
+
+        let act_open = dir_action_group
+            .lookup_action("folder-open-diff")
+            .and_downcast::<gio::SimpleAction>()
+            .unwrap();
+        let act_left = dir_action_group
+            .lookup_action("folder-copy-left")
+            .and_downcast::<gio::SimpleAction>()
+            .unwrap();
+        let act_right = dir_action_group
+            .lookup_action("folder-copy-right")
+            .and_downcast::<gio::SimpleAction>()
+            .unwrap();
+
+        let setup_dir_ctx = |view: &ColumnView, popover: PopoverMenu| {
+            let gesture = GestureClick::new();
+            gesture.set_button(3);
+            let get_row = get_selected_row.clone();
+            let ao = act_open.clone();
+            let al = act_left.clone();
+            let ar = act_right.clone();
+            let pop = popover;
+            gesture.connect_pressed(move |_, _, x, y| {
+                if let Some(raw) = get_row() {
+                    let is_dir = decode_is_dir(&raw);
+                    let status = decode_status(&raw);
+                    ao.set_enabled(!is_dir && (status == "D" || status == "S"));
+                    al.set_enabled(status == "R" || status == "D");
+                    ar.set_enabled(status == "L" || status == "D");
+                    pop.set_pointing_to(Some(&gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+                    pop.popup();
+                }
+            });
+            view.add_controller(gesture);
+        };
+        setup_dir_ctx(&left_view, dir_popover_l);
+        setup_dir_ctx(&right_view, dir_popover_r);
+    }
 
     // Activate handlers — double-click a file row to open diff in new tab
     {

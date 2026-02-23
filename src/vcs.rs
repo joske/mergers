@@ -102,3 +102,26 @@ pub fn head_content(repo_root: &Path, rel_path: &str) -> Option<String> {
         None
     }
 }
+
+pub fn discard_changes(repo_root: &Path, rel_path: &str) -> bool {
+    Command::new("git")
+        .args([
+            "-C",
+            &repo_root.to_string_lossy(),
+            "checkout",
+            "HEAD",
+            "--",
+            rel_path,
+        ])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+pub fn stage_file(repo_root: &Path, rel_path: &str) -> bool {
+    Command::new("git")
+        .args(["-C", &repo_root.to_string_lossy(), "add", rel_path])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
