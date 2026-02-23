@@ -49,6 +49,7 @@ const CSS: &str = r"
 .find-bar { background: alpha(@theme_bg_color, 0.95); border-top: 1px solid @borders; padding: 4px 6px; }
 .find-bar entry { min-height: 28px; }
 .goto-entry { min-height: 28px; }
+.dir-pane-focused { border: 2px solid @accent_color; border-radius: 4px; }
 ";
 
 const SEP: char = '\x1f';
@@ -5322,9 +5323,13 @@ fn build_dir_window(
         }
     });
 
+    // Shared selection model — only the focused pane uses it;
+    // the other pane uses NoSelection so no highlight is shown.
+    let dir_sel = SingleSelection::new(Some(tree_model.clone()));
+    let no_sel = gtk4::NoSelection::new(Some(tree_model.clone()));
+
     // ── Left pane ──────────────────────────────────────────────────
-    let left_sel = SingleSelection::new(Some(tree_model.clone()));
-    let left_view = ColumnView::new(Some(left_sel.clone()));
+    let left_view = ColumnView::new(Some(dir_sel.clone()));
     left_view.set_show_column_separators(true);
     {
         let col = ColumnViewColumn::new(Some("Name"), Some(make_name_factory(true)));
@@ -5340,8 +5345,7 @@ fn build_dir_window(
     }
 
     // ── Right pane ─────────────────────────────────────────────────
-    let right_sel = SingleSelection::new(Some(tree_model.clone()));
-    let right_view = ColumnView::new(Some(right_sel.clone()));
+    let right_view = ColumnView::new(Some(no_sel.clone()));
     right_view.set_show_column_separators(true);
     {
         let col = ColumnViewColumn::new(Some("Name"), Some(make_name_factory(false)));
@@ -5358,17 +5362,84 @@ fn build_dir_window(
         right_view.append_column(&col);
     }
 
-    // Track which pane was last focused (true = left, false = right)
+    // Track which pane was last focused (true = left, false = right).
+    // Swap models so only the focused pane shows selection.
     let focused_left = Rc::new(Cell::new(true));
+    let sel_syncing = Rc::new(Cell::new(false));
+    left_view.add_css_class("dir-pane-focused");
     {
         let fl = focused_left.clone();
+        let lv = left_view.clone();
+        let rv = right_view.clone();
+        let sel = dir_sel.clone();
+        let ns = no_sel.clone();
         let fc = EventControllerFocus::new();
-        fc.connect_enter(move |_| fl.set(true));
+        fc.connect_enter(move |_| {
+            if fl.get() {
+                return;
+            }
+            fl.set(true);
+            lv.add_css_class("dir-pane-focused");
+            rv.remove_css_class("dir-pane-focused");
+            lv.set_model(Some(&sel));
+            rv.set_model(Some(&ns));
+            let pos = sel.selected();
+            let v = lv.clone();
+            gtk4::glib::idle_add_local_once(move || {
+                v.scroll_to(pos, None, gtk4::ListScrollFlags::FOCUS, None);
+            });
+        });
         left_view.add_controller(fc);
         let fl = focused_left.clone();
+        let lv = left_view.clone();
+        let rv = right_view.clone();
+        let sel = dir_sel.clone();
+        let ns = no_sel.clone();
         let fc = EventControllerFocus::new();
-        fc.connect_enter(move |_| fl.set(false));
+        fc.connect_enter(move |_| {
+            if !fl.get() {
+                return;
+            }
+            fl.set(false);
+            rv.add_css_class("dir-pane-focused");
+            lv.remove_css_class("dir-pane-focused");
+            rv.set_model(Some(&sel));
+            lv.set_model(Some(&ns));
+            let pos = sel.selected();
+            let v = rv.clone();
+            gtk4::glib::idle_add_local_once(move || {
+                v.scroll_to(pos, None, gtk4::ListScrollFlags::FOCUS, None);
+            });
+        });
         right_view.add_controller(fc);
+    }
+
+    // Left/Right arrow keys switch between panes
+    {
+        let rv = right_view.clone();
+        let kc = EventControllerKey::new();
+        kc.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        kc.connect_key_pressed(move |_, key, _, _| {
+            if key == gtk4::gdk::Key::Right {
+                rv.grab_focus();
+                gtk4::glib::Propagation::Stop
+            } else {
+                gtk4::glib::Propagation::Proceed
+            }
+        });
+        left_view.add_controller(kc);
+        let lv = left_view.clone();
+        let kc = EventControllerKey::new();
+        kc.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        kc.connect_key_pressed(move |_, key, _, _| {
+            if key == gtk4::gdk::Key::Left {
+                lv.grab_focus();
+                gtk4::glib::Propagation::Stop
+            } else {
+                gtk4::glib::Propagation::Proceed
+            }
+        });
+        right_view.add_controller(kc);
     }
 
     // ScrolledWindows + Paned
@@ -5449,18 +5520,19 @@ fn build_dir_window(
         let rd = right_dir.clone();
         let st = settings.clone();
         let tm = tree_model.clone();
-        let ls = left_sel.clone();
-        let rsel = right_sel.clone();
+        let sel = dir_sel.clone();
+        let syncing = sel_syncing.clone();
+        let lv = left_view.clone();
+        let rv = right_view.clone();
         move || {
-            // Save selected rel_paths
-            let sel_rel = |sel: &SingleSelection| -> Option<String> {
-                let pos = sel.selected();
-                let row = tm.item(pos)?.downcast::<TreeListRow>().ok()?;
+            // Suppress selection sync during rebuild
+            syncing.set(true);
+            let saved_pos = sel.selected();
+            let saved_rel = (|| -> Option<String> {
+                let row = tm.item(saved_pos)?.downcast::<TreeListRow>().ok()?;
                 let obj = row.item().and_downcast::<StringObject>()?;
                 Some(decode_rel_path(&obj.string()).to_string())
-            };
-            let left_rel = sel_rel(&ls);
-            let right_rel = sel_rel(&rsel);
+            })();
 
             // Save expanded rel_paths
             let mut expanded: Vec<String> = Vec::new();
@@ -5482,7 +5554,24 @@ fn build_dir_window(
                 &mut new_map,
                 &st.borrow().dir_filters,
             );
+            // Skip rebuild if root-level data hasn't changed
+            let root_changed = new_store.n_items() != rs.n_items()
+                || (0..new_store.n_items()).any(|i| {
+                    new_store
+                        .item(i)
+                        .and_downcast::<StringObject>()
+                        .map(|o| o.string())
+                        != rs
+                            .item(i)
+                            .and_downcast::<StringObject>()
+                            .map(|o| o.string())
+                });
+            // Always update children_map so re-expanded dirs show fresh data
             *cm.borrow_mut() = new_map;
+            if !root_changed {
+                syncing.set(false);
+                return;
+            }
             rs.remove_all();
             for i in 0..new_store.n_items() {
                 if let Some(obj) = new_store.item(i) {
@@ -5504,22 +5593,34 @@ fn build_dir_window(
                 }
             }
 
-            // Restore selection by rel_path
-            let restore_sel = |sel: &SingleSelection, target: &Option<String>| {
-                if let Some(ref rel) = *target {
-                    for i in 0..tm.n_items() {
-                        if let Some(row) = tm.item(i).and_then(|o| o.downcast::<TreeListRow>().ok())
-                            && let Some(obj) = row.item().and_downcast::<StringObject>()
-                            && decode_rel_path(&obj.string()) == rel.as_str()
-                        {
-                            sel.set_selected(i);
-                            return;
-                        }
+            // Restore selection on both panes
+            let n = tm.n_items();
+            let mut final_pos = saved_pos.min(if n > 0 { n - 1 } else { 0 });
+            if let Some(ref rel) = saved_rel {
+                for i in 0..n {
+                    if let Some(row) = tm.item(i).and_then(|o| o.downcast::<TreeListRow>().ok())
+                        && let Some(obj) = row.item().and_downcast::<StringObject>()
+                        && decode_rel_path(&obj.string()) == rel.as_str()
+                    {
+                        final_pos = i;
+                        break;
                     }
                 }
-            };
-            restore_sel(&ls, &left_rel);
-            restore_sel(&rsel, &right_rel);
+            }
+            if n > 0 {
+                sel.set_selected(final_pos);
+            }
+            syncing.set(false);
+
+            // Defer scroll_to until after GTK has laid out the new rows,
+            // otherwise the ColumnView hasn't realized the items yet.
+            let lv2 = lv.clone();
+            let rv2 = rv.clone();
+            gtk4::glib::idle_add_local_once(move || {
+                let flags = gtk4::ListScrollFlags::FOCUS;
+                lv2.scroll_to(final_pos, None, flags, None);
+                rv2.scroll_to(final_pos, None, flags, None);
+            });
         }
     };
 
@@ -5536,14 +5637,11 @@ fn build_dir_window(
         });
     }
 
-    // Helper: get selected row's encoded data from the focused pane
+    // Helper: get selected row's encoded data
     let get_selected_row = {
         let tm = tree_model.clone();
-        let ls = left_sel.clone();
-        let rs = right_sel.clone();
-        let fl = focused_left.clone();
+        let sel = dir_sel.clone();
         move || -> Option<String> {
-            let sel = if fl.get() { &ls } else { &rs };
             let pos = sel.selected();
             let item = tm.item(pos)?;
             let row = item.downcast::<TreeListRow>().ok()?;
@@ -5871,61 +5969,26 @@ fn build_dir_window(
     }
 
     // Poll for filesystem changes and reload
-    let cm_reload = children_map.clone();
-    let rs_reload = root_store.clone();
     let tabs_reload = open_tabs.clone();
     let ld_reload = left_dir.clone();
     let rd_reload = right_dir.clone();
-    let st_reload = settings.clone();
-    gtk4::glib::timeout_add_local(Duration::from_millis(500), move || {
-        let mut changed = false;
-        while fs_rx.try_recv().is_ok() {
-            changed = true;
-        }
-        if changed && !SAVING.load(std::sync::atomic::Ordering::Relaxed) {
-            // Build new tree into a temporary map (not inside borrow_mut)
-            let mut new_map = HashMap::new();
-            let (new_store, _) = scan_level(
-                Path::new(ld_reload.borrow().as_str()),
-                Path::new(rd_reload.borrow().as_str()),
-                "",
-                &mut new_map,
-                &st_reload.borrow().dir_filters,
-            );
-            // Only rebuild the tree if root-level data actually changed.
-            // remove_all()+re-append destroys expansion and selection state,
-            // so we skip it when the scan results are identical.
-            let root_changed = new_store.n_items() != rs_reload.n_items()
-                || (0..new_store.n_items()).any(|i| {
-                    new_store
-                        .item(i)
-                        .and_downcast::<StringObject>()
-                        .map(|o| o.string())
-                        != rs_reload
-                            .item(i)
-                            .and_downcast::<StringObject>()
-                            .map(|o| o.string())
-                });
-            // Always update children_map so re-expanded dirs show fresh data.
-            *cm_reload.borrow_mut() = new_map;
-            if root_changed {
-                // Drop children_map borrow before touching the store.
-                // Appending to root_store triggers TreeListModel's create_func which
-                // borrows children_map immutably — so we must not hold a mutable borrow.
-                rs_reload.remove_all();
-                for i in 0..new_store.n_items() {
-                    if let Some(obj) = new_store.item(i) {
-                        rs_reload.append(&obj.downcast::<StringObject>().unwrap());
-                    }
+    {
+        let reload = reload_dir.clone();
+        gtk4::glib::timeout_add_local(Duration::from_millis(500), move || {
+            let mut changed = false;
+            while fs_rx.try_recv().is_ok() {
+                changed = true;
+            }
+            if changed && !SAVING.load(std::sync::atomic::Ordering::Relaxed) {
+                reload();
+                // Reload open file tabs
+                for tab in tabs_reload.borrow().iter() {
+                    reload_file_tab(tab, &ld_reload.borrow(), &rd_reload.borrow());
                 }
             }
-            // Reload open file tabs
-            for tab in tabs_reload.borrow().iter() {
-                reload_file_tab(tab, &ld_reload.borrow(), &rd_reload.borrow());
-            }
-        }
-        gtk4::glib::ControlFlow::Continue
-    });
+            gtk4::glib::ControlFlow::Continue
+        });
+    }
 
     // Window title
     let left_name = Path::new(left_dir.borrow().as_str())
@@ -5962,6 +6025,7 @@ fn build_dir_window(
         win_actions.add_action(&action);
     }
     window.insert_action_group("win", Some(&win_actions));
+    window.insert_action_group("dir", Some(&dir_action_group));
 
     // Register keyboard accelerators
     if let Some(gtk_app) = window.application() {
@@ -5982,4 +6046,5 @@ fn build_dir_window(
     }
 
     window.present();
+    left_view.grab_focus();
 }
