@@ -27,13 +27,14 @@ use gtk4::{
     GestureClick, Image, Label, ListItem, Notebook, Orientation, Paned, PolicyType, Revealer,
     ScrolledWindow, SignalListItemFactory, SingleSelection, StringObject, TextBuffer,
     TextSearchFlags, TextTag, TextView, ToggleButton, TreeExpander, TreeListModel, TreeListRow,
-    WrapMode, gdk::Display, gio, gio::ListStore, prelude::*,
+    gdk::Display, gio, gio::ListStore, prelude::*,
 };
 use sourceview5::prelude::*;
 
 use crate::{
     CompareMode,
     myers::{self, DiffChunk, DiffTag},
+    settings::Settings,
 };
 
 const CSS: &str = r"
@@ -51,6 +52,33 @@ const CSS: &str = r"
 ";
 
 const SEP: char = '\x1f';
+
+thread_local! {
+    static FONT_PROVIDER: CssProvider = CssProvider::new();
+    static FONT_REGISTERED: Cell<bool> = const { Cell::new(false) };
+}
+
+fn update_font_css(settings: &Settings) {
+    let font_desc = gtk4::pango::FontDescription::from_string(&settings.font);
+    let css = format!(
+        ".meld-editor {{ font-family: \"{}\"; font-size: {}pt; }}",
+        font_desc.family().unwrap_or("Monospace".into()),
+        font_desc.size() / gtk4::pango::SCALE,
+    );
+    FONT_PROVIDER.with(|provider| {
+        provider.load_from_string(&css);
+        FONT_REGISTERED.with(|reg| {
+            if !reg.get() {
+                gtk4::style_context_add_provider_for_display(
+                    &Display::default().unwrap(),
+                    provider,
+                    gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION + 1,
+                );
+                reg.set(true);
+            }
+        });
+    });
+}
 
 // ─── Data types ────────────────────────────────────────────────────────────
 
@@ -443,27 +471,14 @@ fn copy_path_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 
 // ─── Directory scanning ────────────────────────────────────────────────────
 
-/// Names filtered out of directory comparison (version control, build artifacts).
-const DIR_FILTER: &[&str] = &[
-    ".git",
-    ".svn",
-    ".hg",
-    ".bzr",
-    "_darcs",
-    ".CVS",
-    "__pycache__",
-    "node_modules",
-    ".DS_Store",
-];
-
-fn read_dir_entries(dir: &Path) -> BTreeMap<String, DirMeta> {
+fn read_dir_entries(dir: &Path, dir_filters: &[String]) -> BTreeMap<String, DirMeta> {
     let mut map = BTreeMap::new();
     if let Ok(rd) = fs::read_dir(dir) {
         for entry in rd.filter_map(Result::ok) {
             let Ok(name) = entry.file_name().into_string() else {
                 continue;
             };
-            if DIR_FILTER.contains(&name.as_str()) {
+            if dir_filters.iter().any(|f| f == &name) {
                 continue;
             }
             let meta = entry.metadata().ok();
@@ -489,6 +504,7 @@ fn scan_level(
     right_root: &Path,
     rel: &str,
     children_map: &mut HashMap<String, ListStore>,
+    dir_filters: &[String],
 ) -> (ListStore, FileStatus) {
     let left_dir = if rel.is_empty() {
         left_root.to_path_buf()
@@ -501,8 +517,8 @@ fn scan_level(
         right_root.join(rel)
     };
 
-    let left_entries = read_dir_entries(&left_dir);
-    let right_entries = read_dir_entries(&right_dir);
+    let left_entries = read_dir_entries(&left_dir, dir_filters);
+    let right_entries = read_dir_entries(&right_dir, dir_filters);
     let all: BTreeSet<&String> = left_entries.keys().chain(right_entries.keys()).collect();
 
     // Sort: directories first, then files, alphabetically within each group
@@ -531,7 +547,7 @@ fn scan_level(
         let status;
         if *is_dir {
             let (child_store, child_agg) =
-                scan_level(left_root, right_root, &child_rel, children_map);
+                scan_level(left_root, right_root, &child_rel, children_map, dir_filters);
             status = if !in_left {
                 FileStatus::RightOnly
             } else if !in_right {
@@ -755,7 +771,7 @@ fn setup_diff_tags(buffer: &TextBuffer) {
     );
 }
 
-fn create_source_buffer(file_path: &Path) -> TextBuffer {
+fn create_source_buffer(file_path: &Path, settings: &Settings) -> TextBuffer {
     let buf = sourceview5::Buffer::new(None::<&gtk4::TextTagTable>);
     let lang_mgr = sourceview5::LanguageManager::default();
     let filename = file_path.file_name().and_then(|n| n.to_str());
@@ -764,7 +780,7 @@ fn create_source_buffer(file_path: &Path) -> TextBuffer {
     }
     buf.set_highlight_syntax(true);
     let scheme_mgr = sourceview5::StyleSchemeManager::default();
-    if let Some(scheme) = scheme_mgr.scheme("Adwaita") {
+    if let Some(scheme) = scheme_mgr.scheme(&settings.style_scheme) {
         buf.set_style_scheme(Some(&scheme));
     }
     setup_diff_tags(buf.upcast_ref());
@@ -982,18 +998,21 @@ fn make_diff_pane(
     file_path: &Path,
     info: Option<&str>,
     label_override: Option<&str>,
+    settings: &Settings,
 ) -> DiffPane {
     let sv = sourceview5::View::with_buffer(
         buf.downcast_ref::<sourceview5::Buffer>()
             .expect("buffer must be a sourceview5::Buffer"),
     );
     sv.set_editable(true);
-    sv.set_monospace(true);
-    sv.set_wrap_mode(WrapMode::None);
+    sv.set_wrap_mode(settings.wrap_mode_gtk());
     sv.set_left_margin(4);
-    sv.set_show_line_numbers(true);
-    sv.set_highlight_current_line(true);
+    sv.set_show_line_numbers(settings.show_line_numbers);
+    sv.set_highlight_current_line(settings.highlight_current_line);
+    sv.set_tab_width(settings.tab_width);
     sv.set_hexpand(true);
+    update_font_css(settings);
+    sv.add_css_class("meld-editor");
 
     let scroll = ScrolledWindow::builder()
         .min_content_width(360)
@@ -1065,12 +1084,10 @@ fn line_to_gutter_y(
     scroll: &ScrolledWindow,
     gutter: &impl IsA<gtk4::Widget>,
 ) -> f64 {
-    // Compute position arithmetically: line_yrange can return stale values
-    // after buffer modifications, but line 0's position and height are stable.
-    if let Some(iter0) = buf.iter_at_line(0) {
-        let (y0, line_h) = tv.line_yrange(&iter0);
-        let buf_y = y0 as f64 + line as f64 * line_h as f64;
-        let visible_y = buf_y - scroll.vadjustment().value();
+    // Use line_yrange per line so word-wrapped lines get correct positions.
+    if let Some(iter) = buf.iter_at_line(line as i32) {
+        let (y, _h) = tv.line_yrange(&iter);
+        let visible_y = y as f64 - scroll.vadjustment().value();
         let point = gtk4::graphene::Point::new(0.0, visible_y as f32);
         if let Some(out) = scroll.compute_point(gutter, &point) {
             return out.y() as f64;
@@ -1415,13 +1432,19 @@ struct DiffViewResult {
 
 /// Build a complete diff view widget for two files.
 /// Returns the top-level widget (toolbar + diff panes) and associated state.
-fn build_diff_view(left_path: &Path, right_path: &Path, labels: &[String]) -> DiffViewResult {
+fn build_diff_view(
+    left_path: &Path,
+    right_path: &Path,
+    labels: &[String],
+    settings: &Rc<RefCell<Settings>>,
+) -> DiffViewResult {
+    let s = settings.borrow();
     let (left_content, left_binary) = read_file_content(left_path);
     let (right_content, right_binary) = read_file_content(right_path);
     let any_binary = left_binary || right_binary;
 
-    let left_buf = create_source_buffer(left_path);
-    let right_buf = create_source_buffer(right_path);
+    let left_buf = create_source_buffer(left_path, &s);
+    let right_buf = create_source_buffer(right_path, &s);
     left_buf.set_text(&left_content);
     right_buf.set_text(&right_content);
 
@@ -1438,8 +1461,9 @@ fn build_diff_view(left_path: &Path, right_path: &Path, labels: &[String]) -> Di
 
     let left_label = labels.first().map(String::as_str);
     let right_label = labels.get(1).map(String::as_str);
-    let left_pane = make_diff_pane(&left_buf, left_path, info_msg, left_label);
-    let right_pane = make_diff_pane(&right_buf, right_path, info_msg, right_label);
+    let left_pane = make_diff_pane(&left_buf, left_path, info_msg, left_label, &s);
+    let right_pane = make_diff_pane(&right_buf, right_path, info_msg, right_label, &s);
+    drop(s);
 
     if any_binary {
         left_pane.text_view.set_editable(false);
@@ -1663,6 +1687,10 @@ fn build_diff_view(left_path: &Path, right_path: &Path, labels: &[String]) -> Di
     toolbar.append(&filter_box);
     toolbar.append(&patch_btn);
     toolbar.append(&swap_btn);
+    let prefs_btn = Button::from_icon_name("preferences-system-symbolic");
+    prefs_btn.set_tooltip_text(Some("Preferences (Ctrl+,)"));
+    prefs_btn.set_action_name(Some("win.prefs"));
+    toolbar.append(&prefs_btn);
 
     // Swap panes: swap buffer text + labels, re-diff happens via connect_changed
     {
@@ -2266,11 +2294,12 @@ fn open_file_diff(
     open_tabs: &Rc<RefCell<Vec<FileTab>>>,
     left_dir: &str,
     right_dir: &str,
+    settings: &Rc<RefCell<Settings>>,
 ) {
     let left_path = Path::new(left_dir).join(rel_path);
     let right_path = Path::new(right_dir).join(rel_path);
 
-    let dv = build_diff_view(&left_path, &right_path, &[]);
+    let dv = build_diff_view(&left_path, &right_path, &[], settings);
     dv.widget
         .insert_action_group("diff", Some(&dv.action_group));
 
@@ -2502,7 +2531,9 @@ fn build_merge_view(
     right_path: &Path,
     output: Option<&Path>,
     labels: &[String],
+    settings: &Rc<RefCell<Settings>>,
 ) -> MergeViewResult {
+    let s = settings.borrow();
     let (left_content, left_binary) = read_file_content(left_path);
     // When --output is set, the middle pane shows the merged file (with conflict markers),
     // not the base. This matches git mergetool semantics: you edit $MERGED, not $BASE.
@@ -2511,9 +2542,9 @@ fn build_merge_view(
     let (right_content, right_binary) = read_file_content(right_path);
     let any_binary = left_binary || middle_binary || right_binary;
 
-    let left_buf = create_source_buffer(left_path);
-    let middle_buf = create_source_buffer(middle_display_path);
-    let right_buf = create_source_buffer(right_path);
+    let left_buf = create_source_buffer(left_path, &s);
+    let middle_buf = create_source_buffer(middle_display_path, &s);
+    let right_buf = create_source_buffer(right_path, &s);
     left_buf.set_text(&left_content);
     middle_buf.set_text(&middle_content);
     right_buf.set_text(&right_content);
@@ -2529,19 +2560,23 @@ fn build_merge_view(
         left_path,
         None,
         labels.first().map(String::as_str),
+        &s,
     );
     let middle_pane = make_diff_pane(
         &middle_buf,
         middle_display_path,
         None,
         labels.get(1).map(String::as_str),
+        &s,
     );
     let right_pane = make_diff_pane(
         &right_buf,
         right_path,
         None,
         labels.get(2).map(String::as_str),
+        &s,
     );
+    drop(s);
 
     // Track which text view was last focused
     let active_view: Rc<RefCell<TextView>> = Rc::new(RefCell::new(middle_pane.text_view.clone()));
@@ -2827,11 +2862,16 @@ fn build_merge_view(
     filter_box.append(&blank_toggle);
     filter_box.append(&ws_toggle);
 
+    let merge_prefs_btn = Button::from_icon_name("preferences-system-symbolic");
+    merge_prefs_btn.set_tooltip_text(Some("Preferences (Ctrl+,)"));
+    merge_prefs_btn.set_action_name(Some("win.prefs"));
+
     toolbar.append(&undo_redo_box);
     toolbar.append(&nav_box);
     toolbar.append(&chunk_label);
     toolbar.append(&goto_entry);
     toolbar.append(&filter_box);
+    toolbar.append(&merge_prefs_btn);
 
     // Navigate helper for merge view
     let navigate_merge_chunk = |lch: &[DiffChunk],
@@ -3464,6 +3504,7 @@ fn build_merge_window(
     right_path: std::path::PathBuf,
     output: Option<std::path::PathBuf>,
     labels: &[String],
+    settings: &Rc<RefCell<Settings>>,
 ) {
     let mv = build_merge_view(
         &left_path,
@@ -3471,6 +3512,7 @@ fn build_merge_window(
         &right_path,
         output.as_deref(),
         labels,
+        settings,
     );
 
     // "Save Merged" button when --output is set
@@ -3600,6 +3642,19 @@ fn build_merge_window(
         .build();
     window.insert_action_group("diff", Some(&mv.action_group));
 
+    // Preferences action
+    let win_actions = gio::SimpleActionGroup::new();
+    {
+        let action = gio::SimpleAction::new("prefs", None);
+        let w = window.clone();
+        let st = settings.clone();
+        action.connect_activate(move |_, _| {
+            show_preferences(&w, &st);
+        });
+        win_actions.add_action(&action);
+    }
+    window.insert_action_group("win", Some(&win_actions));
+
     if let Some(gtk_app) = window.application() {
         gtk_app.set_accels_for_action("diff.prev-chunk", &["<Alt>Up", "<Ctrl>e"]);
         gtk_app.set_accels_for_action("diff.next-chunk", &["<Alt>Down", "<Ctrl>d"]);
@@ -3609,9 +3664,287 @@ fn build_merge_window(
         gtk_app.set_accels_for_action("diff.find-prev", &["<Shift>F3"]);
         gtk_app.set_accels_for_action("diff.go-to-line", &["<Ctrl>l"]);
         gtk_app.set_accels_for_action("diff.export-patch", &["<Ctrl><Shift>p"]);
+        gtk_app.set_accels_for_action("win.prefs", &["<Ctrl>comma"]);
     }
 
     window.present();
+}
+
+// ─── Preferences dialog ────────────────────────────────────────────────────
+
+fn apply_settings_to_views(window: &gtk4::Window, settings: &Settings) {
+    // Walk all sourceview5::View widgets in the window and re-apply settings
+    fn walk(widget: &gtk4::Widget, settings: &Settings) {
+        if widget.is::<sourceview5::View>() {
+            let sv: sourceview5::View = widget.clone().downcast().unwrap();
+            sv.set_show_line_numbers(settings.show_line_numbers);
+            sv.set_highlight_current_line(settings.highlight_current_line);
+            sv.set_wrap_mode(settings.wrap_mode_gtk());
+            sv.set_tab_width(settings.tab_width);
+            let buf: TextBuffer = sv.buffer();
+            if let Ok(sbuf) = buf.downcast::<sourceview5::Buffer>() {
+                let scheme_mgr = sourceview5::StyleSchemeManager::default();
+                if let Some(scheme) = scheme_mgr.scheme(&settings.style_scheme) {
+                    sbuf.set_style_scheme(Some(&scheme));
+                }
+            }
+        }
+        // Recurse into children
+        let mut child = widget.first_child();
+        while let Some(c) = child {
+            walk(&c, settings);
+            child = c.next_sibling();
+        }
+    }
+    let w: gtk4::Widget = window.clone().upcast();
+    walk(&w, settings);
+
+    update_font_css(settings);
+}
+
+fn make_pref_row(label_text: &str, widget: &impl IsA<gtk4::Widget>) -> GtkBox {
+    let row = GtkBox::new(Orientation::Horizontal, 12);
+    row.set_margin_start(12);
+    row.set_margin_end(12);
+    row.set_margin_top(4);
+    row.set_margin_bottom(4);
+    let label = Label::new(Some(label_text));
+    label.set_halign(gtk4::Align::Start);
+    label.set_hexpand(true);
+    row.append(&label);
+    row.append(widget);
+    row
+}
+
+fn show_preferences(
+    parent: &ApplicationWindow,
+    settings: &Rc<RefCell<Settings>>,
+) {
+    let win = gtk4::Window::builder()
+        .title("Preferences")
+        .transient_for(parent)
+        .modal(true)
+        .default_width(500)
+        .default_height(450)
+        .build();
+
+    let content = GtkBox::new(Orientation::Vertical, 0);
+    content.set_margin_top(8);
+    content.set_margin_bottom(8);
+
+    // ── Editor section header ──
+    let editor_header = Label::new(Some("Editor"));
+    editor_header.set_halign(gtk4::Align::Start);
+    editor_header.set_margin_start(12);
+    editor_header.set_margin_top(8);
+    editor_header.set_margin_bottom(4);
+    editor_header.add_css_class("heading");
+    content.append(&editor_header);
+
+    let s = settings.borrow();
+
+    // Font
+    let font_desc = gtk4::pango::FontDescription::from_string(&s.font);
+    let font_dialog = gtk4::FontDialog::new();
+    let font_btn = gtk4::FontDialogButton::new(Some(font_dialog));
+    font_btn.set_font_desc(&font_desc);
+    content.append(&make_pref_row("Font", &font_btn));
+
+    // Style scheme
+    let scheme_mgr = sourceview5::StyleSchemeManager::default();
+    let scheme_ids = scheme_mgr.scheme_ids();
+    let scheme_strings: Vec<String> = scheme_ids.iter().map(|g| g.to_string()).collect();
+    let scheme_strs: Vec<&str> = scheme_strings.iter().map(String::as_str).collect();
+    let scheme_list = gtk4::StringList::new(&scheme_strs);
+    let scheme_dropdown = gtk4::DropDown::new(Some(scheme_list), gtk4::Expression::NONE);
+    if let Some(pos) = scheme_strings.iter().position(|id| id == &s.style_scheme) {
+        scheme_dropdown.set_selected(pos as u32);
+    }
+    content.append(&make_pref_row("Color scheme", &scheme_dropdown));
+
+    // Show line numbers
+    let line_num_switch = gtk4::Switch::new();
+    line_num_switch.set_active(s.show_line_numbers);
+    line_num_switch.set_valign(gtk4::Align::Center);
+    content.append(&make_pref_row("Show line numbers", &line_num_switch));
+
+    // Highlight current line
+    let highlight_switch = gtk4::Switch::new();
+    highlight_switch.set_active(s.highlight_current_line);
+    highlight_switch.set_valign(gtk4::Align::Center);
+    content.append(&make_pref_row("Highlight current line", &highlight_switch));
+
+    // Word wrap
+    let wrap_modes = gtk4::StringList::new(&["None", "Word", "Character"]);
+    let wrap_dropdown = gtk4::DropDown::new(Some(wrap_modes), gtk4::Expression::NONE);
+    wrap_dropdown.set_selected(match s.wrap_mode.as_str() {
+        "word" => 1,
+        "char" => 2,
+        _ => 0,
+    });
+    content.append(&make_pref_row("Word wrap", &wrap_dropdown));
+
+    // Tab width
+    let tab_adj = Adjustment::new(f64::from(s.tab_width), 1.0, 16.0, 1.0, 4.0, 0.0);
+    let tab_spin = gtk4::SpinButton::new(Some(&tab_adj), 1.0, 0);
+    content.append(&make_pref_row("Tab width", &tab_spin));
+
+    // ── File Filters section ──
+    let filter_header = Label::new(Some("File Filters"));
+    filter_header.set_halign(gtk4::Align::Start);
+    filter_header.set_margin_start(12);
+    filter_header.set_margin_top(16);
+    filter_header.set_margin_bottom(4);
+    filter_header.add_css_class("heading");
+    content.append(&filter_header);
+
+    let filter_desc = Label::new(Some("Names to exclude from directory comparison"));
+    filter_desc.set_halign(gtk4::Align::Start);
+    filter_desc.set_margin_start(12);
+    filter_desc.add_css_class("dim-label");
+    content.append(&filter_desc);
+
+    let filter_list_box = GtkBox::new(Orientation::Vertical, 2);
+    filter_list_box.set_margin_top(4);
+    filter_list_box.set_margin_bottom(4);
+    filter_list_box.set_margin_start(4);
+    filter_list_box.set_margin_end(4);
+
+    let filter_entries: Rc<RefCell<Vec<Entry>>> = Rc::new(RefCell::new(Vec::new()));
+
+    let add_filter_entry = {
+        let fe = filter_entries.clone();
+        let flb = filter_list_box.clone();
+        move |text: &str| {
+            let row = GtkBox::new(Orientation::Horizontal, 4);
+            let entry = Entry::new();
+            entry.set_text(text);
+            entry.set_hexpand(true);
+            let remove_btn = Button::from_icon_name("list-remove-symbolic");
+            remove_btn.set_tooltip_text(Some("Remove"));
+            row.append(&entry);
+            row.append(&remove_btn);
+            flb.append(&row);
+            fe.borrow_mut().push(entry.clone());
+
+            let fe2 = fe.clone();
+            let row_ref = row.clone();
+            let flb2 = flb.clone();
+            remove_btn.connect_clicked(move |_| {
+                fe2.borrow_mut().retain(|e| e != &entry);
+                flb2.remove(&row_ref);
+            });
+        }
+    };
+
+    for f in &s.dir_filters {
+        add_filter_entry(f);
+    }
+    drop(s);
+
+    let add_btn = Button::from_icon_name("list-add-symbolic");
+    add_btn.set_tooltip_text(Some("Add filter"));
+    add_btn.set_halign(gtk4::Align::Start);
+    add_btn.set_margin_start(4);
+    add_btn.set_margin_bottom(4);
+
+    let filter_inner = GtkBox::new(Orientation::Vertical, 0);
+    filter_inner.append(&filter_list_box);
+    filter_inner.append(&add_btn);
+
+    let filter_frame = gtk4::Frame::new(None);
+    filter_frame.set_margin_start(12);
+    filter_frame.set_margin_end(12);
+    filter_frame.set_margin_top(4);
+    filter_frame.set_child(Some(&filter_inner));
+    content.append(&filter_frame);
+
+    {
+        let afe = add_filter_entry.clone();
+        add_btn.connect_clicked(move |_| afe(""));
+    }
+
+    // ── Live-apply: shared closure to read controls, save, and apply ──
+    let apply: Rc<dyn Fn()> = {
+        let st = settings.clone();
+        let p = parent.clone();
+        let fb = font_btn.clone();
+        let sd = scheme_dropdown.clone();
+        let ss = scheme_strings.clone();
+        let lns = line_num_switch.clone();
+        let hls = highlight_switch.clone();
+        let wd = wrap_dropdown.clone();
+        let ts = tab_spin.clone();
+        let fe = filter_entries.clone();
+        Rc::new(move || {
+            let mut s = st.borrow_mut();
+            if let Some(fd) = fb.font_desc() {
+                s.font = fd.to_string();
+            }
+            let idx = sd.selected() as usize;
+            if idx < ss.len() {
+                s.style_scheme = ss[idx].clone();
+            }
+            s.show_line_numbers = lns.is_active();
+            s.highlight_current_line = hls.is_active();
+            s.wrap_mode = match wd.selected() {
+                1 => "word".into(),
+                2 => "char".into(),
+                _ => "none".into(),
+            };
+            s.tab_width = ts.value() as u32;
+            s.dir_filters = fe
+                .borrow()
+                .iter()
+                .map(|e| e.text().to_string())
+                .filter(|t| !t.is_empty())
+                .collect();
+            s.save();
+            apply_settings_to_views(p.upcast_ref(), &s);
+        })
+    };
+
+    // Connect change signals for live-apply
+    {
+        let a = apply.clone();
+        font_btn.connect_font_desc_notify(move |_| a());
+    }
+    {
+        let a = apply.clone();
+        scheme_dropdown.connect_selected_notify(move |_| a());
+    }
+    {
+        let a = apply.clone();
+        line_num_switch.connect_active_notify(move |_| a());
+    }
+    {
+        let a = apply.clone();
+        highlight_switch.connect_active_notify(move |_| a());
+    }
+    {
+        let a = apply.clone();
+        wrap_dropdown.connect_selected_notify(move |_| a());
+    }
+    {
+        let a = apply.clone();
+        tab_spin.connect_value_changed(move |_| a());
+    }
+
+    // Also save filters on close (they don't need live-apply)
+    {
+        let a = apply.clone();
+        win.connect_close_request(move |_| {
+            a();
+            gtk4::glib::Propagation::Proceed
+        });
+    }
+
+    let scroll = ScrolledWindow::builder()
+        .hscrollbar_policy(PolicyType::Never)
+        .child(&content)
+        .build();
+    win.set_child(Some(&scroll));
+    win.present();
 }
 
 // ─── Main UI ───────────────────────────────────────────────────────────────
@@ -3629,24 +3962,26 @@ pub(crate) fn build_ui(application: &Application, mode: CompareMode) {
             gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
         );
 
+        let settings = Rc::new(RefCell::new(Settings::load()));
+
         match mode {
             CompareMode::Dirs {
                 left,
                 right,
                 labels,
-            } => build_dir_window(app, left, right, &labels),
+            } => build_dir_window(app, left, right, &labels, settings),
             CompareMode::Files {
                 left,
                 right,
                 labels,
-            } => build_file_window(app, left, right, &labels),
+            } => build_file_window(app, left, right, &labels, &settings),
             CompareMode::Merge {
                 left,
                 middle,
                 right,
                 output,
                 labels,
-            } => build_merge_window(app, left, middle, right, output, &labels),
+            } => build_merge_window(app, left, middle, right, output, &labels, &settings),
         }
     });
 }
@@ -3808,8 +4143,9 @@ fn build_file_window(
     left_path: std::path::PathBuf,
     right_path: std::path::PathBuf,
     labels: &[String],
+    settings: &Rc<RefCell<Settings>>,
 ) {
-    let dv = build_diff_view(&left_path, &right_path, labels);
+    let dv = build_diff_view(&left_path, &right_path, labels, settings);
 
     // File watcher for both files
     let (fs_tx, fs_rx) = mpsc::channel::<()>();
@@ -3898,6 +4234,19 @@ fn build_file_window(
         .build();
     window.insert_action_group("diff", Some(&dv.action_group));
 
+    // Preferences action
+    let win_actions = gio::SimpleActionGroup::new();
+    {
+        let action = gio::SimpleAction::new("prefs", None);
+        let w = window.clone();
+        let st = settings.clone();
+        action.connect_activate(move |_, _| {
+            show_preferences(&w, &st);
+        });
+        win_actions.add_action(&action);
+    }
+    window.insert_action_group("win", Some(&win_actions));
+
     // Bind keyboard accelerators
     if let Some(gtk_app) = window.application() {
         gtk_app.set_accels_for_action("diff.prev-chunk", &["<Alt>Up", "<Ctrl>e"]);
@@ -3908,6 +4257,7 @@ fn build_file_window(
         gtk_app.set_accels_for_action("diff.find-prev", &["<Shift>F3"]);
         gtk_app.set_accels_for_action("diff.go-to-line", &["<Ctrl>l"]);
         gtk_app.set_accels_for_action("diff.export-patch", &["<Ctrl><Shift>p"]);
+        gtk_app.set_accels_for_action("win.prefs", &["<Ctrl>comma"]);
     }
 
     window.present();
@@ -3920,6 +4270,7 @@ fn build_dir_window(
     left_dir: std::path::PathBuf,
     right_dir: std::path::PathBuf,
     _labels: &[String],
+    settings: Rc<RefCell<Settings>>,
 ) {
     let left_dir = Rc::new(RefCell::new(left_dir.to_string_lossy().into_owned()));
     let right_dir = Rc::new(RefCell::new(right_dir.to_string_lossy().into_owned()));
@@ -3933,6 +4284,7 @@ fn build_dir_window(
             Path::new(right_dir.borrow().as_str()),
             "",
             &mut children_map.borrow_mut(),
+            &settings.borrow().dir_filters,
         );
         for i in 0..store.n_items() {
             if let Some(obj) = store.item(i) {
@@ -4067,9 +4419,14 @@ fn build_dir_window(
     dir_toolbar.set_margin_bottom(4);
     let dir_swap_btn = Button::from_icon_name("object-flip-horizontal-symbolic");
     dir_swap_btn.set_tooltip_text(Some("Swap panes"));
+    let dir_prefs_btn = Button::from_icon_name("preferences-system-symbolic");
+    dir_prefs_btn.set_tooltip_text(Some("Preferences (Ctrl+,)"));
+    dir_prefs_btn.set_action_name(Some("win.prefs"));
+
     dir_toolbar.append(&dir_copy_box);
     dir_toolbar.append(&delete_btn);
     dir_toolbar.append(&dir_swap_btn);
+    dir_toolbar.append(&dir_prefs_btn);
 
     // Helper: rescan directories and refresh the tree model
     let reload_dir = {
@@ -4077,6 +4434,7 @@ fn build_dir_window(
         let rs = root_store.clone();
         let ld = left_dir.clone();
         let rd = right_dir.clone();
+        let st = settings.clone();
         move || {
             let mut new_map = HashMap::new();
             let (new_store, _) = scan_level(
@@ -4084,6 +4442,7 @@ fn build_dir_window(
                 Path::new(rd.borrow().as_str()),
                 "",
                 &mut new_map,
+                &st.borrow().dir_filters,
             );
             *cm.borrow_mut() = new_map;
             rs.remove_all();
@@ -4289,6 +4648,7 @@ fn build_dir_window(
         let tabs = open_tabs.clone();
         let ld = left_dir.clone();
         let rd = right_dir.clone();
+        let st = settings.clone();
         left_view.connect_activate(move |_, pos| {
             if let Some(item) = tm.item(pos) {
                 let row = item.downcast::<TreeListRow>().unwrap();
@@ -4302,6 +4662,7 @@ fn build_dir_window(
                         &tabs,
                         &ld.borrow(),
                         &rd.borrow(),
+                        &st,
                     );
                 }
             }
@@ -4313,6 +4674,7 @@ fn build_dir_window(
         let tabs = open_tabs.clone();
         let ld = left_dir.clone();
         let rd = right_dir.clone();
+        let st = settings.clone();
         right_view.connect_activate(move |_, pos| {
             if let Some(item) = tm.item(pos) {
                 let row = item.downcast::<TreeListRow>().unwrap();
@@ -4326,6 +4688,7 @@ fn build_dir_window(
                         &tabs,
                         &ld.borrow(),
                         &rd.borrow(),
+                        &st,
                     );
                 }
             }
@@ -4364,6 +4727,7 @@ fn build_dir_window(
     let tabs_reload = open_tabs.clone();
     let ld_reload = left_dir.clone();
     let rd_reload = right_dir.clone();
+    let st_reload = settings.clone();
     gtk4::glib::timeout_add_local(Duration::from_millis(500), move || {
         let mut changed = false;
         while fs_rx.try_recv().is_ok() {
@@ -4377,6 +4741,7 @@ fn build_dir_window(
                 Path::new(rd_reload.borrow().as_str()),
                 "",
                 &mut new_map,
+                &st_reload.borrow().dir_filters,
             );
             // Only rebuild the tree if root-level data actually changed.
             // remove_all()+re-append destroys expansion and selection state,
@@ -4436,6 +4801,19 @@ fn build_dir_window(
         .child(&notebook)
         .build();
 
+    // Preferences action
+    let win_actions = gio::SimpleActionGroup::new();
+    {
+        let action = gio::SimpleAction::new("prefs", None);
+        let w = window.clone();
+        let st = settings.clone();
+        action.connect_activate(move |_, _| {
+            show_preferences(&w, &st);
+        });
+        win_actions.add_action(&action);
+    }
+    window.insert_action_group("win", Some(&win_actions));
+
     // Register keyboard accelerators
     if let Some(gtk_app) = window.application() {
         // Diff navigation (used by file diff tabs)
@@ -4447,6 +4825,7 @@ fn build_dir_window(
         gtk_app.set_accels_for_action("diff.find-prev", &["<Shift>F3"]);
         gtk_app.set_accels_for_action("diff.go-to-line", &["<Ctrl>l"]);
         gtk_app.set_accels_for_action("diff.export-patch", &["<Ctrl><Shift>p"]);
+        gtk_app.set_accels_for_action("win.prefs", &["<Ctrl>comma"]);
         // Directory copy actions
         gtk_app.set_accels_for_action("dir.folder-copy-left", &["<Alt>Left"]);
         gtk_app.set_accels_for_action("dir.folder-copy-right", &["<Alt>Right"]);

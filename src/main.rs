@@ -5,6 +5,7 @@ use gio::prelude::ApplicationExtManual;
 use gtk4::{Application, glib};
 
 mod myers;
+mod settings;
 mod ui;
 
 #[derive(Parser)]
