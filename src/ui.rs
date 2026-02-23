@@ -1550,23 +1550,6 @@ fn build_diff_view(
         gutter.add_controller(gesture);
     }
 
-    // Initial async diff
-    if !identical && !any_binary {
-        let lb = left_buf.clone();
-        let rb = right_buf.clone();
-        let ch = chunks.clone();
-        let g = gutter.clone();
-        gtk4::glib::spawn_future_local(async move {
-            let new_chunks =
-                gio::spawn_blocking(move || myers::diff_lines(&left_content, &right_content))
-                    .await
-                    .unwrap_or_default();
-            apply_diff_tags(&lb, &rb, &new_chunks);
-            *ch.borrow_mut() = new_chunks;
-            g.queue_draw();
-        });
-    }
-
     // Text filter state (created early so connect_changed can use it)
     let ignore_blanks: Rc<Cell<bool>> = Rc::new(Cell::new(false));
     let ignore_whitespace: Rc<Cell<bool>> = Rc::new(Cell::new(false));
@@ -1878,6 +1861,23 @@ fn build_diff_view(
         };
         connect_refresh(&left_buf);
         connect_refresh(&right_buf);
+
+        // Initial async diff (must be after chunk_label + chunk_maps exist)
+        if !identical && !any_binary {
+            let lb = left_buf.clone();
+            let rb = right_buf.clone();
+            let ch = chunks.clone();
+            let on_complete = make_on_complete();
+            gtk4::glib::spawn_future_local(async move {
+                let new_chunks =
+                    gio::spawn_blocking(move || myers::diff_lines(&left_content, &right_content))
+                        .await
+                        .unwrap_or_default();
+                apply_diff_tags(&lb, &rb, &new_chunks);
+                *ch.borrow_mut() = new_chunks;
+                on_complete();
+            });
+        }
 
         // Toggle handlers for filter buttons
         {
@@ -2710,40 +2710,6 @@ fn build_merge_view(
         right_gutter.add_controller(gesture);
     }
 
-    // Initial async diff
-    if !any_binary && (!left_identical || !right_identical) {
-        let lb = left_buf.clone();
-        let mb = middle_buf.clone();
-        let rb = right_buf.clone();
-        let lch = left_chunks.clone();
-        let rch = right_chunks.clone();
-        let lg = left_gutter.clone();
-        let rg = right_gutter.clone();
-        gtk4::glib::spawn_future_local(async move {
-            let (new_left, new_right) = gio::spawn_blocking(move || {
-                let nl = if left_identical {
-                    Vec::new()
-                } else {
-                    myers::diff_lines(&left_content, &middle_content)
-                };
-                let nr = if right_identical {
-                    Vec::new()
-                } else {
-                    myers::diff_lines(&middle_content, &right_content)
-                };
-                (nl, nr)
-            })
-            .await
-            .unwrap_or_default();
-
-            apply_merge_tags(&lb, &mb, &rb, &new_left, &new_right);
-            *lch.borrow_mut() = new_left;
-            *rch.borrow_mut() = new_right;
-            lg.queue_draw();
-            rg.queue_draw();
-        });
-    }
-
     // Text filter state
     let ignore_blanks: Rc<Cell<bool>> = Rc::new(Cell::new(false));
     let ignore_whitespace: Rc<Cell<bool>> = Rc::new(Cell::new(false));
@@ -3119,6 +3085,38 @@ fn build_merge_view(
         connect_refresh(&left_buf);
         connect_refresh(&middle_buf);
         connect_refresh(&right_buf);
+
+        // Initial async diff (must be after chunk_label + chunk_maps exist)
+        if !any_binary && (!left_identical || !right_identical) {
+            let lb = left_buf.clone();
+            let mb = middle_buf.clone();
+            let rb = right_buf.clone();
+            let lch = left_chunks.clone();
+            let rch = right_chunks.clone();
+            let on_complete = make_on_complete();
+            gtk4::glib::spawn_future_local(async move {
+                let (new_left, new_right) = gio::spawn_blocking(move || {
+                    let nl = if left_identical {
+                        Vec::new()
+                    } else {
+                        myers::diff_lines(&left_content, &middle_content)
+                    };
+                    let nr = if right_identical {
+                        Vec::new()
+                    } else {
+                        myers::diff_lines(&middle_content, &right_content)
+                    };
+                    (nl, nr)
+                })
+                .await
+                .unwrap_or_default();
+
+                apply_merge_tags(&lb, &mb, &rb, &new_left, &new_right);
+                *lch.borrow_mut() = new_left;
+                *rch.borrow_mut() = new_right;
+                on_complete();
+            });
+        }
 
         // Toggle handlers for filter buttons
         {
@@ -3716,10 +3714,7 @@ fn make_pref_row(label_text: &str, widget: &impl IsA<gtk4::Widget>) -> GtkBox {
     row
 }
 
-fn show_preferences(
-    parent: &ApplicationWindow,
-    settings: &Rc<RefCell<Settings>>,
-) {
+fn show_preferences(parent: &ApplicationWindow, settings: &Rc<RefCell<Settings>>) {
     let win = gtk4::Window::builder()
         .title("Preferences")
         .transient_for(parent)
@@ -3753,7 +3748,10 @@ fn show_preferences(
     // Style scheme
     let scheme_mgr = sourceview5::StyleSchemeManager::default();
     let scheme_ids = scheme_mgr.scheme_ids();
-    let scheme_strings: Vec<String> = scheme_ids.iter().map(|g| g.to_string()).collect();
+    let scheme_strings: Vec<String> = scheme_ids
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect();
     let scheme_strs: Vec<&str> = scheme_strings.iter().map(String::as_str).collect();
     let scheme_list = gtk4::StringList::new(&scheme_strs);
     let scheme_dropdown = gtk4::DropDown::new(Some(scheme_list), gtk4::Expression::NONE);
@@ -3883,7 +3881,7 @@ fn show_preferences(
             }
             let idx = sd.selected() as usize;
             if idx < ss.len() {
-                s.style_scheme = ss[idx].clone();
+                s.style_scheme.clone_from(&ss[idx]);
             }
             s.show_line_numbers = lns.is_active();
             s.highlight_current_line = hls.is_active();
@@ -3947,6 +3945,655 @@ fn show_preferences(
     win.present();
 }
 
+// ─── VCS window ─────────────────────────────────────────────────────────────
+
+fn encode_vcs_row(status: &crate::vcs::VcsStatus, rel_path: &str) -> String {
+    let code = match status {
+        crate::vcs::VcsStatus::Modified => "M",
+        crate::vcs::VcsStatus::Added => "A",
+        crate::vcs::VcsStatus::Deleted => "D",
+        crate::vcs::VcsStatus::Renamed => "R",
+        crate::vcs::VcsStatus::Untracked => "U",
+    };
+    format!("{code}{SEP}{rel_path}")
+}
+
+fn decode_vcs_code(raw: &str) -> &str {
+    raw.split(SEP).next().unwrap_or("")
+}
+
+fn decode_vcs_path(raw: &str) -> &str {
+    raw.split_once(SEP).map_or("", |x| x.1)
+}
+
+fn vcs_status_label(code: &str) -> &str {
+    match code {
+        "M" => "Modified",
+        "A" => "Added",
+        "D" => "Deleted",
+        "R" => "Renamed",
+        "U" => "Untracked",
+        _ => "",
+    }
+}
+
+fn vcs_status_css(code: &str) -> &str {
+    match code {
+        "M" | "R" => "diff-changed",
+        "A" | "U" => "diff-inserted",
+        "D" => "diff-deleted",
+        _ => "",
+    }
+}
+
+fn make_vcs_status_factory() -> SignalListItemFactory {
+    let factory = SignalListItemFactory::new();
+    factory.connect_setup(|_, list_item| {
+        let item = list_item.downcast_ref::<ListItem>().unwrap();
+        let label = Label::new(None);
+        label.set_halign(gtk4::Align::Start);
+        item.set_child(Some(&label));
+    });
+    factory.connect_bind(|_, list_item| {
+        let item = list_item.downcast_ref::<ListItem>().unwrap();
+        let obj = item.item().and_downcast::<StringObject>().unwrap();
+        let raw = obj.string();
+        let label = item.child().and_downcast::<Label>().unwrap();
+        let code = decode_vcs_code(&raw);
+        label.set_label(vcs_status_label(code));
+        for cls in &["diff-changed", "diff-deleted", "diff-inserted"] {
+            label.remove_css_class(cls);
+        }
+        let css = vcs_status_css(code);
+        if !css.is_empty() {
+            label.add_css_class(css);
+        }
+    });
+    factory
+}
+
+fn make_vcs_path_factory() -> SignalListItemFactory {
+    let factory = SignalListItemFactory::new();
+    factory.connect_setup(|_, list_item| {
+        let item = list_item.downcast_ref::<ListItem>().unwrap();
+        let hbox = GtkBox::new(Orientation::Horizontal, 4);
+        let icon = Image::new();
+        let label = Label::new(None);
+        label.set_halign(gtk4::Align::Start);
+        label.set_hexpand(true);
+        hbox.append(&icon);
+        hbox.append(&label);
+        item.set_child(Some(&hbox));
+    });
+    factory.connect_bind(|_, list_item| {
+        let item = list_item.downcast_ref::<ListItem>().unwrap();
+        let obj = item.item().and_downcast::<StringObject>().unwrap();
+        let raw = obj.string();
+        let hbox = item.child().and_downcast::<GtkBox>().unwrap();
+        let icon = hbox.first_child().and_downcast::<Image>().unwrap();
+        let label = icon.next_sibling().and_downcast::<Label>().unwrap();
+        let code = decode_vcs_code(&raw);
+        let path = decode_vcs_path(&raw);
+        icon.set_icon_name(Some("text-x-generic-symbolic"));
+        label.set_label(path);
+        for cls in &["diff-changed", "diff-deleted", "diff-inserted"] {
+            label.remove_css_class(cls);
+        }
+        let css = vcs_status_css(code);
+        if !css.is_empty() {
+            label.add_css_class(css);
+        }
+    });
+    factory
+}
+
+fn open_vcs_diff(
+    notebook: &Notebook,
+    rel_path: &str,
+    status_code: &str,
+    open_tabs: &Rc<RefCell<Vec<FileTab>>>,
+    repo_root: &Path,
+    temp_dir: &Path,
+    settings: &Rc<RefCell<Settings>>,
+) {
+    // If already open, switch to it
+    if let Some(idx) = open_tabs
+        .borrow()
+        .iter()
+        .position(|t| t.rel_path == rel_path)
+    {
+        // +1 because page 0 is the VCS list tab
+        notebook.set_current_page(Some((idx + 1) as u32));
+        return;
+    }
+
+    let working_path = repo_root.join(rel_path);
+
+    let (left_path, right_path) = match status_code {
+        "M" | "R" => {
+            let head = crate::vcs::head_content(repo_root, rel_path).unwrap_or_default();
+            let temp_file = temp_dir.join(rel_path);
+            if let Some(parent) = temp_file.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            let _ = fs::write(&temp_file, &head);
+            (temp_file, working_path)
+        }
+        "A" | "U" => {
+            let temp_file = temp_dir.join(format!("__empty__{rel_path}"));
+            if let Some(parent) = temp_file.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            let _ = fs::write(&temp_file, "");
+            (temp_file, working_path)
+        }
+        "D" => {
+            let head = crate::vcs::head_content(repo_root, rel_path).unwrap_or_default();
+            let temp_left = temp_dir.join(rel_path);
+            let temp_right = temp_dir.join(format!("__deleted__{rel_path}"));
+            for p in [&temp_left, &temp_right] {
+                if let Some(parent) = p.parent() {
+                    let _ = fs::create_dir_all(parent);
+                }
+            }
+            let _ = fs::write(&temp_left, &head);
+            let _ = fs::write(&temp_right, "");
+            (temp_left, temp_right)
+        }
+        _ => return,
+    };
+
+    let labels = vec![format!("HEAD: {rel_path}"), format!("Working: {rel_path}")];
+    let dv = build_diff_view(&left_path, &right_path, &labels, settings);
+    dv.widget
+        .insert_action_group("diff", Some(&dv.action_group));
+
+    let tab_id = NEXT_TAB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    open_tabs.borrow_mut().push(FileTab {
+        id: tab_id,
+        rel_path: rel_path.to_string(),
+        left_buf: dv.left_buf,
+        right_buf: dv.right_buf,
+        left_save: dv.left_save,
+        right_save: dv.right_save,
+    });
+
+    let status_text = vcs_status_label(status_code);
+    let file_name = Path::new(rel_path).file_name().map_or_else(
+        || rel_path.to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    let tab_title = format!("[{status_text}] {file_name}");
+
+    let tab_label_box = GtkBox::new(Orientation::Horizontal, 4);
+    let label = Label::new(Some(&tab_title));
+    let close_btn = Button::from_icon_name("window-close-symbolic");
+    close_btn.set_has_frame(false);
+    tab_label_box.append(&label);
+    tab_label_box.append(&close_btn);
+
+    let page_num = notebook.append_page(&dv.widget, Some(&tab_label_box));
+    notebook.set_current_page(Some(page_num));
+
+    let nb = notebook.clone();
+    let w = dv.widget.clone();
+    let tabs = open_tabs.clone();
+    close_btn.connect_clicked(move |_| {
+        if let Some(n) = nb.page_num(&w) {
+            nb.remove_page(Some(n));
+        }
+        tabs.borrow_mut().retain(|t| t.id != tab_id);
+    });
+}
+
+fn build_vcs_window(app: &Application, dir: std::path::PathBuf, settings: Rc<RefCell<Settings>>) {
+    let Some(repo_root) = crate::vcs::repo_root(&dir) else {
+        eprintln!("Error: could not determine git repository root");
+        return;
+    };
+
+    let temp_dir = std::env::temp_dir().join(format!("meld-rs-{}", std::process::id()));
+    let _ = fs::create_dir_all(&temp_dir);
+
+    // Scan changed files
+    let entries = crate::vcs::changed_files(&repo_root);
+    let store = ListStore::new::<StringObject>();
+    let mut initial_encoded = Vec::new();
+    for entry in &entries {
+        let encoded = encode_vcs_row(&entry.status, &entry.rel_path);
+        store.append(&StringObject::new(&encoded));
+        initial_encoded.push(encoded);
+    }
+    let last_encoded: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(initial_encoded));
+
+    let sel = SingleSelection::new(Some(store.clone()));
+    let view = ColumnView::new(Some(sel.clone()));
+    view.set_show_column_separators(true);
+    view.set_show_row_separators(true);
+
+    let status_col = ColumnViewColumn::new(Some("Status"), Some(make_vcs_status_factory()));
+    status_col.set_fixed_width(100);
+    view.append_column(&status_col);
+
+    let path_col = ColumnViewColumn::new(Some("File"), Some(make_vcs_path_factory()));
+    path_col.set_expand(true);
+    view.append_column(&path_col);
+
+    let list_scroll = ScrolledWindow::builder().vexpand(true).child(&view).build();
+
+    // Toolbar
+    let toolbar = GtkBox::new(Orientation::Horizontal, 8);
+    toolbar.set_margin_start(6);
+    toolbar.set_margin_end(6);
+    toolbar.set_margin_top(4);
+    toolbar.set_margin_bottom(4);
+
+    let repo_label = Label::new(Some(&repo_root.to_string_lossy()));
+    repo_label.set_halign(gtk4::Align::Start);
+    repo_label.set_hexpand(true);
+    repo_label.add_css_class("dim-label");
+
+    let count_label = Label::new(Some(&format!(
+        "{} changed file{}",
+        entries.len(),
+        if entries.len() == 1 { "" } else { "s" }
+    )));
+    count_label.add_css_class("chunk-label");
+
+    let refresh_btn = Button::from_icon_name("view-refresh-symbolic");
+    refresh_btn.set_tooltip_text(Some("Refresh"));
+
+    let prefs_btn = Button::from_icon_name("preferences-system-symbolic");
+    prefs_btn.set_tooltip_text(Some("Preferences (Ctrl+,)"));
+    prefs_btn.set_action_name(Some("win.prefs"));
+
+    toolbar.append(&repo_label);
+    toolbar.append(&count_label);
+    toolbar.append(&refresh_btn);
+    toolbar.append(&prefs_btn);
+
+    // VCS tab
+    let vcs_tab = GtkBox::new(Orientation::Vertical, 0);
+    vcs_tab.append(&toolbar);
+    vcs_tab.append(&gtk4::Separator::new(Orientation::Horizontal));
+    vcs_tab.append(&list_scroll);
+    vcs_tab.set_vexpand(true);
+
+    // Notebook
+    let notebook = Notebook::new();
+    notebook.set_scrollable(true);
+    notebook.append_page(&vcs_tab, Some(&Label::new(Some("Changes"))));
+
+    let open_tabs: Rc<RefCell<Vec<FileTab>>> = Rc::new(RefCell::new(Vec::new()));
+
+    // Open selected item helper (shared by double-click and Enter key)
+    let open_selected = {
+        let nb = notebook.clone();
+        let tabs = open_tabs.clone();
+        let rr = repo_root.clone();
+        let td = temp_dir.clone();
+        let st = settings.clone();
+        let store_ref = store.clone();
+        let s = sel.clone();
+        Rc::new(move |pos: Option<u32>| {
+            // Try position-based lookup first, fall back to selected item
+            let item = pos
+                .and_then(|p| store_ref.item(p))
+                .or_else(|| s.selected_item());
+            if let Some(item) = item {
+                let obj = item.downcast::<StringObject>().unwrap();
+                let raw = obj.string();
+                open_vcs_diff(
+                    &nb,
+                    decode_vcs_path(&raw),
+                    decode_vcs_code(&raw),
+                    &tabs,
+                    &rr,
+                    &td,
+                    &st,
+                );
+            }
+        })
+    };
+
+    // Double-click handler
+    {
+        let open = open_selected.clone();
+        view.connect_activate(move |_v, pos| {
+            open(Some(pos));
+        });
+    }
+
+    // Enter key handler
+    {
+        let open = open_selected.clone();
+        let key_ctl = EventControllerKey::new();
+        key_ctl.connect_key_pressed(move |_, key, _, _| {
+            if key == gtk4::gdk::Key::Return || key == gtk4::gdk::Key::KP_Enter {
+                open(None);
+                return gtk4::glib::Propagation::Stop;
+            }
+            gtk4::glib::Propagation::Proceed
+        });
+        view.add_controller(key_ctl);
+    }
+
+    // Refresh handler
+    {
+        let rr = repo_root.clone();
+        let st_ref = store.clone();
+        let cl = count_label.clone();
+        let le = last_encoded.clone();
+        let refresh = Rc::new(move || {
+            let entries = crate::vcs::changed_files(&rr);
+            let new_encoded: Vec<String> = entries
+                .iter()
+                .map(|e| encode_vcs_row(&e.status, &e.rel_path))
+                .collect();
+            if new_encoded == *le.borrow() {
+                return;
+            }
+            le.borrow_mut().clone_from(&new_encoded);
+            st_ref.remove_all();
+            for encoded in &new_encoded {
+                st_ref.append(&StringObject::new(encoded));
+            }
+            cl.set_label(&format!(
+                "{} changed file{}",
+                entries.len(),
+                if entries.len() == 1 { "" } else { "s" }
+            ));
+        });
+        let r = refresh.clone();
+        refresh_btn.connect_clicked(move |_| r());
+
+        // File watcher
+        let (fs_tx, fs_rx) = mpsc::channel::<()>();
+        {
+            let rr = repo_root.clone();
+            std::thread::spawn(move || {
+                use notify::{RecursiveMode, Watcher};
+                let _watcher = {
+                    let mut w = notify::recommended_watcher(
+                        move |res: Result<notify::Event, notify::Error>| {
+                            if let Ok(event) = res {
+                                // Skip events inside .git directory (git status touches
+                                // index files, which would cause an infinite refresh loop)
+                                let dominated_by_git = event
+                                    .paths
+                                    .iter()
+                                    .all(|p| p.components().any(|c| c.as_os_str() == ".git"));
+                                if !dominated_by_git {
+                                    let _ = fs_tx.send(());
+                                }
+                            }
+                        },
+                    )
+                    .expect("Failed to create file watcher");
+                    w.watch(&rr, RecursiveMode::Recursive).ok();
+                    w
+                };
+                loop {
+                    std::thread::park();
+                }
+            });
+        }
+        gtk4::glib::timeout_add_local(Duration::from_millis(500), move || {
+            let mut changed = false;
+            while fs_rx.try_recv().is_ok() {
+                changed = true;
+            }
+            if changed {
+                refresh();
+            }
+            gtk4::glib::ControlFlow::Continue
+        });
+    }
+
+    // Window
+    let repo_name = repo_root.file_name().map_or_else(
+        || repo_root.to_string_lossy().into_owned(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    let window = ApplicationWindow::builder()
+        .application(app)
+        .title(format!("meld-rs — {repo_name} (git)"))
+        .default_width(700)
+        .default_height(500)
+        .child(&notebook)
+        .build();
+
+    // Preferences action
+    let win_actions = gio::SimpleActionGroup::new();
+    {
+        let action = gio::SimpleAction::new("prefs", None);
+        let w = window.clone();
+        let st = settings.clone();
+        action.connect_activate(move |_, _| {
+            show_preferences(&w, &st);
+        });
+        win_actions.add_action(&action);
+    }
+    window.insert_action_group("win", Some(&win_actions));
+
+    if let Some(gtk_app) = window.application() {
+        gtk_app.set_accels_for_action("win.prefs", &["<Ctrl>comma"]);
+    }
+
+    // Clean up temp dir on destroy
+    let td = temp_dir.clone();
+    window.connect_destroy(move |_| {
+        let _ = fs::remove_dir_all(&td);
+    });
+
+    window.present();
+    view.grab_focus();
+}
+
+// ─── Welcome window ─────────────────────────────────────────────────────────
+
+fn build_welcome_window(app: &Application, settings: Rc<RefCell<Settings>>) {
+    let window = ApplicationWindow::builder()
+        .application(app)
+        .title("meld-rs")
+        .default_width(480)
+        .default_height(360)
+        .build();
+
+    let content = GtkBox::new(Orientation::Vertical, 16);
+    content.set_margin_top(32);
+    content.set_margin_bottom(32);
+    content.set_margin_start(48);
+    content.set_margin_end(48);
+    content.set_valign(gtk4::Align::Center);
+
+    let title = Label::new(Some("meld-rs"));
+    title.add_css_class("title-1");
+    content.append(&title);
+
+    let subtitle = Label::new(Some("Visual Diff and Merge Tool"));
+    subtitle.add_css_class("dim-label");
+    content.append(&subtitle);
+
+    let spacer = GtkBox::new(Orientation::Vertical, 0);
+    spacer.set_margin_top(8);
+    content.append(&spacer);
+
+    // Compare Files button
+    let files_btn = make_welcome_button("Compare Files", "Compare two files side-by-side");
+    content.append(&files_btn);
+
+    // Compare Directories button
+    let dirs_btn = make_welcome_button("Compare Directories", "Compare directory trees");
+    content.append(&dirs_btn);
+
+    // 3-way Merge button
+    let merge_btn = make_welcome_button("3-way Merge", "Merge three files");
+    content.append(&merge_btn);
+
+    // Compare Files handler
+    {
+        let app2 = app.clone();
+        let w = window.clone();
+        let st = settings.clone();
+        files_btn.connect_clicked(move |_| {
+            let dialog = gtk4::FileDialog::new();
+            dialog.set_title("Select first file");
+            let app3 = app2.clone();
+            let w2 = w.clone();
+            let st2 = st.clone();
+            dialog.open(Some(&w), gio::Cancellable::NONE, move |result| {
+                if let Ok(first) = result
+                    && let Some(first_path) = first.path()
+                {
+                    let dialog2 = gtk4::FileDialog::new();
+                    dialog2.set_title("Select second file");
+                    let app4 = app3.clone();
+                    let w3 = w2.clone();
+                    let st3 = st2.clone();
+                    dialog2.open(Some(&w2), gio::Cancellable::NONE, move |result2| {
+                        if let Ok(second) = result2
+                            && let Some(second_path) = second.path()
+                        {
+                            build_file_window(&app4, first_path, second_path, &[], &st3);
+                            w3.close();
+                        }
+                    });
+                }
+            });
+        });
+    }
+
+    // Compare Directories handler
+    {
+        let app2 = app.clone();
+        let w = window.clone();
+        let st = settings.clone();
+        dirs_btn.connect_clicked(move |_| {
+            let dialog = gtk4::FileDialog::new();
+            dialog.set_title("Select first directory");
+            let app3 = app2.clone();
+            let w2 = w.clone();
+            let st2 = st.clone();
+            dialog.select_folder(Some(&w), gio::Cancellable::NONE, move |result| {
+                if let Ok(first) = result
+                    && let Some(first_path) = first.path()
+                {
+                    let dialog2 = gtk4::FileDialog::new();
+                    dialog2.set_title("Select second directory");
+                    let app4 = app3.clone();
+                    let w3 = w2.clone();
+                    let st3 = st2.clone();
+                    dialog2.select_folder(Some(&w2), gio::Cancellable::NONE, move |result2| {
+                        if let Ok(second) = result2
+                            && let Some(second_path) = second.path()
+                        {
+                            build_dir_window(&app4, first_path, second_path, &[], st3);
+                            w3.close();
+                        }
+                    });
+                }
+            });
+        });
+    }
+
+    // 3-way Merge handler
+    {
+        let app2 = app.clone();
+        let w = window.clone();
+        let st = settings.clone();
+        merge_btn.connect_clicked(move |_| {
+            let dialog = gtk4::FileDialog::new();
+            dialog.set_title("Select left file");
+            let app3 = app2.clone();
+            let w2 = w.clone();
+            let st2 = st.clone();
+            dialog.open(Some(&w), gio::Cancellable::NONE, move |result| {
+                if let Ok(first) = result
+                    && let Some(first_path) = first.path()
+                {
+                    let dialog2 = gtk4::FileDialog::new();
+                    dialog2.set_title("Select middle (base) file");
+                    let app4 = app3.clone();
+                    let w3 = w2.clone();
+                    let st3 = st2.clone();
+                    dialog2.open(Some(&w2), gio::Cancellable::NONE, move |result2| {
+                        if let Ok(second) = result2
+                            && let Some(second_path) = second.path()
+                        {
+                            let dialog3 = gtk4::FileDialog::new();
+                            dialog3.set_title("Select right file");
+                            let app5 = app4.clone();
+                            let w4 = w3.clone();
+                            let st4 = st3.clone();
+                            dialog3.open(Some(&w3), gio::Cancellable::NONE, move |result3| {
+                                if let Ok(third) = result3
+                                    && let Some(third_path) = third.path()
+                                {
+                                    build_merge_window(
+                                        &app5,
+                                        first_path,
+                                        second_path,
+                                        third_path,
+                                        None,
+                                        &[],
+                                        &st4,
+                                    );
+                                    w4.close();
+                                }
+                            });
+                        }
+                    });
+                }
+            });
+        });
+    }
+
+    // Preferences
+    let prefs_btn = Button::from_icon_name("preferences-system-symbolic");
+    prefs_btn.set_tooltip_text(Some("Preferences (Ctrl+,)"));
+    prefs_btn.set_action_name(Some("win.prefs"));
+    prefs_btn.set_halign(gtk4::Align::End);
+    prefs_btn.set_margin_top(8);
+    content.append(&prefs_btn);
+
+    let win_actions = gio::SimpleActionGroup::new();
+    {
+        let action = gio::SimpleAction::new("prefs", None);
+        let w = window.clone();
+        let st = settings.clone();
+        action.connect_activate(move |_, _| {
+            show_preferences(&w, &st);
+        });
+        win_actions.add_action(&action);
+    }
+    window.insert_action_group("win", Some(&win_actions));
+
+    if let Some(gtk_app) = window.application() {
+        gtk_app.set_accels_for_action("win.prefs", &["<Ctrl>comma"]);
+    }
+
+    window.set_child(Some(&content));
+    window.present();
+}
+
+fn make_welcome_button(title_text: &str, subtitle_text: &str) -> Button {
+    let bx = GtkBox::new(Orientation::Vertical, 2);
+    bx.set_margin_top(8);
+    bx.set_margin_bottom(8);
+    bx.set_margin_start(8);
+    bx.set_margin_end(8);
+    let t = Label::new(Some(title_text));
+    t.add_css_class("heading");
+    let s = Label::new(Some(subtitle_text));
+    s.add_css_class("dim-label");
+    bx.append(&t);
+    bx.append(&s);
+    let btn = Button::new();
+    btn.set_child(Some(&bx));
+    btn
+}
+
 // ─── Main UI ───────────────────────────────────────────────────────────────
 
 pub(crate) fn build_ui(application: &Application, mode: CompareMode) {
@@ -3982,6 +4629,8 @@ pub(crate) fn build_ui(application: &Application, mode: CompareMode) {
                 output,
                 labels,
             } => build_merge_window(app, left, middle, right, output, &labels, &settings),
+            CompareMode::Vcs { dir } => build_vcs_window(app, dir, settings),
+            CompareMode::Welcome => build_welcome_window(app, settings),
         }
     });
 }

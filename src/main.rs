@@ -7,6 +7,7 @@ use gtk4::{Application, glib};
 mod myers;
 mod settings;
 mod ui;
+mod vcs;
 
 #[derive(Parser)]
 #[command(name = "meld-rs", about = "Visual diff and merge tool")]
@@ -42,6 +43,10 @@ pub enum CompareMode {
         output: Option<PathBuf>,
         labels: Vec<String>,
     },
+    Vcs {
+        dir: PathBuf,
+    },
+    Welcome,
 }
 
 fn main() -> glib::ExitCode {
@@ -92,11 +97,20 @@ fn main() -> glib::ExitCode {
             eprintln!("Error: cannot compare a file with a directory");
             std::process::exit(1);
         }
+    } else if cli.paths.len() == 1 {
+        let path = &cli.paths[0];
+        if path.is_dir() && vcs::is_git_repo(path) {
+            CompareMode::Vcs { dir: path.clone() }
+        } else if path.is_dir() {
+            eprintln!("Error: '{}' is not inside a git repository", path.display());
+            eprintln!("For directory comparison, provide two directories.");
+            std::process::exit(1);
+        } else {
+            eprintln!("Error: single file argument not supported. Provide 2 files to compare.");
+            std::process::exit(1);
+        }
     } else {
-        eprintln!("Usage: meld-rs <LEFT> <RIGHT>");
-        eprintln!("       meld-rs <LOCAL> <MERGED> <REMOTE>");
-        eprintln!("       meld-rs <LOCAL> <BASE> <REMOTE> --output MERGED");
-        std::process::exit(1);
+        CompareMode::Welcome
     };
 
     let application = Application::builder()
