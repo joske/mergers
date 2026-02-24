@@ -68,11 +68,17 @@ pub(super) fn build_file_window(
                 let r_save2 = r_save.clone();
                 let loading2 = loading.clone();
                 gtk4::glib::spawn_future_local(async move {
-                    let (left_content, right_content) =
-                        gio::spawn_blocking(move || (read_file_lossy(&lp2), read_file_lossy(&rp2)))
-                            .await
-                            .unwrap();
+                    let (left_content, right_content) = gio::spawn_blocking(move || {
+                        (read_file_for_reload(&lp2), read_file_for_reload(&rp2))
+                    })
+                    .await
+                    .unwrap();
                     loading2.set(false);
+                    // Skip reload if either file became binary or unreadable
+                    let (Some(left_content), Some(right_content)) = (left_content, right_content)
+                    else {
+                        return;
+                    };
                     let cur_left = lb2.text(&lb2.start_iter(), &lb2.end_iter(), false);
                     let cur_right = rb2.text(&rb2.start_iter(), &rb2.end_iter(), false);
                     if cur_left.as_str() != left_content || cur_right.as_str() != right_content {

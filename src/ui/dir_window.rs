@@ -680,70 +680,138 @@ pub(super) fn build_dir_window(
         }
     };
 
-    // Copy to left: right → left
+    // Copy to left: right → left (with confirmation when overwriting)
     {
         let get_row = get_selected_row.clone();
         let ld = left_dir.clone();
         let rd = right_dir.clone();
         let reload = reload_dir.clone();
+        let lv = left_view.clone();
         copy_left_btn.connect_clicked(move |_| {
             if let Some(raw) = get_row() {
-                let rel = decode_rel_path(&raw);
+                let rel = decode_rel_path(&raw).to_string();
                 let status = decode_status(&raw);
                 if status == "R" || status == "D" {
-                    let src = Path::new(rd.borrow().as_str()).join(rel);
-                    let dst = Path::new(ld.borrow().as_str()).join(rel);
-                    let _ = copy_path_recursive(&src, &dst);
-                    reload();
+                    let src = Path::new(rd.borrow().as_str()).join(&rel);
+                    let dst = Path::new(ld.borrow().as_str()).join(&rel);
+                    let reload = reload.clone();
+                    let lv2 = lv.clone();
+                    let do_copy = move || {
+                        if let Err(e) = copy_path_recursive(&src, &dst)
+                            && let Some(win) = lv2
+                                .root()
+                                .and_then(|r| r.downcast::<ApplicationWindow>().ok())
+                        {
+                            show_error_dialog(&win, &format!("Copy failed: {e}"));
+                        }
+                        reload();
+                    };
+                    if status == "D" {
+                        if let Some(win) = lv
+                            .root()
+                            .and_then(|r| r.downcast::<ApplicationWindow>().ok())
+                        {
+                            show_confirm_dialog(
+                                &win,
+                                &format!("Overwrite {rel}?"),
+                                "The destination file will be replaced.",
+                                "Overwrite",
+                                do_copy,
+                            );
+                        }
+                    } else {
+                        do_copy();
+                    }
                 }
             }
         });
     }
 
-    // Copy to right: left → right
+    // Copy to right: left → right (with confirmation when overwriting)
     {
         let get_row = get_selected_row.clone();
         let ld = left_dir.clone();
         let rd = right_dir.clone();
         let reload = reload_dir.clone();
+        let lv = left_view.clone();
         copy_right_btn.connect_clicked(move |_| {
             if let Some(raw) = get_row() {
-                let rel = decode_rel_path(&raw);
+                let rel = decode_rel_path(&raw).to_string();
                 let status = decode_status(&raw);
                 if status == "L" || status == "D" {
-                    let src = Path::new(ld.borrow().as_str()).join(rel);
-                    let dst = Path::new(rd.borrow().as_str()).join(rel);
-                    let _ = copy_path_recursive(&src, &dst);
-                    reload();
+                    let src = Path::new(ld.borrow().as_str()).join(&rel);
+                    let dst = Path::new(rd.borrow().as_str()).join(&rel);
+                    let reload = reload.clone();
+                    let lv2 = lv.clone();
+                    let do_copy = move || {
+                        if let Err(e) = copy_path_recursive(&src, &dst)
+                            && let Some(win) = lv2
+                                .root()
+                                .and_then(|r| r.downcast::<ApplicationWindow>().ok())
+                        {
+                            show_error_dialog(&win, &format!("Copy failed: {e}"));
+                        }
+                        reload();
+                    };
+                    if status == "D" {
+                        if let Some(win) = lv
+                            .root()
+                            .and_then(|r| r.downcast::<ApplicationWindow>().ok())
+                        {
+                            show_confirm_dialog(
+                                &win,
+                                &format!("Overwrite {rel}?"),
+                                "The destination file will be replaced.",
+                                "Overwrite",
+                                do_copy,
+                            );
+                        }
+                    } else {
+                        do_copy();
+                    }
                 }
             }
         });
     }
 
-    // Delete selected (trash; for items on both sides, use focused pane)
+    // Delete selected (trash with confirmation)
     {
         let get_row = get_selected_row.clone();
         let ld = left_dir.clone();
         let rd = right_dir.clone();
         let reload = reload_dir.clone();
         let fl = focused_left.clone();
+        let lv = left_view.clone();
         delete_btn.connect_clicked(move |_| {
             if let Some(raw) = get_row() {
-                let rel = decode_rel_path(&raw);
-                let status = decode_status(&raw);
-                let lp = Path::new(ld.borrow().as_str()).join(rel);
-                let rp = Path::new(rd.borrow().as_str()).join(rel);
-                let path = match status {
+                let rel = decode_rel_path(&raw).to_string();
+                let status = decode_status(&raw).to_string();
+                let lp = Path::new(ld.borrow().as_str()).join(&rel);
+                let rp = Path::new(rd.borrow().as_str()).join(&rel);
+                let path = match status.as_str() {
                     "L" => Some(lp),
                     "R" => Some(rp),
                     "D" | "S" => Some(if fl.get() { lp } else { rp }),
                     _ => None,
                 };
-                if let Some(p) = path {
-                    if let Err(e) = gio::File::for_path(&p).trash(gio::Cancellable::NONE) {
-                        eprintln!("Trash failed: {e}");
-                    }
-                    reload();
+                if let Some(p) = path
+                    && let Some(win) = lv
+                        .root()
+                        .and_then(|r| r.downcast::<ApplicationWindow>().ok())
+                {
+                    let reload = reload.clone();
+                    show_confirm_dialog(
+                        &win,
+                        &format!("Move {rel} to trash?"),
+                        "The file will be moved to the system trash.",
+                        "Trash",
+                        move || {
+                            if let Err(e) = gio::File::for_path(&p).trash(gio::Cancellable::NONE) {
+                                eprintln!("Trash failed: {e}");
+                            }
+                            reload();
+                        },
+                    );
                 }
             }
         });
@@ -757,15 +825,42 @@ pub(super) fn build_dir_window(
         let ld = left_dir.clone();
         let rd = right_dir.clone();
         let reload = reload_dir.clone();
+        let lv = left_view.clone();
         action.connect_activate(move |_, _| {
             if let Some(raw) = get_row() {
-                let rel = decode_rel_path(&raw);
+                let rel = decode_rel_path(&raw).to_string();
                 let status = decode_status(&raw);
                 if status == "R" || status == "D" {
-                    let src = Path::new(rd.borrow().as_str()).join(rel);
-                    let dst = Path::new(ld.borrow().as_str()).join(rel);
-                    let _ = copy_path_recursive(&src, &dst);
-                    reload();
+                    let src = Path::new(rd.borrow().as_str()).join(&rel);
+                    let dst = Path::new(ld.borrow().as_str()).join(&rel);
+                    let reload = reload.clone();
+                    let lv2 = lv.clone();
+                    let do_copy = move || {
+                        if let Err(e) = copy_path_recursive(&src, &dst)
+                            && let Some(win) = lv2
+                                .root()
+                                .and_then(|r| r.downcast::<ApplicationWindow>().ok())
+                        {
+                            show_error_dialog(&win, &format!("Copy failed: {e}"));
+                        }
+                        reload();
+                    };
+                    if status == "D" {
+                        if let Some(win) = lv
+                            .root()
+                            .and_then(|r| r.downcast::<ApplicationWindow>().ok())
+                        {
+                            show_confirm_dialog(
+                                &win,
+                                &format!("Overwrite {rel}?"),
+                                "The destination file will be replaced.",
+                                "Overwrite",
+                                do_copy,
+                            );
+                        }
+                    } else {
+                        do_copy();
+                    }
                 }
             }
         });
@@ -777,15 +872,42 @@ pub(super) fn build_dir_window(
         let ld = left_dir.clone();
         let rd = right_dir.clone();
         let reload = reload_dir.clone();
+        let lv = left_view.clone();
         action.connect_activate(move |_, _| {
             if let Some(raw) = get_row() {
-                let rel = decode_rel_path(&raw);
+                let rel = decode_rel_path(&raw).to_string();
                 let status = decode_status(&raw);
                 if status == "L" || status == "D" {
-                    let src = Path::new(ld.borrow().as_str()).join(rel);
-                    let dst = Path::new(rd.borrow().as_str()).join(rel);
-                    let _ = copy_path_recursive(&src, &dst);
-                    reload();
+                    let src = Path::new(ld.borrow().as_str()).join(&rel);
+                    let dst = Path::new(rd.borrow().as_str()).join(&rel);
+                    let reload = reload.clone();
+                    let lv2 = lv.clone();
+                    let do_copy = move || {
+                        if let Err(e) = copy_path_recursive(&src, &dst)
+                            && let Some(win) = lv2
+                                .root()
+                                .and_then(|r| r.downcast::<ApplicationWindow>().ok())
+                        {
+                            show_error_dialog(&win, &format!("Copy failed: {e}"));
+                        }
+                        reload();
+                    };
+                    if status == "D" {
+                        if let Some(win) = lv
+                            .root()
+                            .and_then(|r| r.downcast::<ApplicationWindow>().ok())
+                        {
+                            show_confirm_dialog(
+                                &win,
+                                &format!("Overwrite {rel}?"),
+                                "The destination file will be replaced.",
+                                "Overwrite",
+                                do_copy,
+                            );
+                        }
+                    } else {
+                        do_copy();
+                    }
                 }
             }
         });
@@ -798,23 +920,37 @@ pub(super) fn build_dir_window(
         let rd = right_dir.clone();
         let reload = reload_dir.clone();
         let fl = focused_left.clone();
+        let lv = left_view.clone();
         action.connect_activate(move |_, _| {
             if let Some(raw) = get_row() {
-                let rel = decode_rel_path(&raw);
-                let status = decode_status(&raw);
-                let lp = Path::new(ld.borrow().as_str()).join(rel);
-                let rp = Path::new(rd.borrow().as_str()).join(rel);
-                let path = match status {
+                let rel = decode_rel_path(&raw).to_string();
+                let status = decode_status(&raw).to_string();
+                let lp = Path::new(ld.borrow().as_str()).join(&rel);
+                let rp = Path::new(rd.borrow().as_str()).join(&rel);
+                let path = match status.as_str() {
                     "L" => Some(lp),
                     "R" => Some(rp),
                     "D" | "S" => Some(if fl.get() { lp } else { rp }),
                     _ => None,
                 };
-                if let Some(p) = path {
-                    if let Err(e) = gio::File::for_path(&p).trash(gio::Cancellable::NONE) {
-                        eprintln!("Trash failed: {e}");
-                    }
-                    reload();
+                if let Some(p) = path
+                    && let Some(win) = lv
+                        .root()
+                        .and_then(|r| r.downcast::<ApplicationWindow>().ok())
+                {
+                    let reload = reload.clone();
+                    show_confirm_dialog(
+                        &win,
+                        &format!("Move {rel} to trash?"),
+                        "The file will be moved to the system trash.",
+                        "Trash",
+                        move || {
+                            if let Err(e) = gio::File::for_path(&p).trash(gio::Cancellable::NONE) {
+                                eprintln!("Trash failed: {e}");
+                            }
+                            reload();
+                        },
+                    );
                 }
             }
         });

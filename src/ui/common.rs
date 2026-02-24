@@ -155,8 +155,16 @@ pub(super) fn reload_file_tab(tab: &FileTab, left_dir: &str, right_dir: &str) {
         return;
     }
 
-    let left_content = read_file_lossy(&Path::new(left_dir).join(&tab.rel_path));
-    let right_content = read_file_lossy(&Path::new(right_dir).join(&tab.rel_path));
+    let left_content = read_file_for_reload(&Path::new(left_dir).join(&tab.rel_path));
+    let right_content = read_file_for_reload(&Path::new(right_dir).join(&tab.rel_path));
+
+    // Skip panes where read failed or file became binary
+    let Some(left_content) = left_content else {
+        return;
+    };
+    let Some(right_content) = right_content else {
+        return;
+    };
 
     // Only reset buffers if the on-disk content actually differs from what's in the buffer
     let cur_left = tab
@@ -209,6 +217,127 @@ pub(super) fn read_file_content(path: &Path) -> (String, bool) {
     } else {
         (read_file_lossy(path), false)
     }
+}
+
+/// Read a file for reload: returns `None` if binary or on read error (to avoid corrupting buffers).
+pub(super) fn read_file_for_reload(path: &Path) -> Option<String> {
+    if is_binary(path) {
+        return None;
+    }
+    fs::read(path)
+        .ok()
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+}
+
+/// Write file content with error handling. On failure, shows an error dialog and
+/// leaves the save button sensitive (preserving unsaved state).
+pub(super) fn save_file(path: &Path, content: &str, save_btn: &Button) {
+    mark_saving(path);
+    match fs::write(path, content) {
+        Ok(()) => save_btn.set_sensitive(false),
+        Err(e) => {
+            if let Some(win) = save_btn
+                .root()
+                .and_then(|r| r.downcast::<ApplicationWindow>().ok())
+            {
+                show_error_dialog(&win, &format!("Failed to save {}: {e}", path.display()));
+            }
+        }
+    }
+}
+
+/// Show a modal error dialog with a single OK button.
+pub(super) fn show_error_dialog(parent: &ApplicationWindow, message: &str) {
+    let dialog = gtk4::Window::builder()
+        .modal(true)
+        .transient_for(parent)
+        .resizable(false)
+        .decorated(true)
+        .deletable(true)
+        .title("Error")
+        .build();
+
+    let content = GtkBox::new(Orientation::Vertical, 8);
+    content.set_margin_top(18);
+    content.set_margin_bottom(18);
+    content.set_margin_start(18);
+    content.set_margin_end(18);
+
+    let label = Label::new(Some(message));
+    label.set_wrap(true);
+    label.set_max_width_chars(60);
+    content.append(&label);
+
+    let ok_btn = Button::with_label("OK");
+    ok_btn.add_css_class("suggested-action");
+    ok_btn.set_halign(gtk4::Align::Center);
+    let d = dialog.clone();
+    ok_btn.connect_clicked(move |_| d.close());
+    content.append(&ok_btn);
+
+    dialog.set_child(Some(&content));
+    dialog.present();
+}
+
+/// Show a modal confirmation dialog with Cancel and a destructive action button.
+/// Calls `on_confirm` when the action button is clicked.
+pub(super) fn show_confirm_dialog(
+    parent: &ApplicationWindow,
+    title: &str,
+    message: &str,
+    action_label: &str,
+    on_confirm: impl Fn() + 'static,
+) {
+    let dialog = gtk4::Window::builder()
+        .modal(true)
+        .transient_for(parent)
+        .resizable(false)
+        .decorated(true)
+        .deletable(true)
+        .build();
+
+    let content = GtkBox::new(Orientation::Vertical, 8);
+    content.set_margin_top(18);
+    content.set_margin_bottom(18);
+    content.set_margin_start(18);
+    content.set_margin_end(18);
+
+    let title_label = Label::new(Some(title));
+    title_label.add_css_class("title-3");
+    content.append(&title_label);
+
+    let msg_label = Label::new(Some(message));
+    msg_label.set_wrap(true);
+    msg_label.set_max_width_chars(60);
+    content.append(&msg_label);
+
+    let btn_box = GtkBox::new(Orientation::Horizontal, 8);
+    btn_box.set_margin_top(8);
+    btn_box.set_halign(gtk4::Align::End);
+
+    let cancel_btn = Button::with_label("Cancel");
+    let action_btn = Button::with_label(action_label);
+    action_btn.add_css_class("destructive-action");
+
+    btn_box.append(&cancel_btn);
+    btn_box.append(&action_btn);
+    content.append(&btn_box);
+
+    dialog.set_child(Some(&content));
+
+    {
+        let d = dialog.clone();
+        cancel_btn.connect_clicked(move |_| d.close());
+    }
+    {
+        let d = dialog.clone();
+        action_btn.connect_clicked(move |_| {
+            on_confirm();
+            d.close();
+        });
+    }
+
+    dialog.present();
 }
 
 /// Pre-filter text for diff comparison.
@@ -938,10 +1067,8 @@ pub(super) fn make_diff_pane(
     let path_owned = file_path.to_path_buf();
     let save_btn_ref = save_btn.clone();
     save_btn.connect_clicked(move |_| {
-        mark_saving(&path_owned);
         let text = buf_clone.text(&buf_clone.start_iter(), &buf_clone.end_iter(), false);
-        let _ = fs::write(&path_owned, text.as_str());
-        save_btn_ref.set_sensitive(false);
+        save_file(&path_owned, text.as_str(), &save_btn_ref);
     });
 
     let filler_overlay = DrawingArea::new();
@@ -1642,7 +1769,7 @@ pub(super) fn confirm_unsaved_dialog(
         let d = dialog.clone();
         cancel_btn.connect_clicked(move |_| d.close());
     }
-    // Save checked files, then close.
+    // Save checked files, then close (unless a save failed).
     {
         let d = dialog.clone();
         let checks = checks.clone();
@@ -1652,6 +1779,13 @@ pub(super) fn confirm_unsaved_dialog(
                 if check.is_active() && btn.is_sensitive() {
                     btn.emit_clicked();
                 }
+            }
+            // If any save button is still sensitive, a save failed — don't close.
+            let any_failed = checks
+                .iter()
+                .any(|(check, btn)| check.is_active() && btn.is_sensitive());
+            if any_failed {
+                return;
             }
             d.close();
             on_close();

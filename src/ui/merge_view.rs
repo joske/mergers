@@ -1679,10 +1679,8 @@ pub(super) fn build_merge_window(
         let op = out_path.clone();
         let btn_ref = save_btn.clone();
         save_btn.connect_clicked(move |_| {
-            mark_saving(&op);
             let text = mb.text(&mb.start_iter(), &mb.end_iter(), false);
-            let _ = fs::write(&op, text.as_str());
-            btn_ref.set_sensitive(false);
+            save_file(&op, text.as_str(), &btn_ref);
         });
         // Re-enable after edits
         {
@@ -1755,14 +1753,20 @@ pub(super) fn build_merge_window(
                     let (left_content, middle_content, right_content) =
                         gio::spawn_blocking(move || {
                             (
-                                read_file_lossy(&lp2),
-                                read_file_lossy(&mp2),
-                                read_file_lossy(&rp2),
+                                read_file_for_reload(&lp2),
+                                read_file_for_reload(&mp2),
+                                read_file_for_reload(&rp2),
                             )
                         })
                         .await
                         .unwrap();
                     loading2.set(false);
+                    // Skip reload if any file became binary or unreadable
+                    let (Some(left_content), Some(middle_content), Some(right_content)) =
+                        (left_content, middle_content, right_content)
+                    else {
+                        return;
+                    };
                     let cur_l = lb2.text(&lb2.start_iter(), &lb2.end_iter(), false);
                     let cur_m = mb2.text(&mb2.start_iter(), &mb2.end_iter(), false);
                     let cur_r = rb2.text(&rb2.start_iter(), &rb2.end_iter(), false);

@@ -431,12 +431,29 @@ pub(super) fn build_vcs_window(
         let s = sel.clone();
         let rr = repo_root.clone();
         let r = refresh.clone();
+        let v = view.clone();
         action.connect_activate(move |_, _| {
             if let Some(item) = s.selected_item() {
                 let obj = item.downcast::<StringObject>().unwrap();
                 let raw = obj.string();
-                crate::vcs::discard_changes(&rr, decode_vcs_path(&raw));
-                r();
+                let rel = decode_vcs_path(&raw).to_string();
+                if let Some(win) = v
+                    .root()
+                    .and_then(|root| root.downcast::<ApplicationWindow>().ok())
+                {
+                    let rr = rr.clone();
+                    let r = r.clone();
+                    show_confirm_dialog(
+                        &win,
+                        &format!("Discard changes to {rel}?"),
+                        "This cannot be undone.",
+                        "Discard",
+                        move || {
+                            crate::vcs::discard_changes(&rr, &rel);
+                            r();
+                        },
+                    );
+                }
             }
         });
         vcs_action_group.add_action(&action);
@@ -461,13 +478,33 @@ pub(super) fn build_vcs_window(
         let s = sel.clone();
         let rr = repo_root.clone();
         let r = refresh.clone();
+        let v = view.clone();
         action.connect_activate(move |_, _| {
             if let Some(item) = s.selected_item() {
                 let obj = item.downcast::<StringObject>().unwrap();
                 let raw = obj.string();
-                let path = rr.join(decode_vcs_path(&raw));
-                let _ = gio::File::for_path(&path).trash(gio::Cancellable::NONE);
-                r();
+                let rel = decode_vcs_path(&raw).to_string();
+                if let Some(win) = v
+                    .root()
+                    .and_then(|root| root.downcast::<ApplicationWindow>().ok())
+                {
+                    let rr = rr.clone();
+                    let r = r.clone();
+                    show_confirm_dialog(
+                        &win,
+                        &format!("Move {rel} to trash?"),
+                        "The file will be moved to the system trash.",
+                        "Trash",
+                        move || {
+                            let path = rr.join(&rel);
+                            if let Err(e) = gio::File::for_path(&path).trash(gio::Cancellable::NONE)
+                            {
+                                eprintln!("Trash failed: {e}");
+                            }
+                            r();
+                        },
+                    );
+                }
             }
         });
         vcs_action_group.add_action(&action);
