@@ -3048,6 +3048,21 @@ fn merge_change_indices(
         .collect()
 }
 
+/// Find line numbers of `<<<<<<<` conflict markers in a buffer.
+fn find_conflict_markers(buf: &TextBuffer) -> Vec<usize> {
+    let text = buf.text(&buf.start_iter(), &buf.end_iter(), false);
+    text.lines()
+        .enumerate()
+        .filter_map(|(i, line)| {
+            if line.starts_with("<<<<<<<") {
+                Some(i)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 fn build_merge_view(
     left_path: &Path,
     middle_path: &Path,
@@ -3503,6 +3518,29 @@ fn build_merge_view(
     nav_box.append(&prev_btn);
     nav_box.append(&next_btn);
 
+    // Conflict navigation buttons
+    let prev_conflict_btn = Button::from_icon_name("go-up-symbolic");
+    prev_conflict_btn.set_tooltip_text(Some("Previous conflict (Ctrl+J)"));
+    let next_conflict_btn = Button::from_icon_name("go-down-symbolic");
+    next_conflict_btn.set_tooltip_text(Some("Next conflict (Ctrl+K)"));
+    let conflict_nav_box = GtkBox::new(Orientation::Horizontal, 0);
+    conflict_nav_box.add_css_class("linked");
+    conflict_nav_box.append(&prev_conflict_btn);
+    conflict_nav_box.append(&next_conflict_btn);
+
+    let conflict_label = Label::new(None);
+    conflict_label.add_css_class("chunk-label");
+    {
+        let n = find_conflict_markers(&middle_buf).len();
+        if n == 0 {
+            conflict_label.set_label("No conflicts");
+        } else {
+            conflict_label.set_label(&format!("{n} conflicts"));
+        }
+    }
+
+    let current_conflict: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+
     // Undo/Redo buttons
     let undo_btn = Button::from_icon_name("edit-undo-symbolic");
     undo_btn.set_tooltip_text(Some("Undo (Ctrl+Z)"));
@@ -3591,6 +3629,8 @@ fn build_merge_view(
     toolbar.append(&undo_redo_box);
     toolbar.append(&nav_box);
     toolbar.append(&chunk_label);
+    toolbar.append(&conflict_nav_box);
+    toolbar.append(&conflict_label);
     toolbar.append(&goto_entry);
     toolbar.append(&filter_box);
     toolbar.append(&merge_prefs_btn);
@@ -3703,6 +3743,101 @@ fn build_merge_view(
         });
     }
 
+    // Navigate conflict helper — jumps between `<<<<<<<` markers in middle buf.
+    let navigate_conflict = |cur: &Rc<Cell<Option<usize>>>,
+                             direction: i32,
+                             mtv: &TextView,
+                             mb: &TextBuffer,
+                             ms: &ScrolledWindow| {
+        let markers = find_conflict_markers(mb);
+        if markers.is_empty() {
+            return;
+        }
+        let next = match cur.get() {
+            Some(cur_line) => {
+                let pos = markers.iter().position(|&l| l == cur_line);
+                match pos {
+                    Some(p) => {
+                        if direction > 0 {
+                            markers.get(p + 1).or(markers.first())
+                        } else if p > 0 {
+                            markers.get(p - 1)
+                        } else {
+                            markers.last()
+                        }
+                    }
+                    None => {
+                        if direction > 0 {
+                            markers.first()
+                        } else {
+                            markers.last()
+                        }
+                    }
+                }
+            }
+            None => {
+                if direction > 0 {
+                    markers.first()
+                } else {
+                    markers.last()
+                }
+            }
+        };
+        if let Some(&line) = next {
+            cur.set(Some(line));
+            scroll_to_line(mtv, mb, line, ms);
+        }
+    };
+
+    let update_conflict_label = |lbl: &Label, mb: &TextBuffer, cur: Option<usize>| {
+        let markers = find_conflict_markers(mb);
+        let total = markers.len();
+        if total == 0 {
+            lbl.set_label("No conflicts");
+            return;
+        }
+        match cur {
+            Some(cur_line) => {
+                if let Some(pos) = markers.iter().position(|&l| l == cur_line) {
+                    lbl.set_label(&format!("Conflict {} of {}", pos + 1, total));
+                } else {
+                    lbl.set_label(&format!("{total} conflicts"));
+                }
+            }
+            None => lbl.set_label(&format!("{total} conflicts")),
+        }
+    };
+
+    // Prev conflict
+    {
+        let cur = current_conflict.clone();
+        let mtv = middle_pane.text_view.clone();
+        let mb = middle_buf.clone();
+        let ms = middle_pane.scroll.clone();
+        let lbl = conflict_label.clone();
+        let nav = navigate_conflict;
+        let upd = update_conflict_label;
+        prev_conflict_btn.connect_clicked(move |_| {
+            nav(&cur, -1, &mtv, &mb, &ms);
+            upd(&lbl, &mb, cur.get());
+        });
+    }
+
+    // Next conflict
+    {
+        let cur = current_conflict.clone();
+        let mtv = middle_pane.text_view.clone();
+        let mb = middle_buf.clone();
+        let ms = middle_pane.scroll.clone();
+        let lbl = conflict_label.clone();
+        let nav = navigate_conflict;
+        let upd = update_conflict_label;
+        next_conflict_btn.connect_clicked(move |_| {
+            nav(&cur, 1, &mtv, &mb, &ms);
+            upd(&lbl, &mb, cur.get());
+        });
+    }
+
     // ── Chunk maps for merge view ────────────────────────────────
     let left_chunk_map = DrawingArea::new();
     left_chunk_map.set_content_width(12);
@@ -3785,9 +3920,12 @@ fn build_merge_view(
             let lcm = left_chunk_map.clone();
             let rcm = right_chunk_map.clone();
             let lbl = chunk_label.clone();
+            let clbl = conflict_label.clone();
             let lch = left_chunks.clone();
             let rch = right_chunks.clone();
+            let mb = middle_buf.clone();
             let cur = current_chunk.clone();
+            let ccur = current_conflict.clone();
             let lf = left_pane.filler_overlay.clone();
             let mf = middle_pane.filler_overlay.clone();
             let rf = right_pane.filler_overlay.clone();
@@ -3797,9 +3935,12 @@ fn build_merge_view(
                 let lcm = lcm.clone();
                 let rcm = rcm.clone();
                 let lbl = lbl.clone();
+                let clbl = clbl.clone();
                 let lch = lch.clone();
                 let rch = rch.clone();
+                let mb = mb.clone();
                 let cur = cur.clone();
+                let ccur = ccur.clone();
                 let lf = lf.clone();
                 let mf = mf.clone();
                 let rf = rf.clone();
@@ -3813,6 +3954,13 @@ fn build_merge_view(
                     rf.queue_draw();
                     cur.set(None);
                     update_merge_label(&lbl, &lch.borrow(), &rch.borrow(), None);
+                    ccur.set(None);
+                    let n = find_conflict_markers(&mb).len();
+                    if n == 0 {
+                        clbl.set_label("No conflicts");
+                    } else {
+                        clbl.set_label(&format!("{n} conflicts"));
+                    }
                 }
             }
         };
@@ -4214,6 +4362,32 @@ fn build_merge_view(
         });
         action_group.add_action(&action);
     }
+    {
+        let action = gio::SimpleAction::new("prev-conflict", None);
+        let cur = current_conflict.clone();
+        let mtv = middle_pane.text_view.clone();
+        let mb = middle_buf.clone();
+        let ms = middle_pane.scroll.clone();
+        let lbl = conflict_label.clone();
+        action.connect_activate(move |_, _| {
+            navigate_conflict(&cur, -1, &mtv, &mb, &ms);
+            update_conflict_label(&lbl, &mb, cur.get());
+        });
+        action_group.add_action(&action);
+    }
+    {
+        let action = gio::SimpleAction::new("next-conflict", None);
+        let cur = current_conflict.clone();
+        let mtv = middle_pane.text_view.clone();
+        let mb = middle_buf.clone();
+        let ms = middle_pane.scroll.clone();
+        let lbl = conflict_label.clone();
+        action.connect_activate(move |_, _| {
+            navigate_conflict(&cur, 1, &mtv, &mb, &ms);
+            update_conflict_label(&lbl, &mb, cur.get());
+        });
+        action_group.add_action(&action);
+    }
     // Find action (Ctrl+F)
     {
         let action = gio::SimpleAction::new("find", None);
@@ -4478,6 +4652,8 @@ fn build_merge_window(
     if let Some(gtk_app) = window.application() {
         gtk_app.set_accels_for_action("diff.prev-chunk", &["<Alt>Up", "<Ctrl>e"]);
         gtk_app.set_accels_for_action("diff.next-chunk", &["<Alt>Down", "<Ctrl>d"]);
+        gtk_app.set_accels_for_action("diff.prev-conflict", &["<Ctrl>j"]);
+        gtk_app.set_accels_for_action("diff.next-conflict", &["<Ctrl>k"]);
         gtk_app.set_accels_for_action("diff.find", &["<Ctrl>f"]);
         gtk_app.set_accels_for_action("diff.find-replace", &["<Ctrl>h"]);
         gtk_app.set_accels_for_action("diff.find-next", &["F3"]);
