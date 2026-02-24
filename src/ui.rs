@@ -144,8 +144,12 @@ fn is_saving(paths: &[&Path]) -> bool {
 fn is_saving_under(roots: &[&Path]) -> bool {
     SAVING_PATHS.with(|s| {
         let set = s.borrow();
+        let canon_roots: Vec<PathBuf> = roots
+            .iter()
+            .map(|r| r.canonicalize().unwrap_or_else(|_| r.to_path_buf()))
+            .collect();
         set.iter()
-            .any(|saving_path| roots.iter().any(|root| saving_path.starts_with(root)))
+            .any(|saving_path| canon_roots.iter().any(|root| saving_path.starts_with(root)))
     })
 }
 
