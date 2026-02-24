@@ -43,22 +43,22 @@ pub(super) fn build_file_window(
         let r_save = dv.right_save.clone();
         let alive = diff_watcher_alive.clone();
         let loading = Rc::new(Cell::new(false));
-        let mut dirty = false;
+        let dirty = Rc::new(Cell::new(false));
         gtk4::glib::timeout_add_local(Duration::from_millis(500), move || {
             let _ = &diff_watcher; // prevent drop; watcher lives until closure is dropped
             if !alive.get() {
                 return gtk4::glib::ControlFlow::Break;
             }
             while fs_rx.try_recv().is_ok() {
-                dirty = true;
+                dirty.set(true);
             }
-            if dirty
+            if dirty.get()
                 && !loading.get()
                 && !is_saving(&[&lp, &rp])
                 && !l_save.is_sensitive()
                 && !r_save.is_sensitive()
             {
-                dirty = false;
+                dirty.set(false);
                 loading.set(true);
                 let lp2 = lp.clone();
                 let rp2 = rp.clone();
@@ -67,6 +67,7 @@ pub(super) fn build_file_window(
                 let l_save2 = l_save.clone();
                 let r_save2 = r_save.clone();
                 let loading2 = loading.clone();
+                let dirty2 = dirty.clone();
                 gtk4::glib::spawn_future_local(async move {
                     let (left_content, right_content) = gio::spawn_blocking(move || {
                         (read_file_for_reload(&lp2), read_file_for_reload(&rp2))
@@ -74,9 +75,10 @@ pub(super) fn build_file_window(
                     .await
                     .unwrap();
                     loading2.set(false);
-                    // Skip reload if either file became binary or unreadable
+                    // Retry on next tick if either file became binary or unreadable
                     let (Some(left_content), Some(right_content)) = (left_content, right_content)
                     else {
+                        dirty2.set(true);
                         return;
                     };
                     let cur_left = lb2.text(&lb2.start_iter(), &lb2.end_iter(), false);

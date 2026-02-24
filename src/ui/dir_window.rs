@@ -1151,9 +1151,11 @@ pub(super) fn build_dir_window(
             {
                 dirty = false;
                 reload();
-                // Reload open file tabs
+                // Reload open file tabs; keep dirty if any tab read fails
                 for tab in tabs_reload.borrow().iter() {
-                    reload_file_tab(tab, &ld_reload.borrow(), &rd_reload.borrow());
+                    if !reload_file_tab(tab, &ld_reload.borrow(), &rd_reload.borrow()) {
+                        dirty = true;
+                    }
                 }
             }
             gtk4::glib::ControlFlow::Continue

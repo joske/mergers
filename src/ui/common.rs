@@ -149,10 +149,12 @@ pub(super) fn apply_merge_tags(
     apply_conflict_tags(middle_buf, left_chunks, right_chunks);
 }
 
-pub(super) fn reload_file_tab(tab: &FileTab, left_dir: &str, right_dir: &str) {
+/// Reload a file tab from disk. Returns `false` if a read failed (binary or
+/// I/O error) so the caller can keep dirty and retry on the next tick.
+pub(super) fn reload_file_tab(tab: &FileTab, left_dir: &str, right_dir: &str) -> bool {
     // Don't overwrite unsaved user edits
     if tab.left_save.is_sensitive() || tab.right_save.is_sensitive() {
-        return;
+        return true; // not a read failure — just skip
     }
 
     let left_content = read_file_for_reload(&Path::new(left_dir).join(&tab.rel_path));
@@ -160,10 +162,10 @@ pub(super) fn reload_file_tab(tab: &FileTab, left_dir: &str, right_dir: &str) {
 
     // Skip panes where read failed or file became binary
     let Some(left_content) = left_content else {
-        return;
+        return false;
     };
     let Some(right_content) = right_content else {
-        return;
+        return false;
     };
 
     // Only reset buffers if the on-disk content actually differs from what's in the buffer
@@ -177,7 +179,7 @@ pub(super) fn reload_file_tab(tab: &FileTab, left_dir: &str, right_dir: &str) {
     );
 
     if cur_left.as_str() == left_content && cur_right.as_str() == right_content {
-        return; // nothing changed on disk vs buffer
+        return true; // nothing changed on disk vs buffer
     }
 
     // set_text triggers connect_changed which schedules refresh_diff with
@@ -191,6 +193,7 @@ pub(super) fn reload_file_tab(tab: &FileTab, left_dir: &str, right_dir: &str) {
     // sensitive=true, so we reset it after.)
     tab.left_save.set_sensitive(false);
     tab.right_save.set_sensitive(false);
+    true
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
@@ -232,9 +235,11 @@ pub(super) fn read_file_for_reload(path: &Path) -> Option<String> {
 /// Write file content with error handling. On failure, shows an error dialog and
 /// leaves the save button sensitive (preserving unsaved state).
 pub(super) fn save_file(path: &Path, content: &str, save_btn: &Button) {
-    mark_saving(path);
     match fs::write(path, content) {
-        Ok(()) => save_btn.set_sensitive(false),
+        Ok(()) => {
+            mark_saving(path);
+            save_btn.set_sensitive(false);
+        }
         Err(e) => {
             if let Some(win) = save_btn
                 .root()

@@ -1729,17 +1729,21 @@ pub(super) fn build_merge_window(
         let m_save = mv.middle_save.clone();
         let alive = merge_watcher_alive.clone();
         let loading = Rc::new(Cell::new(false));
-        let mut dirty = false;
+        let dirty = Rc::new(Cell::new(false));
         gtk4::glib::timeout_add_local(Duration::from_millis(500), move || {
             let _ = &merge_watcher; // prevent drop; watcher lives until closure is dropped
             if !alive.get() {
                 return gtk4::glib::ControlFlow::Break;
             }
             while fs_rx.try_recv().is_ok() {
-                dirty = true;
+                dirty.set(true);
             }
-            if dirty && !loading.get() && !is_saving(&[&lp, &mp, &rp]) && !m_save.is_sensitive() {
-                dirty = false;
+            if dirty.get()
+                && !loading.get()
+                && !is_saving(&[&lp, &mp, &rp])
+                && !m_save.is_sensitive()
+            {
+                dirty.set(false);
                 loading.set(true);
                 let lp2 = lp.clone();
                 let mp2 = mp.clone();
@@ -1749,6 +1753,7 @@ pub(super) fn build_merge_window(
                 let rb2 = rb.clone();
                 let m_save2 = m_save.clone();
                 let loading2 = loading.clone();
+                let dirty2 = dirty.clone();
                 gtk4::glib::spawn_future_local(async move {
                     let (left_content, middle_content, right_content) =
                         gio::spawn_blocking(move || {
@@ -1761,10 +1766,11 @@ pub(super) fn build_merge_window(
                         .await
                         .unwrap();
                     loading2.set(false);
-                    // Skip reload if any file became binary or unreadable
+                    // Retry on next tick if any file became binary or unreadable
                     let (Some(left_content), Some(middle_content), Some(right_content)) =
                         (left_content, middle_content, right_content)
                     else {
+                        dirty2.set(true);
                         return;
                     };
                     let cur_l = lb2.text(&lb2.start_iter(), &lb2.end_iter(), false);
