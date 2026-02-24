@@ -198,38 +198,28 @@ pub(super) fn reload_file_tab(tab: &FileTab, left_dir: &str, right_dir: &str) ->
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
-/// Check if a file appears to be binary by looking for NUL bytes in the first 8KB.
-pub(super) fn is_binary(path: &Path) -> bool {
-    fs::read(path)
-        .map(|bytes| bytes.iter().take(8192).any(|&b| b == 0))
-        .unwrap_or(false)
-}
-
-/// Read a file with lossy UTF-8 conversion (replacement chars for invalid bytes).
-pub(super) fn read_file_lossy(path: &Path) -> String {
-    fs::read(path)
-        .map(|b| String::from_utf8_lossy(&b).into_owned())
-        .unwrap_or_default()
-}
-
 /// Read a file as text, returning content and whether it was binary.
 /// Binary files return an empty string and `true`.
+/// Only reads the file once.
 pub(super) fn read_file_content(path: &Path) -> (String, bool) {
-    if is_binary(path) {
+    let Ok(bytes) = fs::read(path) else {
+        return (String::new(), false);
+    };
+    if bytes.iter().take(8192).any(|&b| b == 0) {
         (String::new(), true)
     } else {
-        (read_file_lossy(path), false)
+        (String::from_utf8_lossy(&bytes).into_owned(), false)
     }
 }
 
 /// Read a file for reload: returns `None` if binary or on read error (to avoid corrupting buffers).
+/// Only reads the file once.
 pub(super) fn read_file_for_reload(path: &Path) -> Option<String> {
-    if is_binary(path) {
+    let bytes = fs::read(path).ok()?;
+    if bytes.iter().take(8192).any(|&b| b == 0) {
         return None;
     }
-    fs::read(path)
-        .ok()
-        .map(|b| String::from_utf8_lossy(&b).into_owned())
+    Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// Write file content with error handling. On failure, shows an error dialog and
@@ -602,7 +592,6 @@ const FILLER_REPLACE: (f64, f64, f64) = (1.0, 0.953, 0.804); // #fff3cd
 /// Draw thin colored lines at filler (pixel-padding) gaps to indicate missing content.
 /// The line is drawn at the boundary between the filler gap and the anchor line,
 /// which aligns with where the gutter arrow points.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn draw_fillers(
     cr: &gtk4::cairo::Context,
     width: f64,
@@ -610,7 +599,6 @@ pub(super) fn draw_fillers(
     scroll: &ScrolledWindow,
     chunks: &[DiffChunk],
     side_is_left: bool,
-    _line_height: i32,
 ) {
     let scroll_y = scroll.vadjustment().value();
     let view_h = scroll.vadjustment().page_size();
@@ -914,10 +902,18 @@ pub(super) fn apply_char_tag(
     } else {
         tokens.last().map_or(0, |t| t.offset + t.text.len())
     };
-    // iter_at_line_offset uses character (not byte) offsets, so convert
+    // iter_at_line_offset uses character (not byte) offsets, so convert.
+    // Use .get() to avoid panics if offsets fall mid-UTF-8 or beyond line length
+    // (buffer may have changed since async diff computed offsets).
     let line_text = get_line_text(buf, line);
-    let char_start = line_text[..byte_start].chars().count() as i32;
-    let char_end = line_text[..byte_end].chars().count() as i32;
+    let Some(start_slice) = line_text.get(..byte_start) else {
+        return;
+    };
+    let Some(end_slice) = line_text.get(..byte_end) else {
+        return;
+    };
+    let char_start = start_slice.chars().count() as i32;
+    let char_end = end_slice.chars().count() as i32;
     let s = buf.iter_at_line_offset(line as i32, char_start);
     let e = buf.iter_at_line_offset(line as i32, char_end);
     if let (Some(s), Some(e)) = (s, e) {
@@ -1452,7 +1448,6 @@ pub(super) fn find_next_match(
 
 pub(super) fn draw_chunk_map(
     cr: &gtk4::cairo::Context,
-    _width: f64,
     height: f64,
     total_lines: i32,
     scroll: &ScrolledWindow,
@@ -1569,6 +1564,13 @@ pub(super) fn navigate_chunk(
         // Scroll left pane to the chunk
         scroll_to_line(left_tv, left_buf, chunk.start_a, left_scroll);
     }
+}
+
+/// Derive the `ScrolledWindow` ancestor of a `TextView`, falling back to the given default.
+pub(super) fn scroll_for_view(tv: &TextView, fallback: &ScrolledWindow) -> ScrolledWindow {
+    tv.ancestor(ScrolledWindow::static_type())
+        .and_then(|w| w.downcast::<ScrolledWindow>().ok())
+        .unwrap_or_else(|| fallback.clone())
 }
 
 pub(super) fn scroll_to_line(
@@ -1872,8 +1874,16 @@ pub(super) fn close_notebook_tab(
     }
     let nb = notebook.clone();
     let tabs = tabs.clone();
+    // Look up the widget so we can find the current page index at dialog-confirm
+    // time (the page number may have shifted if other tabs were closed first).
+    let widget = tabs
+        .borrow()
+        .iter()
+        .find(|t| t.id == tab_id)
+        .map(|t| t.widget.clone());
     confirm_unsaved_dialog(window, unsaved, move || {
-        nb.remove_page(Some(page));
+        let current_page = widget.as_ref().and_then(|w| nb.page_num(w)).unwrap_or(page);
+        nb.remove_page(Some(current_page));
         tabs.borrow_mut().retain(|t| t.id != tab_id);
     });
 }

@@ -137,8 +137,8 @@ pub(crate) fn build_ui(application: &Application, mode: CompareMode) {
             CompareMode::Dirs {
                 left,
                 right,
-                labels,
-            } => build_dir_window(app, left, right, &labels, settings),
+                labels: _,
+            } => build_dir_window(app, left, right, settings),
             CompareMode::Files {
                 left,
                 right,
@@ -148,9 +148,8 @@ pub(crate) fn build_ui(application: &Application, mode: CompareMode) {
                 left,
                 middle,
                 right,
-                output,
                 labels,
-            } => build_merge_window(app, left, middle, right, output, &labels, &settings),
+            } => build_merge_window(app, left, middle, right, &labels, &settings),
             CompareMode::Vcs { dir } => build_vcs_window(app, dir, settings),
             CompareMode::Welcome => build_welcome_window(app, settings),
         }

@@ -99,7 +99,7 @@ pub(super) fn build_welcome_window(app: &Application, settings: Rc<RefCell<Setti
                         if let Ok(second) = result2
                             && let Some(second_path) = second.path()
                         {
-                            build_dir_window(&app4, first_path, second_path, &[], st3);
+                            build_dir_window(&app4, first_path, second_path, st3);
                             w3.close();
                         }
                     });
@@ -146,7 +146,6 @@ pub(super) fn build_welcome_window(app: &Application, settings: Rc<RefCell<Setti
                                         first_path,
                                         second_path,
                                         third_path,
-                                        None,
                                         &[],
                                         &st4,
                                     );

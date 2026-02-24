@@ -38,15 +38,30 @@ merde file1.txt file2.txt
 # Compare two directories
 merde dir1/ dir2/
 
-# Three-way merge
-merde left.txt middle.txt right.txt
-merde left.txt middle.txt right.txt -o output.txt
+# Three-way merge (left, merged, right)
+merde local.txt merged.txt remote.txt
 
 # View uncommitted git changes
 merde .
 
 # Custom labels
 merde file1.txt file2.txt -L "Original" -L "Modified"
+```
+
+## Git Mergetool
+
+To use merde as your git merge tool:
+
+```bash
+git config merge.tool merde
+git config mergetool.merde.cmd 'merde "$LOCAL" "$MERGED" "$REMOTE"'
+git config mergetool.merde.trustExitCode true
+```
+
+Then resolve conflicts with:
+
+```bash
+git mergetool
 ```
 
 ## Building

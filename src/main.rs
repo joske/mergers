@@ -12,12 +12,8 @@ mod vcs;
 #[derive(Parser)]
 #[command(name = "merde", about = "Visual diff and merge tool")]
 struct Cli {
-    /// Paths to compare (2 files or 2 directories, or 3 files for merge)
+    /// Paths to compare (2 files or 2 directories, or 3 files for 3-way merge)
     paths: Vec<PathBuf>,
-
-    /// Output file for 3-way merge result
-    #[arg(short, long)]
-    output: Option<PathBuf>,
 
     /// Custom labels for panes (one per pane)
     #[arg(short = 'L', long = "label")]
@@ -40,7 +36,6 @@ pub enum CompareMode {
         left: PathBuf,
         middle: PathBuf,
         right: PathBuf,
-        output: Option<PathBuf>,
         labels: Vec<String>,
     },
     Vcs {
@@ -68,7 +63,6 @@ fn main() -> glib::ExitCode {
             left: left.clone(),
             middle: middle.clone(),
             right: right.clone(),
-            output: cli.output,
             labels: cli.labels.clone(),
         }
     } else if cli.paths.len() == 2 {
@@ -109,8 +103,14 @@ fn main() -> glib::ExitCode {
             eprintln!("Error: single file argument not supported. Provide 2 files to compare.");
             std::process::exit(1);
         }
-    } else {
+    } else if cli.paths.is_empty() {
         CompareMode::Welcome
+    } else {
+        eprintln!(
+            "Error: expected 0-3 paths, got {}. Usage: merde [LEFT RIGHT] or [LEFT MIDDLE RIGHT]",
+            cli.paths.len()
+        );
+        std::process::exit(1);
     };
 
     let application = Application::builder()

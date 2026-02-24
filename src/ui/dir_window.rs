@@ -358,7 +358,6 @@ pub(super) fn build_dir_window(
     app: &Application,
     left_dir: std::path::PathBuf,
     right_dir: std::path::PathBuf,
-    _labels: &[String],
     settings: Rc<RefCell<Settings>>,
 ) {
     let left_dir = Rc::new(RefCell::new(left_dir.to_string_lossy().into_owned()));
@@ -1064,7 +1063,6 @@ pub(super) fn build_dir_window(
                 open_file_diff(
                     &nb,
                     decode_rel_path(&raw),
-                    decode_status(&raw),
                     &tabs,
                     &ld.borrow(),
                     &rd.borrow(),
@@ -1145,7 +1143,6 @@ pub(super) fn build_dir_window(
                     open_file_diff(
                         &nb,
                         decode_rel_path(&raw),
-                        decode_status(&raw),
                         &tabs,
                         &ld.borrow(),
                         &rd.borrow(),
@@ -1171,7 +1168,6 @@ pub(super) fn build_dir_window(
                     open_file_diff(
                         &nb,
                         decode_rel_path(&raw),
-                        decode_status(&raw),
                         &tabs,
                         &ld.borrow(),
                         &rd.borrow(),

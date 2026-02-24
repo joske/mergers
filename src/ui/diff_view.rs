@@ -231,22 +231,20 @@ pub(super) fn build_diff_view(
         let ltv = left_pane.text_view.clone();
         let ls = left_pane.scroll.clone();
         let ch = chunks.clone();
-        let lh = filler_lh.clone();
         left_pane
             .filler_overlay
             .set_draw_func(move |_area, cr, w, _h| {
-                draw_fillers(cr, w as f64, &ltv, &ls, &ch.borrow(), true, lh.get());
+                draw_fillers(cr, w as f64, &ltv, &ls, &ch.borrow(), true);
             });
     }
     {
         let rtv = right_pane.text_view.clone();
         let rs = right_pane.scroll.clone();
         let ch = chunks.clone();
-        let lh = filler_lh.clone();
         right_pane
             .filler_overlay
             .set_draw_func(move |_area, cr, w, _h| {
-                draw_fillers(cr, w as f64, &rtv, &rs, &ch.borrow(), false, lh.get());
+                draw_fillers(cr, w as f64, &rtv, &rs, &ch.borrow(), false);
             });
     }
     // Redraw filler overlays on scroll
@@ -334,7 +332,8 @@ pub(super) fn build_diff_view(
                 let tv = av.borrow().clone();
                 let buf = tv.buffer();
                 let target = line.saturating_sub(1); // 1-indexed to 0-indexed
-                scroll_to_line(&tv, &buf, target, &ls);
+                let scroll = scroll_for_view(&tv, &ls);
+                scroll_to_line(&tv, &buf, target, &scroll);
                 if let Some(iter) = buf.iter_at_line(target as i32) {
                     buf.place_cursor(&iter);
                 }
@@ -446,7 +445,7 @@ pub(super) fn build_diff_view(
         let ls = left_pane.scroll.clone();
         let ch = chunks.clone();
         left_chunk_map.set_draw_func(move |_area, cr, _w, h| {
-            draw_chunk_map(cr, 12.0, h as f64, lb.line_count(), &ls, &ch.borrow(), true);
+            draw_chunk_map(cr, h as f64, lb.line_count(), &ls, &ch.borrow(), true);
         });
     }
     // Click to jump
@@ -473,15 +472,7 @@ pub(super) fn build_diff_view(
         let rs = right_pane.scroll.clone();
         let ch = chunks.clone();
         right_chunk_map.set_draw_func(move |_area, cr, _w, h| {
-            draw_chunk_map(
-                cr,
-                12.0,
-                h as f64,
-                rb.line_count(),
-                &rs,
-                &ch.borrow(),
-                false,
-            );
+            draw_chunk_map(cr, h as f64, rb.line_count(), &rs, &ch.borrow(), false);
         });
     }
     {
@@ -597,11 +588,21 @@ pub(super) fn build_diff_view(
             let on_complete = make_on_complete();
             pending.set(true);
             let p = pending.clone();
+            let ib = ignore_blanks.get();
+            let iw = ignore_whitespace.get();
             gtk4::glib::spawn_future_local(async move {
-                let new_chunks =
-                    gio::spawn_blocking(move || myers::diff_lines(&left_content, &right_content))
+                let (lt_cmp, lt_map) = filter_for_diff(&left_content, iw, ib);
+                let (rt_cmp, rt_map) = filter_for_diff(&right_content, iw, ib);
+                let lt_total = left_content.lines().count();
+                let rt_total = right_content.lines().count();
+                let new_chunks = if lt_cmp == rt_cmp {
+                    Vec::new()
+                } else {
+                    let raw = gio::spawn_blocking(move || myers::diff_lines(&lt_cmp, &rt_cmp))
                         .await
                         .unwrap_or_default();
+                    remap_chunks(raw, &lt_map, lt_total, &rt_map, rt_total)
+                };
                 let lh = get_line_height(&ltv);
                 flh.set(lh);
                 apply_diff_tags(&lb, &rb, &new_chunks);
@@ -750,7 +751,8 @@ pub(super) fn build_diff_view(
             let cursor = buf.iter_at_mark(&buf.get_insert());
             if let Some((start, end)) = find_next_match(&buf, &needle, &cursor, true) {
                 buf.select_range(&start, &end);
-                scroll_to_line(&tv, &buf, start.line() as usize, &ls);
+                let scroll = scroll_for_view(&tv, &ls);
+                scroll_to_line(&tv, &buf, start.line() as usize, &scroll);
             }
         });
     }
@@ -767,7 +769,8 @@ pub(super) fn build_diff_view(
             let cursor = buf.iter_at_mark(&buf.get_insert());
             if let Some((start, end)) = find_next_match(&buf, &needle, &cursor, false) {
                 buf.select_range(&start, &end);
-                scroll_to_line(&tv, &buf, start.line() as usize, &ls);
+                let scroll = scroll_for_view(&tv, &ls);
+                scroll_to_line(&tv, &buf, start.line() as usize, &scroll);
             }
         });
     }
@@ -783,7 +786,8 @@ pub(super) fn build_diff_view(
             let cursor = buf.iter_at_mark(&buf.get_insert());
             if let Some((start, end)) = find_next_match(&buf, &needle, &cursor, true) {
                 buf.select_range(&start, &end);
-                scroll_to_line(&tv, &buf, start.line() as usize, &ls);
+                let scroll = scroll_for_view(&tv, &ls);
+                scroll_to_line(&tv, &buf, start.line() as usize, &scroll);
             }
         });
     }
@@ -824,11 +828,20 @@ pub(super) fn build_diff_view(
             if needle.is_empty() {
                 return;
             }
+            let needle_lower = needle.to_lowercase();
             for buf in [&lb, &rb] {
                 let text = buf
                     .text(&buf.start_iter(), &buf.end_iter(), false)
                     .to_string();
-                let new_text = text.replace(&needle, &replacement);
+                // Case-insensitive replace to match CASE_INSENSITIVE find
+                let mut new_text = String::with_capacity(text.len());
+                let mut remaining = text.as_str();
+                while let Some(pos) = remaining.to_lowercase().find(&needle_lower) {
+                    new_text.push_str(&remaining[..pos]);
+                    new_text.push_str(&replacement);
+                    remaining = &remaining[(pos + needle.len())..];
+                }
+                new_text.push_str(remaining);
                 if new_text != text {
                     buf.set_text(&new_text);
                 }
@@ -952,7 +965,8 @@ pub(super) fn build_diff_view(
             let cursor = buf.iter_at_mark(&buf.get_insert());
             if let Some((start, end)) = find_next_match(&buf, &needle, &cursor, true) {
                 buf.select_range(&start, &end);
-                scroll_to_line(&tv, &buf, start.line() as usize, &ls);
+                let scroll = scroll_for_view(&tv, &ls);
+                scroll_to_line(&tv, &buf, start.line() as usize, &scroll);
             }
         });
         action_group.add_action(&action);
@@ -970,7 +984,8 @@ pub(super) fn build_diff_view(
             let cursor = buf.iter_at_mark(&buf.get_insert());
             if let Some((start, end)) = find_next_match(&buf, &needle, &cursor, false) {
                 buf.select_range(&start, &end);
-                scroll_to_line(&tv, &buf, start.line() as usize, &ls);
+                let scroll = scroll_for_view(&tv, &ls);
+                scroll_to_line(&tv, &buf, start.line() as usize, &scroll);
             }
         });
         action_group.add_action(&action);
@@ -1056,7 +1071,6 @@ pub(super) fn build_diff_view(
 pub(super) fn open_file_diff(
     notebook: &Notebook,
     rel_path: &str,
-    _status: &str,
     open_tabs: &Rc<RefCell<Vec<FileTab>>>,
     left_dir: &str,
     right_dir: &str,

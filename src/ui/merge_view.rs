@@ -252,21 +252,17 @@ fn build_merge_view(
     left_path: &Path,
     middle_path: &Path,
     right_path: &Path,
-    output: Option<&Path>,
     labels: &[String],
     settings: &Rc<RefCell<Settings>>,
 ) -> MergeViewResult {
     let s = settings.borrow();
     let (left_content, left_binary) = read_file_content(left_path);
-    // When --output is set, the middle pane shows the merged file (with conflict markers),
-    // not the base. This matches git mergetool semantics: you edit $MERGED, not $BASE.
-    let middle_display_path = output.unwrap_or(middle_path);
-    let (middle_content, middle_binary) = read_file_content(middle_display_path);
+    let (middle_content, middle_binary) = read_file_content(middle_path);
     let (right_content, right_binary) = read_file_content(right_path);
     let any_binary = left_binary || middle_binary || right_binary;
 
     let left_buf = create_source_buffer(left_path, &s);
-    let middle_buf = create_source_buffer(middle_display_path, &s);
+    let middle_buf = create_source_buffer(middle_path, &s);
     let right_buf = create_source_buffer(right_path, &s);
     left_buf.set_text(&left_content);
     middle_buf.set_text(&middle_content);
@@ -287,7 +283,7 @@ fn build_merge_view(
     );
     let middle_pane = make_diff_pane(
         &middle_buf,
-        middle_display_path,
+        middle_path,
         None,
         labels.get(1).map(String::as_str),
         &s,
@@ -625,13 +621,11 @@ fn build_merge_view(
         let ls = left_pane.scroll.clone();
         let lch = left_chunks.clone();
         let rch = right_chunks.clone();
-        let flh = filler_lh.clone();
         left_pane
             .filler_overlay
             .set_draw_func(move |_area, cr, w, _h| {
-                let lh = flh.get();
-                draw_fillers(cr, w as f64, &ltv, &ls, &lch.borrow(), true, lh);
-                draw_fillers(cr, w as f64, &ltv, &ls, &rch.borrow(), true, lh);
+                draw_fillers(cr, w as f64, &ltv, &ls, &lch.borrow(), true);
+                draw_fillers(cr, w as f64, &ltv, &ls, &rch.borrow(), true);
             });
     }
     {
@@ -639,13 +633,11 @@ fn build_merge_view(
         let rs = right_pane.scroll.clone();
         let lch = left_chunks.clone();
         let rch = right_chunks.clone();
-        let flh = filler_lh.clone();
         right_pane
             .filler_overlay
             .set_draw_func(move |_area, cr, w, _h| {
-                let lh = flh.get();
-                draw_fillers(cr, w as f64, &rtv, &rs, &rch.borrow(), false, lh);
-                draw_fillers(cr, w as f64, &rtv, &rs, &lch.borrow(), false, lh);
+                draw_fillers(cr, w as f64, &rtv, &rs, &rch.borrow(), false);
+                draw_fillers(cr, w as f64, &rtv, &rs, &lch.borrow(), false);
             });
     }
     {
@@ -653,13 +645,11 @@ fn build_merge_view(
         let ms = middle_pane.scroll.clone();
         let lch = left_chunks.clone();
         let rch = right_chunks.clone();
-        let flh = filler_lh.clone();
         middle_pane
             .filler_overlay
             .set_draw_func(move |_area, cr, w, _h| {
-                let lh = flh.get();
-                draw_fillers(cr, w as f64, &mtv, &ms, &lch.borrow(), false, lh);
-                draw_fillers(cr, w as f64, &mtv, &ms, &rch.borrow(), true, lh);
+                draw_fillers(cr, w as f64, &mtv, &ms, &lch.borrow(), false);
+                draw_fillers(cr, w as f64, &mtv, &ms, &rch.borrow(), true);
             });
     }
     // Redraw filler overlays on scroll
@@ -769,7 +759,8 @@ fn build_merge_view(
                 let tv = av.borrow().clone();
                 let buf = tv.buffer();
                 let target = line.saturating_sub(1);
-                scroll_to_line(&tv, &buf, target, &ms);
+                let scroll = scroll_for_view(&tv, &ms);
+                scroll_to_line(&tv, &buf, target, &scroll);
                 if let Some(iter) = buf.iter_at_line(target as i32) {
                     buf.place_cursor(&iter);
                 }
@@ -1032,7 +1023,7 @@ fn build_merge_view(
         let ls = left_pane.scroll.clone();
         let ch = left_chunks.clone();
         left_chunk_map.set_draw_func(move |_area, cr, _w, h| {
-            draw_chunk_map(cr, 12.0, h as f64, lb.line_count(), &ls, &ch.borrow(), true);
+            draw_chunk_map(cr, h as f64, lb.line_count(), &ls, &ch.borrow(), true);
         });
     }
     {
@@ -1058,15 +1049,7 @@ fn build_merge_view(
         let rs = right_pane.scroll.clone();
         let ch = right_chunks.clone();
         right_chunk_map.set_draw_func(move |_area, cr, _w, h| {
-            draw_chunk_map(
-                cr,
-                12.0,
-                h as f64,
-                rb.line_count(),
-                &rs,
-                &ch.borrow(),
-                false,
-            );
+            draw_chunk_map(cr, h as f64, rb.line_count(), &rs, &ch.borrow(), false);
         });
     }
     {
@@ -1211,22 +1194,35 @@ fn build_merge_view(
             let on_complete = make_on_complete();
             pending.set(true);
             let p = pending.clone();
+            let ib = ignore_blanks.get();
+            let iw = ignore_whitespace.get();
             gtk4::glib::spawn_future_local(async move {
-                let (new_left, new_right) = gio::spawn_blocking(move || {
-                    let nl = if left_identical {
+                let (lt_cmp, lt_map) = filter_for_diff(&left_content, iw, ib);
+                let (mt_cmp, mt_map) = filter_for_diff(&middle_content, iw, ib);
+                let (rt_cmp, rt_map) = filter_for_diff(&right_content, iw, ib);
+                let lt_total = left_content.lines().count();
+                let mt_total = middle_content.lines().count();
+                let rt_total = right_content.lines().count();
+                let left_ident = lt_cmp == mt_cmp;
+                let right_ident = mt_cmp == rt_cmp;
+                let (new_left_raw, new_right_raw) = gio::spawn_blocking(move || {
+                    let nl = if left_ident {
                         Vec::new()
                     } else {
-                        myers::diff_lines(&left_content, &middle_content)
+                        myers::diff_lines(&lt_cmp, &mt_cmp)
                     };
-                    let nr = if right_identical {
+                    let nr = if right_ident {
                         Vec::new()
                     } else {
-                        myers::diff_lines(&middle_content, &right_content)
+                        myers::diff_lines(&mt_cmp, &rt_cmp)
                     };
                     (nl, nr)
                 })
                 .await
                 .unwrap_or_default();
+
+                let new_left = remap_chunks(new_left_raw, &lt_map, lt_total, &mt_map, mt_total);
+                let new_right = remap_chunks(new_right_raw, &mt_map, mt_total, &rt_map, rt_total);
 
                 let lh = get_line_height(&ltv);
                 flh.set(lh);
@@ -1383,7 +1379,8 @@ fn build_merge_view(
             let cursor = buf.iter_at_mark(&buf.get_insert());
             if let Some((start, end)) = find_next_match(&buf, &needle, &cursor, true) {
                 buf.select_range(&start, &end);
-                scroll_to_line(&tv, &buf, start.line() as usize, &ms);
+                let scroll = scroll_for_view(&tv, &ms);
+                scroll_to_line(&tv, &buf, start.line() as usize, &scroll);
             }
         });
     }
@@ -1400,7 +1397,8 @@ fn build_merge_view(
             let cursor = buf.iter_at_mark(&buf.get_insert());
             if let Some((start, end)) = find_next_match(&buf, &needle, &cursor, false) {
                 buf.select_range(&start, &end);
-                scroll_to_line(&tv, &buf, start.line() as usize, &ms);
+                let scroll = scroll_for_view(&tv, &ms);
+                scroll_to_line(&tv, &buf, start.line() as usize, &scroll);
             }
         });
     }
@@ -1416,7 +1414,8 @@ fn build_merge_view(
             let cursor = buf.iter_at_mark(&buf.get_insert());
             if let Some((start, end)) = find_next_match(&buf, &needle, &cursor, true) {
                 buf.select_range(&start, &end);
-                scroll_to_line(&tv, &buf, start.line() as usize, &ms);
+                let scroll = scroll_for_view(&tv, &ms);
+                scroll_to_line(&tv, &buf, start.line() as usize, &scroll);
             }
         });
     }
@@ -1458,11 +1457,20 @@ fn build_merge_view(
             if needle.is_empty() {
                 return;
             }
+            let needle_lower = needle.to_lowercase();
             for buf in [&lb, &mb, &rb] {
                 let text = buf
                     .text(&buf.start_iter(), &buf.end_iter(), false)
                     .to_string();
-                let new_text = text.replace(&needle, &replacement);
+                // Case-insensitive replace to match CASE_INSENSITIVE find
+                let mut new_text = String::with_capacity(text.len());
+                let mut remaining = text.as_str();
+                while let Some(pos) = remaining.to_lowercase().find(&needle_lower) {
+                    new_text.push_str(&remaining[..pos]);
+                    new_text.push_str(&replacement);
+                    remaining = &remaining[(pos + needle.len())..];
+                }
+                new_text.push_str(remaining);
                 if new_text != text {
                     buf.set_text(&new_text);
                 }
@@ -1621,7 +1629,8 @@ fn build_merge_view(
             let cursor = buf.iter_at_mark(&buf.get_insert());
             if let Some((start, end)) = find_next_match(&buf, &needle, &cursor, true) {
                 buf.select_range(&start, &end);
-                scroll_to_line(&tv, &buf, start.line() as usize, &ms);
+                let scroll = scroll_for_view(&tv, &ms);
+                scroll_to_line(&tv, &buf, start.line() as usize, &scroll);
             }
         });
         action_group.add_action(&action);
@@ -1639,7 +1648,8 @@ fn build_merge_view(
             let cursor = buf.iter_at_mark(&buf.get_insert());
             if let Some((start, end)) = find_next_match(&buf, &needle, &cursor, false) {
                 buf.select_range(&start, &end);
-                scroll_to_line(&tv, &buf, start.line() as usize, &ms);
+                let scroll = scroll_for_view(&tv, &ms);
+                scroll_to_line(&tv, &buf, start.line() as usize, &scroll);
             }
         });
         action_group.add_action(&action);
@@ -1670,51 +1680,17 @@ pub(super) fn build_merge_window(
     left_path: std::path::PathBuf,
     middle_path: std::path::PathBuf,
     right_path: std::path::PathBuf,
-    output: Option<std::path::PathBuf>,
     labels: &[String],
     settings: &Rc<RefCell<Settings>>,
 ) {
-    let mv = build_merge_view(
-        &left_path,
-        &middle_path,
-        &right_path,
-        output.as_deref(),
-        labels,
-        settings,
-    );
-
-    // "Save Merged" button when --output is set
-    if let Some(ref out_path) = output {
-        let save_btn = Button::with_label("Save Merged");
-        save_btn.set_tooltip_text(Some(&format!("Save to {}", out_path.display())));
-        let mb = mv.middle_buf.clone();
-        let op = out_path.clone();
-        let btn_ref = save_btn.clone();
-        save_btn.connect_clicked(move |_| {
-            let text = mb.text(&mb.start_iter(), &mb.end_iter(), false);
-            save_file(&op, text.as_str(), &btn_ref);
-        });
-        // Re-enable after edits
-        {
-            let btn = save_btn.clone();
-            mv.middle_buf.connect_changed(move |_| {
-                btn.set_sensitive(true);
-            });
-        }
-        // Insert the save button into toolbar (first child of the widget is the toolbar)
-        if let Some(toolbar) = mv.widget.first_child()
-            && let Some(toolbar_box) = toolbar.downcast_ref::<GtkBox>()
-        {
-            toolbar_box.append(&save_btn);
-        }
-    }
+    let mv = build_merge_view(&left_path, &middle_path, &right_path, labels, settings);
 
     // File watcher on all 3 files
     let merge_watcher_alive = Rc::new(Cell::new(true));
     let (fs_tx, fs_rx) = mpsc::channel::<()>();
     let merge_watcher = {
         use notify::{RecursiveMode, Watcher};
-        let op = output.clone().unwrap_or_else(|| middle_path.clone());
+        let op = middle_path.clone();
         let mut w =
             notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
                 if res.is_ok() {
@@ -1736,7 +1712,7 @@ pub(super) fn build_merge_window(
         let mb = mv.middle_buf.clone();
         let rb = mv.right_buf.clone();
         let lp = left_path.clone();
-        let mp = output.clone().unwrap_or_else(|| middle_path.clone());
+        let mp = middle_path.clone();
         let rp = right_path.clone();
         let m_save = mv.middle_save.clone();
         let alive = merge_watcher_alive.clone();
@@ -1863,11 +1839,7 @@ pub(super) fn build_merge_window(
     // Unsaved-changes guard on window close button
     {
         let ms = mv.middle_save.clone();
-        let save_path = output
-            .as_deref()
-            .unwrap_or(&middle_path)
-            .display()
-            .to_string();
+        let save_path = middle_path.display().to_string();
         window.connect_close_request(move |w| {
             handle_close_request(w, vec![(save_path.clone(), ms.clone())])
         });
