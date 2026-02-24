@@ -11,10 +11,10 @@
 
 use std::{
     cell::{Cell, RefCell},
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fmt::Write as _,
     fs,
-    path::Path,
+    path::{Path, PathBuf},
     rc::Rc,
     sync::mpsc,
     time::{Duration, SystemTime},
@@ -57,6 +57,7 @@ const SEP: char = '\x1f';
 thread_local! {
     static FONT_PROVIDER: CssProvider = CssProvider::new();
     static FONT_REGISTERED: Cell<bool> = const { Cell::new(false) };
+    static SAVING_PATHS: RefCell<HashSet<PathBuf>> = RefCell::new(HashSet::new());
 }
 
 fn update_font_css(settings: &Settings) {
@@ -121,7 +122,28 @@ struct FileTab {
 }
 
 static NEXT_TAB_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static SAVING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn mark_saving(path: &Path) {
+    let p = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    SAVING_PATHS.with(|s| s.borrow_mut().insert(p.clone()));
+    gtk4::glib::timeout_add_local_once(Duration::from_millis(600), move || {
+        SAVING_PATHS.with(|s| s.borrow_mut().remove(&p));
+    });
+}
+
+fn is_saving(paths: &[&Path]) -> bool {
+    SAVING_PATHS.with(|s| {
+        let set = s.borrow();
+        paths.iter().any(|p| {
+            let canon = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+            set.contains(&canon)
+        })
+    })
+}
+
+fn any_saving() -> bool {
+    SAVING_PATHS.with(|s| !s.borrow().is_empty())
+}
 
 fn apply_diff_tags(left_buf: &TextBuffer, right_buf: &TextBuffer, chunks: &[DiffChunk]) {
     for chunk in chunks {
@@ -206,10 +228,8 @@ fn reload_file_tab(tab: &FileTab, left_dir: &str, right_dir: &str) {
         return;
     }
 
-    let left_content =
-        fs::read_to_string(Path::new(left_dir).join(&tab.rel_path)).unwrap_or_default();
-    let right_content =
-        fs::read_to_string(Path::new(right_dir).join(&tab.rel_path)).unwrap_or_default();
+    let left_content = read_file_lossy(&Path::new(left_dir).join(&tab.rel_path));
+    let right_content = read_file_lossy(&Path::new(right_dir).join(&tab.rel_path));
 
     // Only reset buffers if the on-disk content actually differs from what's in the buffer
     let cur_left = tab
@@ -247,13 +267,20 @@ fn is_binary(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Read a file with lossy UTF-8 conversion (replacement chars for invalid bytes).
+fn read_file_lossy(path: &Path) -> String {
+    fs::read(path)
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .unwrap_or_default()
+}
+
 /// Read a file as text, returning content and whether it was binary.
 /// Binary files return an empty string and `true`.
 fn read_file_content(path: &Path) -> (String, bool) {
     if is_binary(path) {
         (String::new(), true)
     } else {
-        (fs::read_to_string(path).unwrap_or_default(), false)
+        (read_file_lossy(path), false)
     }
 }
 
@@ -1285,14 +1312,10 @@ fn make_diff_pane(
     let path_owned = file_path.to_path_buf();
     let save_btn_ref = save_btn.clone();
     save_btn.connect_clicked(move |_| {
-        SAVING.store(true, std::sync::atomic::Ordering::Relaxed);
+        mark_saving(&path_owned);
         let text = buf_clone.text(&buf_clone.start_iter(), &buf_clone.end_iter(), false);
         let _ = fs::write(&path_owned, text.as_str());
         save_btn_ref.set_sensitive(false);
-        // Clear the flag after a short delay so the watcher event is ignored
-        gtk4::glib::timeout_add_local_once(Duration::from_millis(600), || {
-            SAVING.store(false, std::sync::atomic::Ordering::Relaxed);
-        });
     });
 
     let filler_overlay = DrawingArea::new();
@@ -4497,13 +4520,10 @@ fn build_merge_window(
         let op = out_path.clone();
         let btn_ref = save_btn.clone();
         save_btn.connect_clicked(move |_| {
-            SAVING.store(true, std::sync::atomic::Ordering::Relaxed);
+            mark_saving(&op);
             let text = mb.text(&mb.start_iter(), &mb.end_iter(), false);
             let _ = fs::write(&op, text.as_str());
             btn_ref.set_sensitive(false);
-            gtk4::glib::timeout_add_local_once(Duration::from_millis(600), move || {
-                SAVING.store(false, std::sync::atomic::Ordering::Relaxed);
-            });
         });
         // Re-enable after edits
         {
@@ -4521,34 +4541,25 @@ fn build_merge_window(
     }
 
     // File watcher on all 3 files
+    let merge_watcher_alive = Rc::new(Cell::new(true));
     let (fs_tx, fs_rx) = mpsc::channel::<()>();
-    {
-        let lp = left_path.clone();
-        let rp = right_path.clone();
+    let merge_watcher = {
+        use notify::{RecursiveMode, Watcher};
         let op = output.clone().unwrap_or_else(|| middle_path.clone());
-        std::thread::spawn(move || {
-            use notify::{RecursiveMode, Watcher};
-            let _watcher = {
-                let mut w = notify::recommended_watcher(
-                    move |res: Result<notify::Event, notify::Error>| {
-                        if res.is_ok() {
-                            let _ = fs_tx.send(());
-                        }
-                    },
-                )
-                .expect("Failed to create file watcher");
-                for p in [&lp, &op, &rp] {
-                    if let Some(parent) = p.parent() {
-                        w.watch(parent, RecursiveMode::NonRecursive).ok();
-                    }
+        let mut w =
+            notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
+                if res.is_ok() {
+                    let _ = fs_tx.send(());
                 }
-                w
-            };
-            loop {
-                std::thread::park();
+            })
+            .expect("Failed to create file watcher");
+        for p in [&left_path, &op, &right_path] {
+            if let Some(parent) = p.parent() {
+                w.watch(parent, RecursiveMode::NonRecursive).ok();
             }
-        });
-    }
+        }
+        w
+    };
 
     // Poll for filesystem changes and reload
     {
@@ -4559,18 +4570,20 @@ fn build_merge_window(
         let mp = output.clone().unwrap_or_else(|| middle_path.clone());
         let rp = right_path.clone();
         let m_save = mv.middle_save.clone();
+        let alive = merge_watcher_alive.clone();
         gtk4::glib::timeout_add_local(Duration::from_millis(500), move || {
+            let _ = &merge_watcher; // prevent drop; watcher lives until closure is dropped
+            if !alive.get() {
+                return gtk4::glib::ControlFlow::Break;
+            }
             let mut changed = false;
             while fs_rx.try_recv().is_ok() {
                 changed = true;
             }
-            if changed
-                && !SAVING.load(std::sync::atomic::Ordering::Relaxed)
-                && !m_save.is_sensitive()
-            {
-                let left_content = fs::read_to_string(&lp).unwrap_or_default();
-                let middle_content = fs::read_to_string(&mp).unwrap_or_default();
-                let right_content = fs::read_to_string(&rp).unwrap_or_default();
+            if changed && !is_saving(&[&lp, &mp, &rp]) && !m_save.is_sensitive() {
+                let left_content = read_file_lossy(&lp);
+                let middle_content = read_file_lossy(&mp);
+                let right_content = read_file_lossy(&rp);
 
                 let cur_l = lb.text(&lb.start_iter(), &lb.end_iter(), false);
                 let cur_m = mb.text(&mb.start_iter(), &mb.end_iter(), false);
@@ -4663,6 +4676,10 @@ fn build_merge_window(
         gtk_app.set_accels_for_action("win.prefs", &["<Ctrl>comma"]);
         gtk_app.set_accels_for_action("win.close-tab", &["<Ctrl>w"]);
     }
+
+    window.connect_destroy(move |_| {
+        merge_watcher_alive.set(false);
+    });
 
     window.present();
 }
@@ -5313,39 +5330,36 @@ fn build_vcs_window(app: &Application, dir: std::path::PathBuf, settings: Rc<Ref
     }
 
     // File watcher
-    {
-        let (fs_tx, fs_rx) = mpsc::channel::<()>();
-        {
-            let rr = repo_root.clone();
-            std::thread::spawn(move || {
-                use notify::{RecursiveMode, Watcher};
-                let _watcher = {
-                    let mut w = notify::recommended_watcher(
-                        move |res: Result<notify::Event, notify::Error>| {
-                            if let Ok(event) = res {
-                                // Skip events inside .git directory (git status touches
-                                // index files, which would cause an infinite refresh loop)
-                                let dominated_by_git = event
-                                    .paths
-                                    .iter()
-                                    .all(|p| p.components().any(|c| c.as_os_str() == ".git"));
-                                if !dominated_by_git {
-                                    let _ = fs_tx.send(());
-                                }
-                            }
-                        },
-                    )
-                    .expect("Failed to create file watcher");
-                    w.watch(&rr, RecursiveMode::Recursive).ok();
-                    w
-                };
-                loop {
-                    std::thread::park();
+    let vcs_watcher_alive = Rc::new(Cell::new(true));
+    let (fs_tx, fs_rx) = mpsc::channel::<()>();
+    let vcs_watcher = {
+        use notify::{RecursiveMode, Watcher};
+        let mut w =
+            notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
+                if let Ok(event) = res {
+                    // Skip events inside .git directory (git status touches
+                    // index files, which would cause an infinite refresh loop)
+                    let dominated_by_git = event
+                        .paths
+                        .iter()
+                        .all(|p| p.components().any(|c| c.as_os_str() == ".git"));
+                    if !dominated_by_git {
+                        let _ = fs_tx.send(());
+                    }
                 }
-            });
-        }
+            })
+            .expect("Failed to create file watcher");
+        w.watch(&repo_root, RecursiveMode::Recursive).ok();
+        w
+    };
+    {
         let r = refresh.clone();
+        let alive = vcs_watcher_alive.clone();
         gtk4::glib::timeout_add_local(Duration::from_millis(500), move || {
+            let _ = &vcs_watcher; // prevent drop; watcher lives until closure is dropped
+            if !alive.get() {
+                return gtk4::glib::ControlFlow::Break;
+            }
             let mut changed = false;
             while fs_rx.try_recv().is_ok() {
                 changed = true;
@@ -5507,9 +5521,10 @@ fn build_vcs_window(app: &Application, dir: std::path::PathBuf, settings: Rc<Ref
         gtk_app.set_accels_for_action("win.close-tab", &["<Ctrl>w"]);
     }
 
-    // Clean up temp dir on destroy
+    // Clean up temp dir and stop watcher on destroy
     let td = temp_dir.clone();
     window.connect_destroy(move |_| {
+        vcs_watcher_alive.set(false);
         let _ = fs::remove_dir_all(&td);
     });
 
@@ -6185,34 +6200,25 @@ fn build_file_window(
     let dv = build_diff_view(&left_path, &right_path, labels, settings);
 
     // File watcher for both files
+    let diff_watcher_alive = Rc::new(Cell::new(true));
     let (fs_tx, fs_rx) = mpsc::channel::<()>();
-    {
-        let lp = left_path.clone();
-        let rp = right_path.clone();
-        std::thread::spawn(move || {
-            use notify::{RecursiveMode, Watcher};
-            let _watcher = {
-                let mut w = notify::recommended_watcher(
-                    move |res: Result<notify::Event, notify::Error>| {
-                        if res.is_ok() {
-                            let _ = fs_tx.send(());
-                        }
-                    },
-                )
-                .expect("Failed to create file watcher");
-                if let Some(parent) = lp.parent() {
-                    w.watch(parent, RecursiveMode::NonRecursive).ok();
+    let diff_watcher = {
+        use notify::{RecursiveMode, Watcher};
+        let mut w =
+            notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
+                if res.is_ok() {
+                    let _ = fs_tx.send(());
                 }
-                if let Some(parent) = rp.parent() {
-                    w.watch(parent, RecursiveMode::NonRecursive).ok();
-                }
-                w
-            };
-            loop {
-                std::thread::park();
-            }
-        });
-    }
+            })
+            .expect("Failed to create file watcher");
+        if let Some(parent) = left_path.parent() {
+            w.watch(parent, RecursiveMode::NonRecursive).ok();
+        }
+        if let Some(parent) = right_path.parent() {
+            w.watch(parent, RecursiveMode::NonRecursive).ok();
+        }
+        w
+    };
 
     // Poll for filesystem changes and reload
     {
@@ -6222,18 +6228,23 @@ fn build_file_window(
         let rp = right_path.clone();
         let l_save = dv.left_save.clone();
         let r_save = dv.right_save.clone();
+        let alive = diff_watcher_alive.clone();
         gtk4::glib::timeout_add_local(Duration::from_millis(500), move || {
+            let _ = &diff_watcher; // prevent drop; watcher lives until closure is dropped
+            if !alive.get() {
+                return gtk4::glib::ControlFlow::Break;
+            }
             let mut changed = false;
             while fs_rx.try_recv().is_ok() {
                 changed = true;
             }
             if changed
-                && !SAVING.load(std::sync::atomic::Ordering::Relaxed)
+                && !is_saving(&[&lp, &rp])
                 && !l_save.is_sensitive()
                 && !r_save.is_sensitive()
             {
-                let left_content = fs::read_to_string(&lp).unwrap_or_default();
-                let right_content = fs::read_to_string(&rp).unwrap_or_default();
+                let left_content = read_file_lossy(&lp);
+                let right_content = read_file_lossy(&rp);
 
                 let cur_left = lb.text(&lb.start_iter(), &lb.end_iter(), false);
                 let cur_right = rb.text(&rb.start_iter(), &rb.end_iter(), false);
@@ -6315,6 +6326,10 @@ fn build_file_window(
         gtk_app.set_accels_for_action("win.prefs", &["<Ctrl>comma"]);
         gtk_app.set_accels_for_action("win.close-tab", &["<Ctrl>w"]);
     }
+
+    window.connect_destroy(move |_| {
+        diff_watcher_alive.set(false);
+    });
 
     window.present();
 }
@@ -6985,30 +7000,23 @@ fn build_dir_window(
     }
 
     // ── File watcher ───────────────────────────────────────────────
+    let dir_watcher_alive = Rc::new(Cell::new(true));
     let (fs_tx, fs_rx) = mpsc::channel::<()>();
-    {
+    let dir_watcher = {
+        use notify::{RecursiveMode, Watcher};
         let ld = left_dir.borrow().clone();
         let rd = right_dir.borrow().clone();
-        std::thread::spawn(move || {
-            use notify::{RecursiveMode, Watcher};
-            let _watcher = {
-                let mut w = notify::recommended_watcher(
-                    move |res: Result<notify::Event, notify::Error>| {
-                        if res.is_ok() {
-                            let _ = fs_tx.send(());
-                        }
-                    },
-                )
-                .expect("Failed to create file watcher");
-                w.watch(Path::new(&ld), RecursiveMode::Recursive).ok();
-                w.watch(Path::new(&rd), RecursiveMode::Recursive).ok();
-                w
-            };
-            loop {
-                std::thread::park();
-            }
-        });
-    }
+        let mut w =
+            notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
+                if res.is_ok() {
+                    let _ = fs_tx.send(());
+                }
+            })
+            .expect("Failed to create file watcher");
+        w.watch(Path::new(&ld), RecursiveMode::Recursive).ok();
+        w.watch(Path::new(&rd), RecursiveMode::Recursive).ok();
+        w
+    };
 
     // Poll for filesystem changes and reload
     let tabs_reload = open_tabs.clone();
@@ -7016,12 +7024,17 @@ fn build_dir_window(
     let rd_reload = right_dir.clone();
     {
         let reload = reload_dir.clone();
+        let alive = dir_watcher_alive.clone();
         gtk4::glib::timeout_add_local(Duration::from_millis(500), move || {
+            let _ = &dir_watcher; // prevent drop; watcher lives until closure is dropped
+            if !alive.get() {
+                return gtk4::glib::ControlFlow::Break;
+            }
             let mut changed = false;
             while fs_rx.try_recv().is_ok() {
                 changed = true;
             }
-            if changed && !SAVING.load(std::sync::atomic::Ordering::Relaxed) {
+            if changed && !any_saving() {
                 reload();
                 // Reload open file tabs
                 for tab in tabs_reload.borrow().iter() {
@@ -7105,6 +7118,10 @@ fn build_dir_window(
         gtk_app.set_accels_for_action("dir.folder-copy-right", &["<Alt>Right"]);
         gtk_app.set_accels_for_action("dir.folder-delete", &["Delete"]);
     }
+
+    window.connect_destroy(move |_| {
+        dir_watcher_alive.set(false);
+    });
 
     window.present();
     left_view.grab_focus();
