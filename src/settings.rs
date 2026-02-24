@@ -46,7 +46,7 @@ impl Settings {
         } else {
             PathBuf::from(".")
         };
-        p.push("meld-rs");
+        p.push("merde");
         p.push("settings.toml");
         p
     }
@@ -115,10 +115,10 @@ mod tests {
     }
 
     #[test]
-    fn test_config_path_has_meld_rs() {
+    fn test_config_path_has_merde() {
         let path = Settings::config_path();
         let path_str = path.to_string_lossy();
-        assert!(path_str.contains("meld-rs"));
+        assert!(path_str.contains("merde"));
         assert!(path_str.ends_with("settings.toml"));
     }
 }

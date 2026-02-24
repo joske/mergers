@@ -1,7 +1,7 @@
-# meld-rs
+# merde
 
-[![workflow status](https://github.com/joske/meld-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/joske/meld-rs/actions?query=workflow%3A%22CI%22)
-[![security audit](https://github.com/joske/meld-rs/actions/workflows/audit.yml/badge.svg)](https://github.com/joske/meld-rs/actions?query=workflow%3A%22Security+Audit%22)
+[![workflow status](https://github.com/joske/merde/actions/workflows/ci.yml/badge.svg)](https://github.com/joske/merde/actions?query=workflow%3A%22CI%22)
+[![security audit](https://github.com/joske/merde/actions/workflows/audit.yml/badge.svg)](https://github.com/joske/merde/actions?query=workflow%3A%22Security+Audit%22)
 
 A visual diff and merge tool written in Rust with GTK4, inspired by [Meld](https://meldmerge.org/).
 
@@ -12,7 +12,7 @@ A visual diff and merge tool written in Rust with GTK4, inspired by [Meld](https
 - **Two-way file comparison** with syntax highlighting (GtkSourceView 5)
 - **Three-way merge** for resolving conflicts
 - **Directory comparison** with recursive scanning and async background diffing
-- **Git integration** — run `meld-rs .` to view uncommitted changes
+- **Git integration** — run `merde .` to view uncommitted changes
 - Inline **word-level diff** highlighting
 - **Ignore whitespace / blank lines** options
 - **Find & Replace** within panes
@@ -33,20 +33,20 @@ A visual diff and merge tool written in Rust with GTK4, inspired by [Meld](https
 
 ```
 # Compare two files
-meld-rs file1.txt file2.txt
+merde file1.txt file2.txt
 
 # Compare two directories
-meld-rs dir1/ dir2/
+merde dir1/ dir2/
 
 # Three-way merge
-meld-rs left.txt middle.txt right.txt
-meld-rs left.txt middle.txt right.txt -o output.txt
+merde left.txt middle.txt right.txt
+merde left.txt middle.txt right.txt -o output.txt
 
 # View uncommitted git changes
-meld-rs .
+merde .
 
 # Custom labels
-meld-rs file1.txt file2.txt -L "Original" -L "Modified"
+merde file1.txt file2.txt -L "Original" -L "Modified"
 ```
 
 ## Building
