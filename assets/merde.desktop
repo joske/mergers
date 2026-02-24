@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Merde
+GenericName=Diff Tool
+Comment=Compare and merge files
+Exec=merde
+Icon=merde
+Terminal=false
+Categories=Development;TextEditor;
+MimeType=text/plain;
