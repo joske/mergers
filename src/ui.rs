@@ -141,8 +141,12 @@ fn is_saving(paths: &[&Path]) -> bool {
     })
 }
 
-fn any_saving() -> bool {
-    SAVING_PATHS.with(|s| !s.borrow().is_empty())
+fn is_saving_under(roots: &[&Path]) -> bool {
+    SAVING_PATHS.with(|s| {
+        let set = s.borrow();
+        set.iter()
+            .any(|saving_path| roots.iter().any(|root| saving_path.starts_with(root)))
+    })
 }
 
 fn apply_diff_tags(left_buf: &TextBuffer, right_buf: &TextBuffer, chunks: &[DiffChunk]) {
@@ -4571,35 +4575,54 @@ fn build_merge_window(
         let rp = right_path.clone();
         let m_save = mv.middle_save.clone();
         let alive = merge_watcher_alive.clone();
+        let loading = Rc::new(Cell::new(false));
+        let mut dirty = false;
         gtk4::glib::timeout_add_local(Duration::from_millis(500), move || {
             let _ = &merge_watcher; // prevent drop; watcher lives until closure is dropped
             if !alive.get() {
                 return gtk4::glib::ControlFlow::Break;
             }
-            let mut changed = false;
             while fs_rx.try_recv().is_ok() {
-                changed = true;
+                dirty = true;
             }
-            if changed && !is_saving(&[&lp, &mp, &rp]) && !m_save.is_sensitive() {
-                let left_content = read_file_lossy(&lp);
-                let middle_content = read_file_lossy(&mp);
-                let right_content = read_file_lossy(&rp);
-
-                let cur_l = lb.text(&lb.start_iter(), &lb.end_iter(), false);
-                let cur_m = mb.text(&mb.start_iter(), &mb.end_iter(), false);
-                let cur_r = rb.text(&rb.start_iter(), &rb.end_iter(), false);
-
-                if cur_l.as_str() != left_content
-                    || cur_m.as_str() != middle_content
-                    || cur_r.as_str() != right_content
-                {
-                    // set_text triggers connect_changed which schedules
-                    // refresh_merge_diffs with the current filter state.
-                    lb.set_text(&left_content);
-                    mb.set_text(&middle_content);
-                    rb.set_text(&right_content);
-                    m_save.set_sensitive(false);
-                }
+            if dirty && !loading.get() && !is_saving(&[&lp, &mp, &rp]) && !m_save.is_sensitive() {
+                dirty = false;
+                loading.set(true);
+                let lp2 = lp.clone();
+                let mp2 = mp.clone();
+                let rp2 = rp.clone();
+                let lb2 = lb.clone();
+                let mb2 = mb.clone();
+                let rb2 = rb.clone();
+                let m_save2 = m_save.clone();
+                let loading2 = loading.clone();
+                gtk4::glib::spawn_future_local(async move {
+                    let (left_content, middle_content, right_content) =
+                        gio::spawn_blocking(move || {
+                            (
+                                read_file_lossy(&lp2),
+                                read_file_lossy(&mp2),
+                                read_file_lossy(&rp2),
+                            )
+                        })
+                        .await
+                        .unwrap();
+                    loading2.set(false);
+                    let cur_l = lb2.text(&lb2.start_iter(), &lb2.end_iter(), false);
+                    let cur_m = mb2.text(&mb2.start_iter(), &mb2.end_iter(), false);
+                    let cur_r = rb2.text(&rb2.start_iter(), &rb2.end_iter(), false);
+                    if cur_l.as_str() != left_content
+                        || cur_m.as_str() != middle_content
+                        || cur_r.as_str() != right_content
+                    {
+                        // set_text triggers connect_changed which schedules
+                        // refresh_merge_diffs with the current filter state.
+                        lb2.set_text(&left_content);
+                        mb2.set_text(&middle_content);
+                        rb2.set_text(&right_content);
+                        m_save2.set_sensitive(false);
+                    }
+                });
             }
             gtk4::glib::ControlFlow::Continue
         });
@@ -5355,16 +5378,17 @@ fn build_vcs_window(app: &Application, dir: std::path::PathBuf, settings: Rc<Ref
     {
         let r = refresh.clone();
         let alive = vcs_watcher_alive.clone();
+        let mut dirty = false;
         gtk4::glib::timeout_add_local(Duration::from_millis(500), move || {
             let _ = &vcs_watcher; // prevent drop; watcher lives until closure is dropped
             if !alive.get() {
                 return gtk4::glib::ControlFlow::Break;
             }
-            let mut changed = false;
             while fs_rx.try_recv().is_ok() {
-                changed = true;
+                dirty = true;
             }
-            if changed {
+            if dirty {
+                dirty = false;
                 r();
             }
             gtk4::glib::ControlFlow::Continue
@@ -6229,34 +6253,48 @@ fn build_file_window(
         let l_save = dv.left_save.clone();
         let r_save = dv.right_save.clone();
         let alive = diff_watcher_alive.clone();
+        let loading = Rc::new(Cell::new(false));
+        let mut dirty = false;
         gtk4::glib::timeout_add_local(Duration::from_millis(500), move || {
             let _ = &diff_watcher; // prevent drop; watcher lives until closure is dropped
             if !alive.get() {
                 return gtk4::glib::ControlFlow::Break;
             }
-            let mut changed = false;
             while fs_rx.try_recv().is_ok() {
-                changed = true;
+                dirty = true;
             }
-            if changed
+            if dirty
+                && !loading.get()
                 && !is_saving(&[&lp, &rp])
                 && !l_save.is_sensitive()
                 && !r_save.is_sensitive()
             {
-                let left_content = read_file_lossy(&lp);
-                let right_content = read_file_lossy(&rp);
-
-                let cur_left = lb.text(&lb.start_iter(), &lb.end_iter(), false);
-                let cur_right = rb.text(&rb.start_iter(), &rb.end_iter(), false);
-
-                if cur_left.as_str() != left_content || cur_right.as_str() != right_content {
-                    // set_text triggers connect_changed which schedules
-                    // refresh_diff with the current filter state.
-                    lb.set_text(&left_content);
-                    rb.set_text(&right_content);
-                    l_save.set_sensitive(false);
-                    r_save.set_sensitive(false);
-                }
+                dirty = false;
+                loading.set(true);
+                let lp2 = lp.clone();
+                let rp2 = rp.clone();
+                let lb2 = lb.clone();
+                let rb2 = rb.clone();
+                let l_save2 = l_save.clone();
+                let r_save2 = r_save.clone();
+                let loading2 = loading.clone();
+                gtk4::glib::spawn_future_local(async move {
+                    let (left_content, right_content) =
+                        gio::spawn_blocking(move || (read_file_lossy(&lp2), read_file_lossy(&rp2)))
+                            .await
+                            .unwrap();
+                    loading2.set(false);
+                    let cur_left = lb2.text(&lb2.start_iter(), &lb2.end_iter(), false);
+                    let cur_right = rb2.text(&rb2.start_iter(), &rb2.end_iter(), false);
+                    if cur_left.as_str() != left_content || cur_right.as_str() != right_content {
+                        // set_text triggers connect_changed which schedules
+                        // refresh_diff with the current filter state.
+                        lb2.set_text(&left_content);
+                        rb2.set_text(&right_content);
+                        l_save2.set_sensitive(false);
+                        r_save2.set_sensitive(false);
+                    }
+                });
             }
             gtk4::glib::ControlFlow::Continue
         });
@@ -7025,16 +7063,22 @@ fn build_dir_window(
     {
         let reload = reload_dir.clone();
         let alive = dir_watcher_alive.clone();
+        let mut dirty = false;
         gtk4::glib::timeout_add_local(Duration::from_millis(500), move || {
             let _ = &dir_watcher; // prevent drop; watcher lives until closure is dropped
             if !alive.get() {
                 return gtk4::glib::ControlFlow::Break;
             }
-            let mut changed = false;
             while fs_rx.try_recv().is_ok() {
-                changed = true;
+                dirty = true;
             }
-            if changed && !any_saving() {
+            if dirty
+                && !is_saving_under(&[
+                    Path::new(&*ld_reload.borrow()),
+                    Path::new(&*rd_reload.borrow()),
+                ])
+            {
+                dirty = false;
                 reload();
                 // Reload open file tabs
                 for tab in tabs_reload.borrow().iter() {
