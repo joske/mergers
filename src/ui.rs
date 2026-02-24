@@ -111,6 +111,9 @@ struct DirMeta {
 struct FileTab {
     id: u64,
     rel_path: String,
+    widget: GtkBox,
+    left_path: String,
+    right_path: String,
     left_buf: TextBuffer,
     right_buf: TextBuffer,
     left_save: Button,
@@ -1424,6 +1427,34 @@ fn get_lines_text(buf: &TextBuffer, start_line: usize, end_line: usize) -> Strin
     buf.text(&start, &end, false).to_string()
 }
 
+fn apply_paste_highlight(buf: &TextBuffer, start_line: usize, end_line: usize) {
+    let table = buf.tag_table();
+    let tag = table.lookup("paste-highlight").unwrap_or_else(|| {
+        let t = TextTag::builder()
+            .name("paste-highlight")
+            .background("#a0d0ff")
+            .build();
+        table.add(&t);
+        t
+    });
+    let start = buf
+        .iter_at_line(start_line as i32)
+        .unwrap_or(buf.start_iter());
+    let end = if (end_line as i32) < buf.line_count() {
+        buf.iter_at_line(end_line as i32).unwrap_or(buf.end_iter())
+    } else {
+        buf.end_iter()
+    };
+    buf.apply_tag(&tag, &start, &end);
+
+    let b = buf.clone();
+    gtk4::glib::timeout_add_local_once(Duration::from_millis(500), move || {
+        if let Some(t) = b.tag_table().lookup("paste-highlight") {
+            b.remove_tag(&t, &b.start_iter(), &b.end_iter());
+        }
+    });
+}
+
 fn copy_chunk(
     src_buf: &TextBuffer,
     src_start: usize,
@@ -1432,10 +1463,22 @@ fn copy_chunk(
     dst_start: usize,
     dst_end: usize,
 ) {
-    let src_text = get_lines_text(src_buf, src_start, src_end);
-    let mut ds = dst_buf
+    let mut src_text = get_lines_text(src_buf, src_start, src_end);
+
+    // EOF: ensure trailing newline when pasting at/past the last line
+    if dst_end as i32 >= dst_buf.line_count() && !src_text.ends_with('\n') && !src_text.is_empty() {
+        src_text.push('\n');
+    }
+
+    let ds = dst_buf
         .iter_at_line(dst_start as i32)
         .unwrap_or(dst_buf.start_iter());
+
+    // Mark at insertion start (left gravity stays before inserted text)
+    let mark = dst_buf.create_mark(None, &ds, true);
+
+    dst_buf.begin_user_action();
+
     let mut de = if (dst_end as i32) < dst_buf.line_count() {
         dst_buf
             .iter_at_line(dst_end as i32)
@@ -1443,8 +1486,21 @@ fn copy_chunk(
     } else {
         dst_buf.end_iter()
     };
+    let mut ds = dst_buf.iter_at_mark(&mark);
     dst_buf.delete(&mut ds, &mut de);
     dst_buf.insert(&mut ds, &src_text);
+
+    dst_buf.end_user_action();
+
+    // Place cursor at start of inserted text
+    let insert_start = dst_buf.iter_at_mark(&mark);
+    dst_buf.place_cursor(&insert_start);
+    dst_buf.delete_mark(&mark);
+
+    // Flash highlight on inserted range
+    if src_start < src_end {
+        apply_paste_highlight(dst_buf, dst_start, dst_start + (src_end - src_start));
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2718,6 +2774,9 @@ fn open_file_diff(
     open_tabs.borrow_mut().push(FileTab {
         id: tab_id,
         rel_path: rel_path.to_string(),
+        widget: dv.widget.clone(),
+        left_path: left_path.display().to_string(),
+        right_path: right_path.display().to_string(),
         left_buf: dv.left_buf,
         right_buf: dv.right_buf,
         left_save: dv.left_save,
@@ -2908,6 +2967,55 @@ fn setup_scroll_sync_3way(
                     sync_adjustment(&ms.vadjustment(), adj);
                     lg.queue_draw();
                     rg.queue_draw();
+                    s.set(false);
+                }
+            });
+    }
+
+    // Horizontal: Left → Middle, Right
+    {
+        let ms = middle_scroll.clone();
+        let rs = right_scroll.clone();
+        let s = syncing.clone();
+        left_scroll.hadjustment().connect_value_changed(move |adj| {
+            if !s.get() {
+                s.set(true);
+                ms.hadjustment().set_value(adj.value());
+                rs.hadjustment().set_value(adj.value());
+                s.set(false);
+            }
+        });
+    }
+
+    // Horizontal: Middle → Left, Right
+    {
+        let ls = left_scroll.clone();
+        let rs = right_scroll.clone();
+        let s = syncing.clone();
+        middle_scroll
+            .hadjustment()
+            .connect_value_changed(move |adj| {
+                if !s.get() {
+                    s.set(true);
+                    ls.hadjustment().set_value(adj.value());
+                    rs.hadjustment().set_value(adj.value());
+                    s.set(false);
+                }
+            });
+    }
+
+    // Horizontal: Right → Left, Middle
+    {
+        let ls = left_scroll.clone();
+        let ms = middle_scroll.clone();
+        let s = syncing.clone();
+        right_scroll
+            .hadjustment()
+            .connect_value_changed(move |adj| {
+                if !s.get() {
+                    s.set(true);
+                    ls.hadjustment().set_value(adj.value());
+                    ms.hadjustment().set_value(adj.value());
                     s.set(false);
                 }
             });
@@ -4345,7 +4453,27 @@ fn build_merge_window(
         });
         win_actions.add_action(&action);
     }
+    // Close-tab action (Ctrl+W) — close merge window
+    {
+        let action = gio::SimpleAction::new("close-tab", None);
+        let w = window.clone();
+        action.connect_activate(move |_, _| w.close());
+        win_actions.add_action(&action);
+    }
     window.insert_action_group("win", Some(&win_actions));
+
+    // Unsaved-changes guard on window close button
+    {
+        let ms = mv.middle_save.clone();
+        let save_path = output
+            .as_deref()
+            .unwrap_or(&middle_path)
+            .display()
+            .to_string();
+        window.connect_close_request(move |w| {
+            handle_close_request(w, vec![(save_path.clone(), ms.clone())])
+        });
+    }
 
     if let Some(gtk_app) = window.application() {
         gtk_app.set_accels_for_action("diff.prev-chunk", &["<Alt>Up", "<Ctrl>e"]);
@@ -4357,6 +4485,7 @@ fn build_merge_window(
         gtk_app.set_accels_for_action("diff.go-to-line", &["<Ctrl>l"]);
         gtk_app.set_accels_for_action("diff.export-patch", &["<Ctrl><Shift>p"]);
         gtk_app.set_accels_for_action("win.prefs", &["<Ctrl>comma"]);
+        gtk_app.set_accels_for_action("win.close-tab", &["<Ctrl>w"]);
     }
 
     window.present();
@@ -4806,6 +4935,9 @@ fn open_vcs_diff(
     open_tabs.borrow_mut().push(FileTab {
         id: tab_id,
         rel_path: rel_path.to_string(),
+        widget: dv.widget.clone(),
+        left_path: left_path.display().to_string(),
+        right_path: right_path.display().to_string(),
         left_buf: dv.left_buf,
         right_buf: dv.right_buf,
         left_save: dv.left_save,
@@ -5174,10 +5306,29 @@ fn build_vcs_window(app: &Application, dir: std::path::PathBuf, settings: Rc<Ref
         });
         win_actions.add_action(&action);
     }
+    // Close-tab action (Ctrl+W) — close current file tab or window
+    {
+        let action = gio::SimpleAction::new("close-tab", None);
+        let nb = notebook.clone();
+        let w = window.clone();
+        let tabs = open_tabs.clone();
+        action.connect_activate(move |_, _| match nb.current_page() {
+            Some(0) | None => w.close(),
+            Some(n) => close_notebook_tab(&w, &nb, &tabs, n),
+        });
+        win_actions.add_action(&action);
+    }
     window.insert_action_group("win", Some(&win_actions));
+
+    // Unsaved-changes guard on window close button
+    {
+        let tabs = open_tabs.clone();
+        window.connect_close_request(move |w| handle_notebook_close_request(w, &tabs));
+    }
 
     if let Some(gtk_app) = window.application() {
         gtk_app.set_accels_for_action("win.prefs", &["<Ctrl>comma"]);
+        gtk_app.set_accels_for_action("win.close-tab", &["<Ctrl>w"]);
     }
 
     // Clean up temp dir on destroy
@@ -5367,10 +5518,20 @@ fn build_welcome_window(app: &Application, settings: Rc<RefCell<Settings>>) {
         });
         win_actions.add_action(&action);
     }
+    // Close-tab action (Ctrl+W) — close welcome window
+    {
+        let action = gio::SimpleAction::new("close-tab", None);
+        let w = window.clone();
+        action.connect_activate(move |_, _| {
+            w.close();
+        });
+        win_actions.add_action(&action);
+    }
     window.insert_action_group("win", Some(&win_actions));
 
     if let Some(gtk_app) = window.application() {
         gtk_app.set_accels_for_action("win.prefs", &["<Ctrl>comma"]);
+        gtk_app.set_accels_for_action("win.close-tab", &["<Ctrl>w"]);
     }
 
     window.set_child(Some(&content));
@@ -5397,6 +5558,21 @@ fn make_welcome_button(title_text: &str, subtitle_text: &str) -> Button {
 // ─── Main UI ───────────────────────────────────────────────────────────────
 
 pub(crate) fn build_ui(application: &Application, mode: CompareMode) {
+    // Ctrl+Q: quit application
+    {
+        let quit = gio::SimpleAction::new("quit", None);
+        let app = application.clone();
+        quit.connect_activate(move |_, _| {
+            // Close all windows; each window's close-request handler
+            // will prompt for unsaved changes if needed.
+            for w in app.windows() {
+                w.close();
+            }
+        });
+        application.add_action(&quit);
+        application.set_accels_for_action("app.quit", &["<Ctrl>q"]);
+    }
+
     application.connect_activate(move |app| {
         let mode = mode.clone();
 
@@ -5573,16 +5749,252 @@ fn setup_scroll_sync(
                 }
             });
     }
+
+    // Horizontal: Left → Right
+    {
+        let rs = right_scroll.clone();
+        let s = syncing.clone();
+        left_scroll.hadjustment().connect_value_changed(move |adj| {
+            if !s.get() {
+                s.set(true);
+                rs.hadjustment().set_value(adj.value());
+                s.set(false);
+            }
+        });
+    }
+
+    // Horizontal: Right → Left
+    {
+        let ls = left_scroll.clone();
+        let s = syncing.clone();
+        right_scroll
+            .hadjustment()
+            .connect_value_changed(move |adj| {
+                if !s.get() {
+                    s.set(true);
+                    ls.hadjustment().set_value(adj.value());
+                    s.set(false);
+                }
+            });
+    }
 }
 
 fn sync_adjustment(target: &Adjustment, source: &Adjustment) {
-    let src_upper = source.upper() - source.page_size();
-    if src_upper <= 0.0 {
+    let src_max = source.upper() - source.page_size();
+    if src_max <= 0.0 {
         return;
     }
-    let ratio = source.value() / src_upper;
-    let tgt_upper = target.upper() - target.page_size();
-    target.set_value(ratio * tgt_upper);
+    let ratio = source.value() / src_max;
+    // Syncpoint-based: use the scroll ratio as a virtual anchor position
+    let value = ratio * target.upper() - ratio * target.page_size();
+    let tgt_max = target.upper() - target.page_size();
+    target.set_value(value.clamp(0.0, tgt_max));
+}
+
+// ─── Unsaved-changes helpers ────────────────────────────────────────────────
+
+/// Show a Meld-style "Save changes to documents before closing?" dialog.
+///
+/// `unsaved` lists (`display_path`, `save_button`) for each file with unsaved
+/// changes.  The user can check / uncheck individual files.
+///
+/// * **Save** — clicks the save button for every checked file, then calls
+///   `on_close`.
+/// * **Close without Saving** — marks every save button insensitive (so the
+///   subsequent close-request won't re-trigger), then calls `on_close`.
+/// * **Cancel** — dismisses the dialog; nothing happens.
+fn confirm_unsaved_dialog(
+    parent: &ApplicationWindow,
+    unsaved: Vec<(String, Button)>,
+    on_close: impl Fn() + 'static,
+) {
+    let dialog = gtk4::Window::builder()
+        .modal(true)
+        .transient_for(parent)
+        .resizable(false)
+        .decorated(true)
+        .deletable(false)
+        .build();
+
+    let content = GtkBox::new(Orientation::Vertical, 6);
+    content.set_margin_top(18);
+    content.set_margin_bottom(18);
+    content.set_margin_start(18);
+    content.set_margin_end(18);
+
+    let title_label = gtk4::Label::new(Some("Save changes to documents before closing?"));
+    title_label.add_css_class("title-3");
+    title_label.set_margin_bottom(4);
+    content.append(&title_label);
+
+    let subtitle = gtk4::Label::new(Some(
+        "If you don\u{2019}t save, changes will be permanently lost.",
+    ));
+    subtitle.set_margin_bottom(8);
+    content.append(&subtitle);
+
+    // Build one checkbox per unsaved file.
+    let checks: Rc<Vec<(gtk4::CheckButton, Button)>> = Rc::new(
+        unsaved
+            .into_iter()
+            .map(|(path, btn)| {
+                let check = gtk4::CheckButton::with_label(&path);
+                check.set_active(true);
+                content.append(&check);
+                (check, btn)
+            })
+            .collect(),
+    );
+
+    // Button row — "Close without Saving" left-aligned, Cancel + Save right.
+    let btn_box = GtkBox::new(Orientation::Horizontal, 8);
+    btn_box.set_margin_top(14);
+
+    let close_btn = gtk4::Button::with_label("Close without Saving");
+    close_btn.add_css_class("destructive-action");
+
+    let spacer = GtkBox::new(Orientation::Horizontal, 0);
+    spacer.set_hexpand(true);
+
+    let cancel_btn = gtk4::Button::with_label("Cancel");
+
+    let save_btn = gtk4::Button::with_label("Save");
+    save_btn.add_css_class("suggested-action");
+
+    btn_box.append(&close_btn);
+    btn_box.append(&spacer);
+    btn_box.append(&cancel_btn);
+    btn_box.append(&save_btn);
+    content.append(&btn_box);
+
+    dialog.set_child(Some(&content));
+
+    let on_close: Rc<dyn Fn()> = Rc::new(on_close);
+
+    // Cancel — just dismiss.
+    {
+        let d = dialog.clone();
+        cancel_btn.connect_clicked(move |_| d.close());
+    }
+    // Save checked files, then close.
+    {
+        let d = dialog.clone();
+        let checks = checks.clone();
+        let on_close = on_close.clone();
+        save_btn.connect_clicked(move |_| {
+            for (check, btn) in checks.iter() {
+                if check.is_active() && btn.is_sensitive() {
+                    btn.emit_clicked();
+                }
+            }
+            d.close();
+            on_close();
+        });
+    }
+    // Close without saving — mark all insensitive so the subsequent
+    // close-request handler won't re-prompt.
+    {
+        let d = dialog.clone();
+        let checks = checks.clone();
+        let on_close = on_close.clone();
+        close_btn.connect_clicked(move |_| {
+            for (_, btn) in checks.iter() {
+                btn.set_sensitive(false);
+            }
+            d.close();
+            on_close();
+        });
+    }
+
+    dialog.present();
+}
+
+/// Collect unsaved (path, button) pairs from a list of (path, button) where
+/// the button is sensitive.
+fn collect_unsaved(files: Vec<(String, Button)>) -> Vec<(String, Button)> {
+    files
+        .into_iter()
+        .filter(|(_, b)| b.is_sensitive())
+        .collect()
+}
+
+/// Shared close-request handler for windows with save buttons.
+fn handle_close_request(
+    window: &ApplicationWindow,
+    files: Vec<(String, Button)>,
+) -> gtk4::glib::Propagation {
+    let unsaved = collect_unsaved(files);
+    if unsaved.is_empty() {
+        return gtk4::glib::Propagation::Proceed;
+    }
+    let w = window.clone();
+    confirm_unsaved_dialog(window, unsaved, move || w.close());
+    gtk4::glib::Propagation::Stop
+}
+
+/// Close a notebook file tab, prompting to save if needed.
+fn close_notebook_tab(
+    window: &ApplicationWindow,
+    notebook: &Notebook,
+    tabs: &Rc<RefCell<Vec<FileTab>>>,
+    page: u32,
+) {
+    let info = tabs.borrow().iter().find_map(|t| {
+        if notebook.page_num(&t.widget) == Some(page) {
+            Some((
+                t.id,
+                t.left_path.clone(),
+                t.right_path.clone(),
+                t.left_save.clone(),
+                t.right_save.clone(),
+            ))
+        } else {
+            None
+        }
+    });
+    let Some((tab_id, lp, rp, ls, rs)) = info else {
+        notebook.remove_page(Some(page));
+        return;
+    };
+    let unsaved = collect_unsaved(vec![(lp, ls), (rp, rs)]);
+    if unsaved.is_empty() {
+        notebook.remove_page(Some(page));
+        tabs.borrow_mut().retain(|t| t.id != tab_id);
+        return;
+    }
+    let nb = notebook.clone();
+    let tabs = tabs.clone();
+    confirm_unsaved_dialog(window, unsaved, move || {
+        nb.remove_page(Some(page));
+        tabs.borrow_mut().retain(|t| t.id != tab_id);
+    });
+}
+
+/// Shared close-request handler for notebook windows (VCS/dir).
+fn handle_notebook_close_request(
+    window: &ApplicationWindow,
+    tabs: &Rc<RefCell<Vec<FileTab>>>,
+) -> gtk4::glib::Propagation {
+    let unsaved: Vec<(String, Button)> = tabs
+        .borrow()
+        .iter()
+        .flat_map(|t| {
+            let mut v = Vec::new();
+            if t.left_save.is_sensitive() {
+                v.push((t.left_path.clone(), t.left_save.clone()));
+            }
+            if t.right_save.is_sensitive() {
+                v.push((t.right_path.clone(), t.right_save.clone()));
+            }
+            v
+        })
+        .collect();
+    if unsaved.is_empty() {
+        return gtk4::glib::Propagation::Proceed;
+    }
+    let w = window.clone();
+    confirm_unsaved_dialog(window, unsaved, move || w.close());
+    gtk4::glib::Propagation::Stop
 }
 
 // ─── File comparison window ────────────────────────────────────────────────
@@ -5694,7 +6106,25 @@ fn build_file_window(
         });
         win_actions.add_action(&action);
     }
+    // Close-tab action (Ctrl+W) — close file window
+    {
+        let action = gio::SimpleAction::new("close-tab", None);
+        let w = window.clone();
+        action.connect_activate(move |_, _| w.close());
+        win_actions.add_action(&action);
+    }
     window.insert_action_group("win", Some(&win_actions));
+
+    // Unsaved-changes guard on window close button
+    {
+        let ls = dv.left_save.clone();
+        let rs = dv.right_save.clone();
+        let lp = left_path.display().to_string();
+        let rp = right_path.display().to_string();
+        window.connect_close_request(move |w| {
+            handle_close_request(w, vec![(lp.clone(), ls.clone()), (rp.clone(), rs.clone())])
+        });
+    }
 
     // Bind keyboard accelerators
     if let Some(gtk_app) = window.application() {
@@ -5707,6 +6137,7 @@ fn build_file_window(
         gtk_app.set_accels_for_action("diff.go-to-line", &["<Ctrl>l"]);
         gtk_app.set_accels_for_action("diff.export-patch", &["<Ctrl><Shift>p"]);
         gtk_app.set_accels_for_action("win.prefs", &["<Ctrl>comma"]);
+        gtk_app.set_accels_for_action("win.close-tab", &["<Ctrl>w"]);
     }
 
     window.present();
@@ -6459,8 +6890,26 @@ fn build_dir_window(
         });
         win_actions.add_action(&action);
     }
+    // Close-tab action (Ctrl+W) — close current file tab or window
+    {
+        let action = gio::SimpleAction::new("close-tab", None);
+        let nb = notebook.clone();
+        let w = window.clone();
+        let tabs = open_tabs.clone();
+        action.connect_activate(move |_, _| match nb.current_page() {
+            Some(0) | None => w.close(),
+            Some(n) => close_notebook_tab(&w, &nb, &tabs, n),
+        });
+        win_actions.add_action(&action);
+    }
     window.insert_action_group("win", Some(&win_actions));
     window.insert_action_group("dir", Some(&dir_action_group));
+
+    // Unsaved-changes guard on window close button
+    {
+        let tabs = open_tabs.clone();
+        window.connect_close_request(move |w| handle_notebook_close_request(w, &tabs));
+    }
 
     // Register keyboard accelerators
     if let Some(gtk_app) = window.application() {
@@ -6474,6 +6923,7 @@ fn build_dir_window(
         gtk_app.set_accels_for_action("diff.go-to-line", &["<Ctrl>l"]);
         gtk_app.set_accels_for_action("diff.export-patch", &["<Ctrl><Shift>p"]);
         gtk_app.set_accels_for_action("win.prefs", &["<Ctrl>comma"]);
+        gtk_app.set_accels_for_action("win.close-tab", &["<Ctrl>w"]);
         // Directory copy actions
         gtk_app.set_accels_for_action("dir.folder-copy-left", &["<Alt>Left"]);
         gtk_app.set_accels_for_action("dir.folder-copy-right", &["<Alt>Right"]);
