@@ -77,3 +77,48 @@ impl Settings {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_defaults() {
+        let s = Settings::default();
+        assert_eq!(s.font, "Monospace 11");
+        assert!(s.show_line_numbers);
+        assert_eq!(s.tab_width, 4);
+        assert!(s.dir_filters.contains(&".git".to_string()));
+    }
+
+    #[test]
+    fn test_serde_roundtrip() {
+        let original = Settings::default();
+        let toml_str = toml::to_string_pretty(&original).unwrap();
+        let parsed: Settings = toml::from_str(&toml_str).unwrap();
+        assert_eq!(original.font, parsed.font);
+        assert_eq!(original.style_scheme, parsed.style_scheme);
+        assert_eq!(original.tab_width, parsed.tab_width);
+        assert_eq!(original.show_line_numbers, parsed.show_line_numbers);
+        assert_eq!(original.wrap_mode, parsed.wrap_mode);
+        assert_eq!(original.dir_filters, parsed.dir_filters);
+    }
+
+    #[test]
+    fn test_deserialize_missing_fields() {
+        let toml_str = r#"font = "Hack 12""#;
+        let s: Settings = toml::from_str(toml_str).unwrap();
+        assert_eq!(s.font, "Hack 12");
+        // Other fields should get defaults
+        assert_eq!(s.tab_width, 4);
+        assert!(s.show_line_numbers);
+    }
+
+    #[test]
+    fn test_config_path_has_meld_rs() {
+        let path = Settings::config_path();
+        let path_str = path.to_string_lossy();
+        assert!(path_str.contains("meld-rs"));
+        assert!(path_str.ends_with("settings.toml"));
+    }
+}

@@ -55,6 +55,11 @@ pub fn changed_files(repo_root: &Path) -> Vec<VcsEntry> {
     };
 
     let text = String::from_utf8_lossy(&output.stdout);
+    parse_porcelain(&text)
+}
+
+/// Parse `git status --porcelain` output into `VcsEntry` items.
+pub fn parse_porcelain(text: &str) -> Vec<VcsEntry> {
     let mut entries = Vec::new();
 
     for line in text.lines() {
@@ -124,4 +129,88 @@ pub fn stage_file(repo_root: &Path, rel_path: &str) -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_porcelain_modified() {
+        let entries = parse_porcelain(" M src/main.rs\n");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].status, VcsStatus::Modified);
+        assert_eq!(entries[0].rel_path, "src/main.rs");
+    }
+
+    #[test]
+    fn test_parse_porcelain_staged_modified() {
+        let entries = parse_porcelain("M  src/main.rs\n");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].status, VcsStatus::Modified);
+    }
+
+    #[test]
+    fn test_parse_porcelain_added() {
+        let entries = parse_porcelain("A  new_file.rs\n");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].status, VcsStatus::Added);
+        assert_eq!(entries[0].rel_path, "new_file.rs");
+    }
+
+    #[test]
+    fn test_parse_porcelain_deleted() {
+        let entries = parse_porcelain("D  old_file.rs\n");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].status, VcsStatus::Deleted);
+    }
+
+    #[test]
+    fn test_parse_porcelain_unstaged_delete() {
+        let entries = parse_porcelain(" D old_file.rs\n");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].status, VcsStatus::Deleted);
+    }
+
+    #[test]
+    fn test_parse_porcelain_renamed() {
+        let entries = parse_porcelain("R  old.rs -> new.rs\n");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].status, VcsStatus::Renamed);
+        assert_eq!(entries[0].rel_path, "new.rs");
+    }
+
+    #[test]
+    fn test_parse_porcelain_untracked() {
+        let entries = parse_porcelain("?? untracked.txt\n");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].status, VcsStatus::Untracked);
+        assert_eq!(entries[0].rel_path, "untracked.txt");
+    }
+
+    #[test]
+    fn test_parse_porcelain_multiple() {
+        let input = " M src/main.rs\nA  new.rs\n?? tmp.txt\n";
+        let entries = parse_porcelain(input);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].status, VcsStatus::Modified);
+        assert_eq!(entries[1].status, VcsStatus::Added);
+        assert_eq!(entries[2].status, VcsStatus::Untracked);
+    }
+
+    #[test]
+    fn test_parse_porcelain_empty() {
+        assert!(parse_porcelain("").is_empty());
+    }
+
+    #[test]
+    fn test_parse_porcelain_short_lines_ignored() {
+        assert!(parse_porcelain("X\nAB\n").is_empty());
+    }
+
+    #[test]
+    fn test_parse_porcelain_unknown_status_ignored() {
+        let entries = parse_porcelain("!! ignored_file\n");
+        assert!(entries.is_empty());
+    }
 }

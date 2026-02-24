@@ -7109,3 +7109,276 @@ fn build_dir_window(
     window.present();
     left_view.grab_focus();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── filter_for_diff ──────────────────────────────────────────
+
+    #[test]
+    fn filter_no_options() {
+        let (text, map) = filter_for_diff("hello\nworld\n", false, false);
+        assert_eq!(text, "hello\nworld");
+        assert_eq!(map, vec![0, 1]);
+    }
+
+    #[test]
+    fn filter_ignore_blanks() {
+        let (text, map) = filter_for_diff("a\n\nb\n  \nc\n", false, true);
+        assert_eq!(text, "a\nb\nc");
+        assert_eq!(map, vec![0, 2, 4]);
+    }
+
+    #[test]
+    fn filter_ignore_whitespace() {
+        let (text, map) = filter_for_diff("  hello  world  \nfoo\n", true, false);
+        assert_eq!(text, "hello world\nfoo");
+        assert_eq!(map, vec![0, 1]);
+    }
+
+    #[test]
+    fn filter_both_options() {
+        let (text, map) = filter_for_diff("  a  b  \n\n  c  \n", true, true);
+        assert_eq!(text, "a b\nc");
+        assert_eq!(map, vec![0, 2]);
+    }
+
+    #[test]
+    fn filter_empty_input() {
+        let (text, map) = filter_for_diff("", false, false);
+        assert_eq!(text, "");
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn filter_all_blank_lines() {
+        let (text, map) = filter_for_diff("\n\n\n", false, true);
+        assert_eq!(text, "");
+        assert!(map.is_empty());
+    }
+
+    // ── remap_chunks ─────────────────────────────────────────────
+
+    #[test]
+    fn remap_basic() {
+        let chunks = vec![DiffChunk {
+            tag: DiffTag::Replace,
+            start_a: 0,
+            end_a: 1,
+            start_b: 0,
+            end_b: 1,
+        }];
+        let left_map = vec![2, 5];
+        let right_map = vec![1, 3];
+        let remapped = remap_chunks(chunks, &left_map, 10, &right_map, 8);
+        assert_eq!(remapped[0].start_a, 2);
+        assert_eq!(remapped[0].end_a, 5);
+        assert_eq!(remapped[0].start_b, 1);
+        assert_eq!(remapped[0].end_b, 3);
+    }
+
+    #[test]
+    fn remap_out_of_bounds_uses_total() {
+        let chunks = vec![DiffChunk {
+            tag: DiffTag::Delete,
+            start_a: 0,
+            end_a: 3, // beyond map length
+            start_b: 0,
+            end_b: 2, // beyond map length
+        }];
+        let left_map = vec![0, 1]; // len=2, so index 3 is OOB
+        let right_map = vec![0]; // len=1, so index 2 is OOB
+        let remapped = remap_chunks(chunks, &left_map, 10, &right_map, 5);
+        assert_eq!(remapped[0].end_a, 10); // falls back to left_total
+        assert_eq!(remapped[0].end_b, 5); // falls back to right_total
+    }
+
+    #[test]
+    fn remap_empty_chunks() {
+        let remapped = remap_chunks(vec![], &[0, 1], 2, &[0, 1], 2);
+        assert!(remapped.is_empty());
+    }
+
+    // ── format_size ──────────────────────────────────────────────
+
+    #[test]
+    fn format_size_bytes() {
+        assert_eq!(format_size(0), "0 B");
+        assert_eq!(format_size(999), "999 B");
+    }
+
+    #[test]
+    fn format_size_kilobytes() {
+        assert_eq!(format_size(1000), "1.0 kB");
+        assert_eq!(format_size(1500), "1.5 kB");
+        assert_eq!(format_size(999_999), "1000.0 kB");
+    }
+
+    #[test]
+    fn format_size_megabytes() {
+        assert_eq!(format_size(1_000_000), "1.0 MB");
+        assert_eq!(format_size(5_500_000), "5.5 MB");
+    }
+
+    #[test]
+    fn format_size_gigabytes() {
+        assert_eq!(format_size(1_000_000_000), "1.0 GB");
+        assert_eq!(format_size(2_500_000_000), "2.5 GB");
+    }
+
+    // ── merge_change_indices ─────────────────────────────────────
+
+    #[test]
+    fn merge_change_indices_empty() {
+        let result = merge_change_indices(&[], &[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn merge_change_indices_only_equal() {
+        let left = vec![DiffChunk {
+            tag: DiffTag::Equal,
+            start_a: 0,
+            end_a: 5,
+            start_b: 0,
+            end_b: 5,
+        }];
+        let right = left.clone();
+        let result = merge_change_indices(&left, &right);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn merge_change_indices_left_only() {
+        let left = vec![
+            DiffChunk {
+                tag: DiffTag::Equal,
+                start_a: 0,
+                end_a: 2,
+                start_b: 0,
+                end_b: 2,
+            },
+            DiffChunk {
+                tag: DiffTag::Replace,
+                start_a: 2,
+                end_a: 4,
+                start_b: 2,
+                end_b: 4,
+            },
+        ];
+        let right: Vec<DiffChunk> = vec![];
+        let result = merge_change_indices(&left, &right);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], (1, false)); // index 1 in left, is_right=false
+    }
+
+    #[test]
+    fn merge_change_indices_sorted_by_middle_line() {
+        let left = vec![DiffChunk {
+            tag: DiffTag::Replace,
+            start_a: 0,
+            end_a: 2,
+            start_b: 10, // middle line 10
+            end_b: 12,
+        }];
+        let right = vec![DiffChunk {
+            tag: DiffTag::Insert,
+            start_a: 5, // middle line 5
+            end_a: 5,
+            start_b: 0,
+            end_b: 2,
+        }];
+        let result = merge_change_indices(&left, &right);
+        assert_eq!(result.len(), 2);
+        // Right chunk (middle line 5) should come first
+        assert_eq!(result[0], (0, true));
+        // Left chunk (middle line 10) should come second
+        assert_eq!(result[1], (0, false));
+    }
+
+    // ── count_changes ────────────────────────────────────────────
+
+    #[test]
+    fn count_changes_empty() {
+        assert_eq!(count_changes(&[]), 0);
+    }
+
+    #[test]
+    fn count_changes_all_equal() {
+        let chunks = vec![DiffChunk {
+            tag: DiffTag::Equal,
+            start_a: 0,
+            end_a: 5,
+            start_b: 0,
+            end_b: 5,
+        }];
+        assert_eq!(count_changes(&chunks), 0);
+    }
+
+    #[test]
+    fn count_changes_mixed() {
+        let chunks = vec![
+            DiffChunk {
+                tag: DiffTag::Equal,
+                start_a: 0,
+                end_a: 2,
+                start_b: 0,
+                end_b: 2,
+            },
+            DiffChunk {
+                tag: DiffTag::Replace,
+                start_a: 2,
+                end_a: 4,
+                start_b: 2,
+                end_b: 4,
+            },
+            DiffChunk {
+                tag: DiffTag::Equal,
+                start_a: 4,
+                end_a: 6,
+                start_b: 4,
+                end_b: 6,
+            },
+            DiffChunk {
+                tag: DiffTag::Delete,
+                start_a: 6,
+                end_a: 8,
+                start_b: 6,
+                end_b: 6,
+            },
+            DiffChunk {
+                tag: DiffTag::Insert,
+                start_a: 8,
+                end_a: 8,
+                start_b: 6,
+                end_b: 8,
+            },
+        ];
+        assert_eq!(count_changes(&chunks), 3);
+    }
+
+    // ── vcs_status_label ─────────────────────────────────────────
+
+    #[test]
+    fn vcs_status_labels() {
+        assert_eq!(vcs_status_label("M"), "Modified");
+        assert_eq!(vcs_status_label("A"), "Added");
+        assert_eq!(vcs_status_label("D"), "Deleted");
+        assert_eq!(vcs_status_label("R"), "Renamed");
+        assert_eq!(vcs_status_label("U"), "Untracked");
+        assert_eq!(vcs_status_label("X"), "");
+    }
+
+    // ── vcs_status_css ───────────────────────────────────────────
+
+    #[test]
+    fn vcs_status_css_classes() {
+        assert_eq!(vcs_status_css("M"), "diff-changed");
+        assert_eq!(vcs_status_css("R"), "diff-changed");
+        assert_eq!(vcs_status_css("A"), "diff-inserted");
+        assert_eq!(vcs_status_css("U"), "diff-inserted");
+        assert_eq!(vcs_status_css("D"), "diff-deleted");
+        assert_eq!(vcs_status_css("?"), "");
+    }
+}

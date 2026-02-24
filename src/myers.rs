@@ -857,4 +857,95 @@ mod tests {
         let last = chunks.last().unwrap();
         assert_eq!(last.tag, DiffTag::Equal);
     }
+
+    // ── tokenize tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_tokenize_empty() {
+        assert!(tokenize("").is_empty());
+    }
+
+    #[test]
+    fn test_tokenize_words_and_spaces() {
+        let toks = tokenize("hello world");
+        let texts: Vec<&str> = toks.iter().map(|t| t.text).collect();
+        assert_eq!(texts, vec!["hello", " ", "world"]);
+    }
+
+    #[test]
+    fn test_tokenize_punctuation() {
+        let toks = tokenize("a+b");
+        let texts: Vec<&str> = toks.iter().map(|t| t.text).collect();
+        assert_eq!(texts, vec!["a", "+", "b"]);
+    }
+
+    #[test]
+    fn test_tokenize_underscore_in_word() {
+        let toks = tokenize("foo_bar baz");
+        let texts: Vec<&str> = toks.iter().map(|t| t.text).collect();
+        assert_eq!(texts, vec!["foo_bar", " ", "baz"]);
+    }
+
+    #[test]
+    fn test_tokenize_offsets() {
+        let toks = tokenize("ab cd");
+        assert_eq!(toks[0].offset, 0);
+        assert_eq!(toks[0].text, "ab");
+        assert_eq!(toks[1].offset, 2);
+        assert_eq!(toks[1].text, " ");
+        assert_eq!(toks[2].offset, 3);
+        assert_eq!(toks[2].text, "cd");
+    }
+
+    #[test]
+    fn test_tokenize_multiple_spaces() {
+        let toks = tokenize("a   b");
+        let texts: Vec<&str> = toks.iter().map(|t| t.text).collect();
+        assert_eq!(texts, vec!["a", "   ", "b"]);
+    }
+
+    #[test]
+    fn test_tokenize_only_punctuation() {
+        let toks = tokenize("+-=");
+        assert_eq!(toks.len(), 3);
+        assert_eq!(toks[0].text, "+");
+        assert_eq!(toks[1].text, "-");
+        assert_eq!(toks[2].text, "=");
+    }
+
+    // ── diff_words tests ────────────────────────────────────────
+
+    #[test]
+    fn test_diff_words_identical() {
+        let (_, _, chunks) = diff_words("hello world", "hello world");
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].tag, DiffTag::Equal);
+    }
+
+    #[test]
+    fn test_diff_words_single_word_change() {
+        let (_, _, chunks) = diff_words("hello world", "hello earth");
+        // "hello" " " equal, "world" vs "earth" replace
+        assert!(chunks.iter().any(|c| c.tag == DiffTag::Replace));
+        assert!(chunks.iter().any(|c| c.tag == DiffTag::Equal));
+    }
+
+    #[test]
+    fn test_diff_words_insertion() {
+        let (_, _, chunks) = diff_words("a b", "a x b");
+        assert!(chunks.iter().any(|c| c.tag == DiffTag::Insert));
+    }
+
+    #[test]
+    fn test_diff_words_empty_strings() {
+        let (_, _, chunks) = diff_words("", "");
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn test_diff_words_one_empty() {
+        let (_, _, chunks) = diff_words("", "hello");
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].tag, DiffTag::Insert);
+    }
 }
