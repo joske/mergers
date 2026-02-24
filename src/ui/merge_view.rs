@@ -1742,6 +1742,7 @@ pub(super) fn build_merge_window(
         let alive = merge_watcher_alive.clone();
         let loading = Rc::new(Cell::new(false));
         let dirty = Rc::new(Cell::new(false));
+        let retry_count = Rc::new(Cell::new(0u32));
         gtk4::glib::timeout_add_local(Duration::from_millis(500), move || {
             let _ = &merge_watcher; // prevent drop; watcher lives until closure is dropped
             if !alive.get() {
@@ -1749,6 +1750,7 @@ pub(super) fn build_merge_window(
             }
             while fs_rx.try_recv().is_ok() {
                 dirty.set(true);
+                retry_count.set(0); // new FS event resets the retry counter
             }
             if dirty.get()
                 && !loading.get()
@@ -1766,6 +1768,7 @@ pub(super) fn build_merge_window(
                 let m_save2 = m_save.clone();
                 let loading2 = loading.clone();
                 let dirty2 = dirty.clone();
+                let retry2 = retry_count.clone();
                 gtk4::glib::spawn_future_local(async move {
                     let (left_content, middle_content, right_content) =
                         gio::spawn_blocking(move || {
@@ -1782,7 +1785,15 @@ pub(super) fn build_merge_window(
                     let (Some(left_content), Some(middle_content), Some(right_content)) =
                         (left_content, middle_content, right_content)
                     else {
-                        dirty2.set(true);
+                        let n = retry2.get() + 1;
+                        retry2.set(n);
+                        if n < 5 {
+                            dirty2.set(true);
+                        } else {
+                            eprintln!(
+                                "Giving up reload after {n} retries (file unreadable or binary)"
+                            );
+                        }
                         return;
                     };
                     let cur_l = lb2.text(&lb2.start_iter(), &lb2.end_iter(), false);

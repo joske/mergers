@@ -1209,6 +1209,7 @@ pub(super) fn build_dir_window(
         let reload = reload_dir.clone();
         let alive = dir_watcher_alive.clone();
         let mut dirty = false;
+        let mut retry_count: u32 = 0;
         gtk4::glib::timeout_add_local(Duration::from_millis(500), move || {
             let _ = &dir_watcher; // prevent drop; watcher lives until closure is dropped
             if !alive.get() {
@@ -1216,6 +1217,7 @@ pub(super) fn build_dir_window(
             }
             while fs_rx.try_recv().is_ok() {
                 dirty = true;
+                retry_count = 0; // new FS event resets the retry counter
             }
             if dirty
                 && !is_saving_under(&[
@@ -1226,9 +1228,21 @@ pub(super) fn build_dir_window(
                 dirty = false;
                 reload();
                 // Reload open file tabs; keep dirty if any tab read fails
+                let mut any_tab_failed = false;
                 for tab in tabs_reload.borrow().iter() {
                     if !reload_file_tab(tab, &ld_reload.borrow(), &rd_reload.borrow()) {
+                        any_tab_failed = true;
+                    }
+                }
+                if any_tab_failed {
+                    retry_count += 1;
+                    if retry_count < 5 {
                         dirty = true;
+                    } else {
+                        eprintln!(
+                            "Giving up tab reload after {retry_count} retries \
+                             (file unreadable or binary)"
+                        );
                     }
                 }
             }

@@ -1013,11 +1013,16 @@ pub(super) fn build_diff_view(
                     .root()
                     .and_then(|r| r.downcast::<ApplicationWindow>().ok());
                 let dialog_ref = dialog.clone();
+                let pb2 = pb.clone();
                 dialog_ref.save(win.as_ref(), gio::Cancellable::NONE, move |result| {
                     if let Ok(file) = result
                         && let Some(path) = file.path()
+                        && let Err(e) = fs::write(&path, &patch)
+                        && let Some(win) = pb2
+                            .root()
+                            .and_then(|r| r.downcast::<ApplicationWindow>().ok())
                     {
-                        let _ = fs::write(&path, &patch);
+                        show_error_dialog(&win, &format!("Failed to export patch: {e}"));
                     }
                 });
             }

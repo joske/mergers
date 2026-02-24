@@ -44,6 +44,7 @@ pub(super) fn build_file_window(
         let alive = diff_watcher_alive.clone();
         let loading = Rc::new(Cell::new(false));
         let dirty = Rc::new(Cell::new(false));
+        let retry_count = Rc::new(Cell::new(0u32));
         gtk4::glib::timeout_add_local(Duration::from_millis(500), move || {
             let _ = &diff_watcher; // prevent drop; watcher lives until closure is dropped
             if !alive.get() {
@@ -51,6 +52,7 @@ pub(super) fn build_file_window(
             }
             while fs_rx.try_recv().is_ok() {
                 dirty.set(true);
+                retry_count.set(0); // new FS event resets the retry counter
             }
             if dirty.get()
                 && !loading.get()
@@ -68,6 +70,7 @@ pub(super) fn build_file_window(
                 let r_save2 = r_save.clone();
                 let loading2 = loading.clone();
                 let dirty2 = dirty.clone();
+                let retry2 = retry_count.clone();
                 gtk4::glib::spawn_future_local(async move {
                     let (left_content, right_content) = gio::spawn_blocking(move || {
                         (read_file_for_reload(&lp2), read_file_for_reload(&rp2))
@@ -78,7 +81,15 @@ pub(super) fn build_file_window(
                     // Retry on next tick if either file became binary or unreadable
                     let (Some(left_content), Some(right_content)) = (left_content, right_content)
                     else {
-                        dirty2.set(true);
+                        let n = retry2.get() + 1;
+                        retry2.set(n);
+                        if n < 5 {
+                            dirty2.set(true);
+                        } else {
+                            eprintln!(
+                                "Giving up reload after {n} retries (file unreadable or binary)"
+                            );
+                        }
                         return;
                     };
                     let cur_left = lb2.text(&lb2.start_iter(), &lb2.end_iter(), false);
