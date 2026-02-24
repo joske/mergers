@@ -579,8 +579,7 @@ pub(super) fn build_diff_view(
                     let iw = iw.clone();
                     let cb = make_cb();
                     gtk4::glib::idle_add_local_once(move || {
-                        refresh_diff(&lb, &rb, &ltv, &ch, &flh, cb, ib.get(), iw.get());
-                        p.set(false);
+                        refresh_diff(&lb, &rb, &ltv, &ch, &flh, cb, ib.get(), iw.get(), &p);
                     });
                 }
             });
@@ -596,6 +595,8 @@ pub(super) fn build_diff_view(
             let ch = chunks.clone();
             let flh = filler_lh.clone();
             let on_complete = make_on_complete();
+            pending.set(true);
+            let p = pending.clone();
             gtk4::glib::spawn_future_local(async move {
                 let new_chunks =
                     gio::spawn_blocking(move || myers::diff_lines(&left_content, &right_content))
@@ -607,6 +608,7 @@ pub(super) fn build_diff_view(
                 apply_filler_tags(&lb, &rb, &new_chunks, lh);
                 *ch.borrow_mut() = new_chunks;
                 on_complete();
+                p.set(false);
             });
         }
 
@@ -620,9 +622,21 @@ pub(super) fn build_diff_view(
             let ch = chunks.clone();
             let flh = filler_lh.clone();
             let make_cb = make_on_complete.clone();
+            let dummy = Rc::new(Cell::new(true));
             blank_toggle.connect_toggled(move |btn| {
                 ib.set(btn.is_active());
-                refresh_diff(&lb, &rb, &ltv, &ch, &flh, make_cb(), ib.get(), iw.get());
+                dummy.set(true);
+                refresh_diff(
+                    &lb,
+                    &rb,
+                    &ltv,
+                    &ch,
+                    &flh,
+                    make_cb(),
+                    ib.get(),
+                    iw.get(),
+                    &dummy,
+                );
             });
         }
         {
@@ -633,8 +647,10 @@ pub(super) fn build_diff_view(
             let ltv = left_pane.text_view.clone();
             let ch = chunks.clone();
             let flh = filler_lh.clone();
+            let dummy = Rc::new(Cell::new(true));
             ws_toggle.connect_toggled(move |btn| {
                 iw.set(btn.is_active());
+                dummy.set(true);
                 refresh_diff(
                     &lb,
                     &rb,
@@ -644,6 +660,7 @@ pub(super) fn build_diff_view(
                     make_on_complete(),
                     ib.get(),
                     iw.get(),
+                    &dummy,
                 );
             });
         }

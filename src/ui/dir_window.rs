@@ -94,16 +94,30 @@ fn read_dir_entries(dir: &Path, dir_filters: &[String]) -> BTreeMap<String, DirM
     map
 }
 
-/// Recursively compare two directory trees.
-/// Populates `children_map[rel_path]` with a `ListStore` for each directory level.
-/// Returns (`store_for_this_level`, `aggregate_status`).
-fn scan_level(
+/// A single entry produced by the background-safe `scan_tree`.
+/// Contains all data needed to build GTK stores on the main thread.
+struct ScanEntry {
+    status: FileStatus,
+    name: String,
+    is_dir: bool,
+    rel_path: String,
+    left_size: Option<u64>,
+    left_mtime: Option<SystemTime>,
+    right_size: Option<u64>,
+    right_mtime: Option<SystemTime>,
+    /// Child entries (only populated for directories).
+    children: Vec<ScanEntry>,
+}
+
+/// Background-safe directory comparison: walks directories, reads files, and
+/// compares contents. Returns `(entries, aggregate_status)`.
+/// Does NOT use any GTK types, so it is `Send` and can run on a worker thread.
+fn scan_tree(
     left_root: &Path,
     right_root: &Path,
     rel: &str,
-    children_map: &mut HashMap<String, ListStore>,
     dir_filters: &[String],
-) -> (ListStore, FileStatus) {
+) -> (Vec<ScanEntry>, FileStatus) {
     let left_dir = if rel.is_empty() {
         left_root.to_path_buf()
     } else {
@@ -130,7 +144,7 @@ fn scan_level(
         .collect();
     names.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
 
-    let store = ListStore::new::<StringObject>();
+    let mut entries = Vec::new();
     let mut all_same = true;
 
     for (name, is_dir) in &names {
@@ -142,10 +156,10 @@ fn scan_level(
             format!("{rel}/{name}")
         };
 
-        let status;
+        let (status, children);
         if *is_dir {
-            let (child_store, child_agg) =
-                scan_level(left_root, right_root, &child_rel, children_map, dir_filters);
+            let (child_entries, child_agg) =
+                scan_tree(left_root, right_root, &child_rel, dir_filters);
             status = if !in_left {
                 FileStatus::RightOnly
             } else if !in_right {
@@ -153,16 +167,24 @@ fn scan_level(
             } else {
                 child_agg
             };
-            children_map.insert(child_rel.clone(), child_store);
+            children = child_entries;
         } else {
+            children = Vec::new();
             status = match (in_left, in_right) {
                 (true, false) => FileStatus::LeftOnly,
                 (false, true) => FileStatus::RightOnly,
                 (true, true) => {
-                    let lc = fs::read(left_dir.join(name)).unwrap_or_default();
-                    let rc = fs::read(right_dir.join(name)).unwrap_or_default();
-                    if lc == rc {
-                        FileStatus::Same
+                    let lm = left_entries.get(*name);
+                    let rm = right_entries.get(*name);
+                    // Fast path: different sizes means different content
+                    if lm.and_then(|m| m.size) == rm.and_then(|m| m.size) {
+                        let lc = fs::read(left_dir.join(name)).unwrap_or_default();
+                        let rc = fs::read(right_dir.join(name)).unwrap_or_default();
+                        if lc == rc {
+                            FileStatus::Same
+                        } else {
+                            FileStatus::Different
+                        }
                     } else {
                         FileStatus::Different
                     }
@@ -177,17 +199,17 @@ fn scan_level(
 
         let lm = left_entries.get(*name);
         let rm = right_entries.get(*name);
-        let row = encode_row(
+        entries.push(ScanEntry {
             status,
-            name,
-            *is_dir,
-            &child_rel,
-            lm.and_then(|m| m.size),
-            lm.and_then(|m| m.mtime),
-            rm.and_then(|m| m.size),
-            rm.and_then(|m| m.mtime),
-        );
-        store.append(&StringObject::new(&row));
+            name: (*name).clone(),
+            is_dir: *is_dir,
+            rel_path: child_rel,
+            left_size: lm.and_then(|m| m.size),
+            left_mtime: lm.and_then(|m| m.mtime),
+            right_size: rm.and_then(|m| m.size),
+            right_mtime: rm.and_then(|m| m.mtime),
+            children,
+        });
     }
 
     let agg = if all_same {
@@ -195,7 +217,30 @@ fn scan_level(
     } else {
         FileStatus::Different
     };
-    (store, agg)
+    (entries, agg)
+}
+
+/// Main-thread: converts a `ScanEntry` tree into a `ListStore` + `children_map`.
+fn build_stores(entries: &[ScanEntry], children_map: &mut HashMap<String, ListStore>) -> ListStore {
+    let store = ListStore::new::<StringObject>();
+    for entry in entries {
+        if entry.is_dir {
+            let child_store = build_stores(&entry.children, children_map);
+            children_map.insert(entry.rel_path.clone(), child_store);
+        }
+        let row = encode_row(
+            entry.status,
+            &entry.name,
+            entry.is_dir,
+            &entry.rel_path,
+            entry.left_size,
+            entry.left_mtime,
+            entry.right_size,
+            entry.right_mtime,
+        );
+        store.append(&StringObject::new(&row));
+    }
+    store
 }
 
 // ─── CSS helpers ───────────────────────────────────────────────────────────
@@ -322,19 +367,26 @@ pub(super) fn build_dir_window(
     // Build tree data (Rc<RefCell<…>> so the watcher callback can rebuild)
     let children_map = Rc::new(RefCell::new(HashMap::new()));
     let root_store = ListStore::new::<StringObject>();
+    // Initial scan runs in background; tree populates once complete
     {
-        let (store, _) = scan_level(
-            Path::new(left_dir.borrow().as_str()),
-            Path::new(right_dir.borrow().as_str()),
-            "",
-            &mut children_map.borrow_mut(),
-            &settings.borrow().dir_filters,
-        );
-        for i in 0..store.n_items() {
-            if let Some(obj) = store.item(i) {
-                root_store.append(&obj.downcast::<StringObject>().unwrap());
+        let ld = left_dir.borrow().clone();
+        let rd = right_dir.borrow().clone();
+        let filters = settings.borrow().dir_filters.clone();
+        let cm = children_map.clone();
+        let rs = root_store.clone();
+        gtk4::glib::spawn_future_local(async move {
+            let (entries, _) = gio::spawn_blocking(move || {
+                scan_tree(Path::new(&ld), Path::new(&rd), "", &filters)
+            })
+            .await
+            .unwrap();
+            let store = build_stores(&entries, &mut cm.borrow_mut());
+            for i in 0..store.n_items() {
+                if let Some(obj) = store.item(i) {
+                    rs.append(&obj.downcast::<StringObject>().unwrap());
+                }
             }
-        }
+        });
     }
 
     // Shared TreeListModel — both panes see the same tree structure
@@ -542,7 +594,8 @@ pub(super) fn build_dir_window(
     dir_toolbar.append(&dir_swap_btn);
     dir_toolbar.append(&dir_prefs_btn);
 
-    // Helper: rescan directories and refresh the tree model
+    // Helper: rescan directories and refresh the tree model (async)
+    let scan_loading = Rc::new(Cell::new(false));
     let reload_dir = {
         let cm = children_map.clone();
         let rs = root_store.clone();
@@ -554,7 +607,13 @@ pub(super) fn build_dir_window(
         let syncing = sel_syncing.clone();
         let lv = left_view.clone();
         let rv = right_view.clone();
+        let loading = scan_loading.clone();
         move || {
+            if loading.get() {
+                return;
+            }
+            loading.set(true);
+
             // Suppress selection sync during rebuild
             syncing.set(true);
             let saved_pos = sel.selected();
@@ -575,81 +634,96 @@ pub(super) fn build_dir_window(
                 }
             }
 
-            // Rebuild
-            let mut new_map = HashMap::new();
-            let (new_store, _) = scan_level(
-                Path::new(ld.borrow().as_str()),
-                Path::new(rd.borrow().as_str()),
-                "",
-                &mut new_map,
-                &st.borrow().dir_filters,
-            );
-            // Skip rebuild if root-level data hasn't changed
-            let root_changed = new_store.n_items() != rs.n_items()
-                || (0..new_store.n_items()).any(|i| {
-                    new_store
-                        .item(i)
-                        .and_downcast::<StringObject>()
-                        .map(|o| o.string())
-                        != rs
+            // Background scan
+            let ld_str = ld.borrow().clone();
+            let rd_str = rd.borrow().clone();
+            let filters = st.borrow().dir_filters.clone();
+            let cm = cm.clone();
+            let rs = rs.clone();
+            let tm = tm.clone();
+            let sel = sel.clone();
+            let syncing = syncing.clone();
+            let lv = lv.clone();
+            let rv = rv.clone();
+            let loading = loading.clone();
+            gtk4::glib::spawn_future_local(async move {
+                let (entries, _) = gio::spawn_blocking(move || {
+                    scan_tree(Path::new(&ld_str), Path::new(&rd_str), "", &filters)
+                })
+                .await
+                .unwrap();
+                loading.set(false);
+
+                let mut new_map = HashMap::new();
+                let new_store = build_stores(&entries, &mut new_map);
+
+                // Skip rebuild if root-level data hasn't changed
+                let root_changed = new_store.n_items() != rs.n_items()
+                    || (0..new_store.n_items()).any(|i| {
+                        new_store
                             .item(i)
                             .and_downcast::<StringObject>()
                             .map(|o| o.string())
-                });
-            // Always update children_map so re-expanded dirs show fresh data
-            *cm.borrow_mut() = new_map;
-            if !root_changed {
+                            != rs
+                                .item(i)
+                                .and_downcast::<StringObject>()
+                                .map(|o| o.string())
+                    });
+                // Always update children_map so re-expanded dirs show fresh data
+                *cm.borrow_mut() = new_map;
+                if !root_changed {
+                    syncing.set(false);
+                    return;
+                }
+                rs.remove_all();
+                for i in 0..new_store.n_items() {
+                    if let Some(obj) = new_store.item(i) {
+                        rs.append(&obj.downcast::<StringObject>().unwrap());
+                    }
+                }
+
+                // Restore expanded state (must iterate after each expand since
+                // expanding a row inserts children and shifts positions)
+                for rel in &expanded {
+                    for i in 0..tm.n_items() {
+                        if let Some(row) = tm.item(i).and_then(|o| o.downcast::<TreeListRow>().ok())
+                            && let Some(obj) = row.item().and_downcast::<StringObject>()
+                            && decode_rel_path(&obj.string()) == rel.as_str()
+                        {
+                            row.set_expanded(true);
+                            break;
+                        }
+                    }
+                }
+
+                // Restore selection on both panes
+                let n = tm.n_items();
+                let mut final_pos = saved_pos.min(if n > 0 { n - 1 } else { 0 });
+                if let Some(ref rel) = saved_rel {
+                    for i in 0..n {
+                        if let Some(row) = tm.item(i).and_then(|o| o.downcast::<TreeListRow>().ok())
+                            && let Some(obj) = row.item().and_downcast::<StringObject>()
+                            && decode_rel_path(&obj.string()) == rel.as_str()
+                        {
+                            final_pos = i;
+                            break;
+                        }
+                    }
+                }
+                if n > 0 {
+                    sel.set_selected(final_pos);
+                }
                 syncing.set(false);
-                return;
-            }
-            rs.remove_all();
-            for i in 0..new_store.n_items() {
-                if let Some(obj) = new_store.item(i) {
-                    rs.append(&obj.downcast::<StringObject>().unwrap());
-                }
-            }
 
-            // Restore expanded state (must iterate after each expand since
-            // expanding a row inserts children and shifts positions)
-            for rel in &expanded {
-                for i in 0..tm.n_items() {
-                    if let Some(row) = tm.item(i).and_then(|o| o.downcast::<TreeListRow>().ok())
-                        && let Some(obj) = row.item().and_downcast::<StringObject>()
-                        && decode_rel_path(&obj.string()) == rel.as_str()
-                    {
-                        row.set_expanded(true);
-                        break;
-                    }
-                }
-            }
-
-            // Restore selection on both panes
-            let n = tm.n_items();
-            let mut final_pos = saved_pos.min(if n > 0 { n - 1 } else { 0 });
-            if let Some(ref rel) = saved_rel {
-                for i in 0..n {
-                    if let Some(row) = tm.item(i).and_then(|o| o.downcast::<TreeListRow>().ok())
-                        && let Some(obj) = row.item().and_downcast::<StringObject>()
-                        && decode_rel_path(&obj.string()) == rel.as_str()
-                    {
-                        final_pos = i;
-                        break;
-                    }
-                }
-            }
-            if n > 0 {
-                sel.set_selected(final_pos);
-            }
-            syncing.set(false);
-
-            // Defer scroll_to until after GTK has laid out the new rows,
-            // otherwise the ColumnView hasn't realized the items yet.
-            let lv2 = lv.clone();
-            let rv2 = rv.clone();
-            gtk4::glib::idle_add_local_once(move || {
-                let flags = gtk4::ListScrollFlags::FOCUS;
-                lv2.scroll_to(final_pos, None, flags, None);
-                rv2.scroll_to(final_pos, None, flags, None);
+                // Defer scroll_to until after GTK has laid out the new rows,
+                // otherwise the ColumnView hasn't realized the items yet.
+                let lv2 = lv.clone();
+                let rv2 = rv.clone();
+                gtk4::glib::idle_add_local_once(move || {
+                    let flags = gtk4::ListScrollFlags::FOCUS;
+                    lv2.scroll_to(final_pos, None, flags, None);
+                    rv2.scroll_to(final_pos, None, flags, None);
+                });
             });
         }
     };

@@ -24,6 +24,7 @@ fn refresh_merge_diffs(
     on_complete: impl Fn() + 'static,
     ignore_blanks: bool,
     ignore_whitespace: bool,
+    pending: &Rc<Cell<bool>>,
 ) {
     let lt = left_buf
         .text(&left_buf.start_iter(), &left_buf.end_iter(), false)
@@ -44,6 +45,7 @@ fn refresh_merge_diffs(
     let rb = right_buf.clone();
     let lch = left_chunks.clone();
     let rch = right_chunks.clone();
+    let p = pending.clone();
     let lh = get_line_height(left_tv);
     line_height_cell.set(lh);
 
@@ -81,6 +83,7 @@ fn refresh_merge_diffs(
         *lch.borrow_mut() = new_left;
         *rch.borrow_mut() = new_right;
         on_complete();
+        p.set(false);
     });
 }
 
@@ -1186,8 +1189,8 @@ fn build_merge_view(
                             cb,
                             ib.get(),
                             iw.get(),
+                            &p,
                         );
-                        p.set(false);
                     });
                 }
             });
@@ -1206,6 +1209,8 @@ fn build_merge_view(
             let rch = right_chunks.clone();
             let flh = filler_lh.clone();
             let on_complete = make_on_complete();
+            pending.set(true);
+            let p = pending.clone();
             gtk4::glib::spawn_future_local(async move {
                 let (new_left, new_right) = gio::spawn_blocking(move || {
                     let nl = if left_identical {
@@ -1230,6 +1235,7 @@ fn build_merge_view(
                 *lch.borrow_mut() = new_left;
                 *rch.borrow_mut() = new_right;
                 on_complete();
+                p.set(false);
             });
         }
 
@@ -1245,8 +1251,10 @@ fn build_merge_view(
             let rch = right_chunks.clone();
             let flh = filler_lh.clone();
             let make_cb = make_on_complete.clone();
+            let dummy = Rc::new(Cell::new(true));
             blank_toggle.connect_toggled(move |btn| {
                 ib.set(btn.is_active());
+                dummy.set(true);
                 refresh_merge_diffs(
                     &lb,
                     &mb,
@@ -1258,6 +1266,7 @@ fn build_merge_view(
                     make_cb(),
                     ib.get(),
                     iw.get(),
+                    &dummy,
                 );
             });
         }
@@ -1271,8 +1280,10 @@ fn build_merge_view(
             let lch = left_chunks.clone();
             let rch = right_chunks.clone();
             let flh = filler_lh.clone();
+            let dummy = Rc::new(Cell::new(true));
             ws_toggle.connect_toggled(move |btn| {
                 iw.set(btn.is_active());
+                dummy.set(true);
                 refresh_merge_diffs(
                     &lb,
                     &mb,
@@ -1284,6 +1295,7 @@ fn build_merge_view(
                     make_on_complete(),
                     ib.get(),
                     iw.get(),
+                    &dummy,
                 );
             });
         }

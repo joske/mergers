@@ -1294,6 +1294,7 @@ pub(super) fn refresh_diff(
     on_complete: impl Fn() + 'static,
     ignore_blanks: bool,
     ignore_whitespace: bool,
+    pending: &Rc<Cell<bool>>,
 ) {
     let lt = left_buf
         .text(&left_buf.start_iter(), &left_buf.end_iter(), false)
@@ -1308,6 +1309,7 @@ pub(super) fn refresh_diff(
     let lb = left_buf.clone();
     let rb = right_buf.clone();
     let ch = chunks.clone();
+    let p = pending.clone();
     // Capture line height AFTER filler tags are removed but BEFORE new ones are applied
     let lh = get_line_height(left_tv);
     line_height_cell.set(lh);
@@ -1329,6 +1331,7 @@ pub(super) fn refresh_diff(
         apply_filler_tags(&lb, &rb, &new_chunks, lh);
         *ch.borrow_mut() = new_chunks;
         on_complete();
+        p.set(false);
     });
 }
 

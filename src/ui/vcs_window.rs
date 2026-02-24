@@ -112,6 +112,14 @@ fn open_vcs_diff(
     temp_dir: &Path,
     settings: &Rc<RefCell<Settings>>,
 ) {
+    // Validate rel_path doesn't escape temp_dir via '..' components
+    for component in Path::new(rel_path).components() {
+        if matches!(component, std::path::Component::ParentDir) {
+            eprintln!("Refusing to open path with '..' component: {rel_path}");
+            return;
+        }
+    }
+
     // If already open, switch to it
     if let Some(idx) = open_tabs
         .borrow()
@@ -129,6 +137,10 @@ fn open_vcs_diff(
         "M" | "R" => {
             let head = crate::vcs::head_content(repo_root, rel_path).unwrap_or_default();
             let temp_file = temp_dir.join(rel_path);
+            if !temp_file.starts_with(temp_dir) {
+                eprintln!("Path escapes temp directory: {rel_path}");
+                return;
+            }
             if let Some(parent) = temp_file.parent() {
                 let _ = fs::create_dir_all(parent);
             }
@@ -137,6 +149,10 @@ fn open_vcs_diff(
         }
         "A" | "U" => {
             let temp_file = temp_dir.join(format!("__empty__{rel_path}"));
+            if !temp_file.starts_with(temp_dir) {
+                eprintln!("Path escapes temp directory: {rel_path}");
+                return;
+            }
             if let Some(parent) = temp_file.parent() {
                 let _ = fs::create_dir_all(parent);
             }
@@ -147,6 +163,10 @@ fn open_vcs_diff(
             let head = crate::vcs::head_content(repo_root, rel_path).unwrap_or_default();
             let temp_left = temp_dir.join(rel_path);
             let temp_right = temp_dir.join(format!("__deleted__{rel_path}"));
+            if !temp_left.starts_with(temp_dir) || !temp_right.starts_with(temp_dir) {
+                eprintln!("Path escapes temp directory: {rel_path}");
+                return;
+            }
             for p in [&temp_left, &temp_right] {
                 if let Some(parent) = p.parent() {
                     let _ = fs::create_dir_all(parent);
