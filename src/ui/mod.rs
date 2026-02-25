@@ -91,7 +91,7 @@ fn update_font_css(settings: &Settings) {
         FONT_REGISTERED.with(|reg| {
             if !reg.get() {
                 gtk4::style_context_add_provider_for_display(
-                    &Display::default().unwrap(),
+                    &Display::default().expect("GTK display must be available"),
                     provider,
                     gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION + 1,
                 );
@@ -126,7 +126,7 @@ pub(crate) fn build_ui(application: &Application, mode: CompareMode) {
         let provider = CssProvider::new();
         provider.load_from_string(CSS);
         gtk4::style_context_add_provider_for_display(
-            &Display::default().unwrap(),
+            &Display::default().expect("GTK display must be available"),
             &provider,
             gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
         );

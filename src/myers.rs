@@ -948,4 +948,169 @@ mod tests {
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].tag, DiffTag::Insert);
     }
+
+    // ── Additional edge case tests ─────────────────────────────────
+
+    #[test]
+    fn test_multiple_insertions() {
+        let a = vec!["a", "c", "e"];
+        let b = vec!["a", "b", "c", "d", "e"];
+        let chunks = diff(&a, &b);
+        // Should have Equal, Insert, Equal, Insert, Equal
+        assert!(chunks.iter().filter(|c| c.tag == DiffTag::Insert).count() == 2);
+        verify_coverage(&chunks, a.len(), b.len());
+    }
+
+    #[test]
+    fn test_multiple_deletions() {
+        let a = vec!["a", "b", "c", "d", "e"];
+        let b = vec!["a", "c", "e"];
+        let chunks = diff(&a, &b);
+        assert!(chunks.iter().filter(|c| c.tag == DiffTag::Delete).count() == 2);
+        verify_coverage(&chunks, a.len(), b.len());
+    }
+
+    #[test]
+    fn test_interleaved_changes() {
+        let a = vec!["1", "2", "3", "4", "5"];
+        let b = vec!["1", "X", "3", "Y", "5"];
+        let chunks = diff(&a, &b);
+        verify_coverage(&chunks, a.len(), b.len());
+        // Should have alternating Equal and Replace
+        assert_eq!(chunks.len(), 5);
+    }
+
+    #[test]
+    fn test_complete_replacement_long() {
+        let a: Vec<&str> = vec!["a", "b", "c", "d", "e"];
+        let b: Vec<&str> = vec!["v", "w", "x", "y", "z"];
+        let chunks = diff(&a, &b);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].tag, DiffTag::Replace);
+        verify_coverage(&chunks, a.len(), b.len());
+    }
+
+    #[test]
+    fn test_repeated_elements() {
+        let a = vec!["a", "a", "a", "b", "b"];
+        let b = vec!["a", "a", "b", "b", "b"];
+        let chunks = diff(&a, &b);
+        verify_coverage(&chunks, a.len(), b.len());
+    }
+
+    #[test]
+    fn test_diff_lines_empty_lines() {
+        let a = "line1\n\nline3";
+        let b = "line1\ninserted\n\nline3";
+        let chunks = diff_lines(a, b);
+        verify_coverage(&chunks, 3, 4);
+    }
+
+    #[test]
+    fn test_diff_lines_trailing_newline() {
+        let a = "line1\nline2";
+        let b = "line1\nline2\n";
+        // Note: .lines() doesn't include trailing empty after final \n
+        let chunks = diff_lines(a, b);
+        assert!(!chunks.is_empty());
+    }
+
+    #[test]
+    fn test_long_common_prefix_and_suffix() {
+        let mut a: Vec<String> = (0..20).map(|i| format!("prefix_{i}")).collect();
+        let mut b = a.clone();
+        // Add different middle
+        a.push("middle_a".to_string());
+        b.push("middle_b".to_string());
+        // Add common suffix
+        for i in 0..20 {
+            let suffix = format!("suffix_{i}");
+            a.push(suffix.clone());
+            b.push(suffix);
+        }
+        let chunks = diff(&a, &b);
+        verify_coverage(&chunks, a.len(), b.len());
+        // Should efficiently handle common prefix/suffix
+        assert!(chunks.len() <= 5); // prefix + replace + suffix (or merged)
+    }
+
+    #[test]
+    fn test_tokenize_unicode() {
+        let toks = tokenize("héllo wörld 你好");
+        let texts: Vec<&str> = toks.iter().map(|t| t.text).collect();
+        assert_eq!(texts, vec!["héllo", " ", "wörld", " ", "你好"]);
+    }
+
+    #[test]
+    fn test_tokenize_unicode_offsets() {
+        let s = "a é b";
+        let toks = tokenize(s);
+        // Verify offsets are byte positions, not char positions
+        assert_eq!(toks[0].offset, 0); // 'a'
+        assert_eq!(toks[1].offset, 1); // ' '
+        assert_eq!(toks[2].offset, 2); // 'é' (2 bytes in UTF-8)
+        assert_eq!(toks[3].offset, 4); // ' '
+        assert_eq!(toks[4].offset, 5); // 'b'
+    }
+
+    #[test]
+    fn test_tokenize_emoji() {
+        let toks = tokenize("hello 👋 world");
+        let texts: Vec<&str> = toks.iter().map(|t| t.text).collect();
+        assert_eq!(texts, vec!["hello", " ", "👋", " ", "world"]);
+    }
+
+    #[test]
+    fn test_tokenize_tabs_and_newlines() {
+        let toks = tokenize("a\tb\nc");
+        let texts: Vec<&str> = toks.iter().map(|t| t.text).collect();
+        assert_eq!(texts, vec!["a", "\t", "b", "\n", "c"]);
+    }
+
+    #[test]
+    fn test_diff_words_unicode() {
+        let (_, _, chunks) = diff_words("héllo wörld", "héllo earth");
+        assert!(chunks.iter().any(|c| c.tag == DiffTag::Replace));
+        assert!(chunks.iter().any(|c| c.tag == DiffTag::Equal));
+    }
+
+    #[test]
+    fn test_diff_integers() {
+        // Test with non-string types
+        let a = vec![1, 2, 3, 4, 5];
+        let b = vec![1, 2, 99, 4, 5];
+        let chunks = diff(&a, &b);
+        verify_coverage(&chunks, a.len(), b.len());
+        assert!(chunks.iter().any(|c| c.tag == DiffTag::Replace));
+    }
+
+    #[test]
+    fn test_asymmetric_lengths() {
+        let a = vec!["x"];
+        let b = vec!["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"];
+        let chunks = diff(&a, &b);
+        verify_coverage(&chunks, a.len(), b.len());
+    }
+
+    #[test]
+    fn test_asymmetric_lengths_reverse() {
+        let a = vec!["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"];
+        let b = vec!["x"];
+        let chunks = diff(&a, &b);
+        verify_coverage(&chunks, a.len(), b.len());
+    }
+
+    /// Helper to verify that chunks fully cover both sequences without gaps
+    fn verify_coverage(chunks: &[DiffChunk], len_a: usize, len_b: usize) {
+        let mut pos_a = 0;
+        let mut pos_b = 0;
+        for chunk in chunks {
+            assert_eq!(chunk.start_a, pos_a, "gap in a coverage at {}", pos_a);
+            assert_eq!(chunk.start_b, pos_b, "gap in b coverage at {}", pos_b);
+            pos_a = chunk.end_a;
+            pos_b = chunk.end_b;
+        }
+        assert_eq!(pos_a, len_a, "a not fully covered");
+        assert_eq!(pos_b, len_b, "b not fully covered");
+    }
 }

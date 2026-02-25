@@ -52,7 +52,9 @@ fn copy_path_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     } else if src.is_dir() {
         for entry in walkdir::WalkDir::new(src) {
             let entry = entry.map_err(std::io::Error::other)?;
-            let rel = entry.path().strip_prefix(src).unwrap();
+            let Ok(rel) = entry.path().strip_prefix(src) else {
+                continue;
+            };
             let target = dst.join(rel);
             if entry.file_type().is_dir() {
                 fs::create_dir_all(&target)?;
@@ -1326,4 +1328,112 @@ pub(super) fn build_dir_window(
 
     window.present();
     left_view.grab_focus();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Row encoding/decoding ─────────────────────────────────────
+
+    #[test]
+    fn encode_decode_roundtrip() {
+        let encoded = encode_row(
+            FileStatus::Different,
+            "test.txt",
+            false,
+            "subdir/test.txt",
+            Some(1024),
+            None,
+            Some(2048),
+            None,
+        );
+        assert_eq!(decode_status(&encoded), "D");
+        assert_eq!(decode_name(&encoded), "test.txt");
+        assert!(!decode_is_dir(&encoded));
+        assert_eq!(decode_rel_path(&encoded), "subdir/test.txt");
+    }
+
+    #[test]
+    fn encode_decode_directory() {
+        let encoded = encode_row(
+            FileStatus::Same,
+            "mydir",
+            true,
+            "parent/mydir",
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(decode_status(&encoded), "S");
+        assert_eq!(decode_name(&encoded), "mydir");
+        assert!(decode_is_dir(&encoded));
+        assert_eq!(decode_rel_path(&encoded), "parent/mydir");
+    }
+
+    #[test]
+    fn encode_decode_left_only() {
+        let encoded = encode_row(
+            FileStatus::LeftOnly,
+            "orphan.rs",
+            false,
+            "orphan.rs",
+            Some(512),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(decode_status(&encoded), "L");
+        assert_eq!(decode_name(&encoded), "orphan.rs");
+    }
+
+    #[test]
+    fn encode_decode_right_only() {
+        let encoded = encode_row(
+            FileStatus::RightOnly,
+            "new_file.rs",
+            false,
+            "new_file.rs",
+            None,
+            None,
+            Some(256),
+            None,
+        );
+        assert_eq!(decode_status(&encoded), "R");
+        assert_eq!(decode_name(&encoded), "new_file.rs");
+    }
+
+    #[test]
+    fn decode_field_out_of_bounds() {
+        // Should return empty string for missing fields
+        assert_eq!(decode_field("a\x1fb", 5), "");
+        assert_eq!(decode_field("", 0), "");
+    }
+
+    #[test]
+    fn decode_name_with_special_chars() {
+        let encoded = encode_row(
+            FileStatus::Same,
+            "file with spaces.txt",
+            false,
+            "path/file with spaces.txt",
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(decode_name(&encoded), "file with spaces.txt");
+        assert_eq!(decode_rel_path(&encoded), "path/file with spaces.txt");
+    }
+
+    // ── FileStatus ────────────────────────────────────────────────
+
+    #[test]
+    fn file_status_codes() {
+        assert_eq!(FileStatus::Same.code(), "S");
+        assert_eq!(FileStatus::Different.code(), "D");
+        assert_eq!(FileStatus::LeftOnly.code(), "L");
+        assert_eq!(FileStatus::RightOnly.code(), "R");
+    }
 }
