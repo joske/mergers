@@ -62,7 +62,7 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
   appimage:
-    needs: [ci, checks]
+    needs: publish
     strategy:
       matrix:
         include:
