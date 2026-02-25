@@ -1105,8 +1105,8 @@ mod tests {
         let mut pos_a = 0;
         let mut pos_b = 0;
         for chunk in chunks {
-            assert_eq!(chunk.start_a, pos_a, "gap in a coverage at {}", pos_a);
-            assert_eq!(chunk.start_b, pos_b, "gap in b coverage at {}", pos_b);
+            assert_eq!(chunk.start_a, pos_a, "gap in a coverage at {pos_a}");
+            assert_eq!(chunk.start_b, pos_b, "gap in b coverage at {pos_b}");
             pos_a = chunk.end_a;
             pos_b = chunk.end_b;
         }
