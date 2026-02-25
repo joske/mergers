@@ -46,7 +46,7 @@ impl Settings {
         } else {
             PathBuf::from(".")
         };
-        p.push("merde");
+        p.push("mergers");
         p.push("settings.toml");
         p
     }
@@ -115,10 +115,10 @@ mod tests {
     }
 
     #[test]
-    fn test_config_path_has_merde() {
+    fn test_config_path_has_mergers() {
         let path = Settings::config_path();
         let path_str = path.to_string_lossy();
-        assert!(path_str.contains("merde"));
+        assert!(path_str.contains("mergers"));
         assert!(path_str.ends_with("settings.toml"));
     }
 }

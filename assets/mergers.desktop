@@ -1,10 +1,10 @@
 [Desktop Entry]
 Type=Application
-Name=Merde
+Name=Mergers
 GenericName=Diff Tool
 Comment=Compare and merge files
-Exec=merde
-Icon=merde
+Exec=mergers
+Icon=mergers
 Terminal=false
 Categories=Development;TextEditor;
 MimeType=text/plain;

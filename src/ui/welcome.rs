@@ -6,7 +6,7 @@ use super::*;
 pub(super) fn build_welcome_window(app: &Application, settings: Rc<RefCell<Settings>>) {
     let window = ApplicationWindow::builder()
         .application(app)
-        .title("merde")
+        .title("mergers")
         .default_width(480)
         .default_height(360)
         .build();
@@ -18,7 +18,7 @@ pub(super) fn build_welcome_window(app: &Application, settings: Rc<RefCell<Setti
     content.set_margin_end(48);
     content.set_valign(gtk4::Align::Center);
 
-    let title = Label::new(Some("merde"));
+    let title = Label::new(Some("mergers"));
     title.add_css_class("title-1");
     content.append(&title);
 

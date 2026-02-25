@@ -235,7 +235,7 @@ pub(super) fn build_vcs_window(
         return;
     };
 
-    let temp_dir = std::env::temp_dir().join(format!("merde-{}", std::process::id()));
+    let temp_dir = std::env::temp_dir().join(format!("mergers-{}", std::process::id()));
     let _ = fs::create_dir_all(&temp_dir);
 
     // Scan changed files
@@ -581,7 +581,7 @@ pub(super) fn build_vcs_window(
     );
     let window = ApplicationWindow::builder()
         .application(app)
-        .title(format!("merde — {repo_name} (git)"))
+        .title(format!("mergers — {repo_name} (git)"))
         .default_width(700)
         .default_height(500)
         .child(&notebook)

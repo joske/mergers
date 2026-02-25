@@ -10,7 +10,7 @@ mod ui;
 mod vcs;
 
 #[derive(Parser)]
-#[command(name = "merde", about = "Visual diff and merge tool")]
+#[command(name = "mergers", about = "Visual diff and merge tool")]
 struct Cli {
     /// Paths to compare (2 files or 2 directories, or 3 files for 3-way merge)
     paths: Vec<PathBuf>,
@@ -107,7 +107,7 @@ fn main() -> glib::ExitCode {
         CompareMode::Welcome
     } else {
         eprintln!(
-            "Error: expected 0-3 paths, got {}. Usage: merde [LEFT RIGHT] or [LEFT MIDDLE RIGHT]",
+            "Error: expected 0-3 paths, got {}. Usage: mergers [LEFT RIGHT] or [LEFT MIDDLE RIGHT]",
             cli.paths.len()
         );
         std::process::exit(1);

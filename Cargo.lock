@@ -738,8 +738,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "merde"
-version = "0.1.4"
+name = "mergers"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "clap",

@@ -1,6 +1,6 @@
 [package]
-name = "merde"
-version = "0.1.4"
+name = "mergers"
+version = "0.2.0"
 edition = "2024"
 description = "A visual diff and merge tool for files and directories"
 license = "GPL-2.0"

@@ -82,7 +82,7 @@ jobs:
       - name: Build release binary
         run: cargo build --release
       - name: Convert SVG icon to PNG
-        run: rsvg-convert -w 256 -h 256 assets/merde.svg -o merde.png
+        run: rsvg-convert -w 256 -h 256 assets/mergers.svg -o mergers.png
       - name: Download appimagetool
         run: |
           curl -fsSL -o appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${{ matrix.arch }}.AppImage
@@ -90,15 +90,15 @@ jobs:
       - name: Build AppImage
         run: |
           mkdir -p AppDir/usr/bin
-          cp target/release/merde AppDir/usr/bin/merde
-          cp assets/merde.desktop AppDir/merde.desktop
-          cp merde.png AppDir/merde.png
-          ln -s usr/bin/merde AppDir/AppRun
-          ./appimagetool --appimage-extract-and-run AppDir merde-${{ matrix.arch }}.AppImage
+          cp target/release/mergers AppDir/usr/bin/mergers
+          cp assets/mergers.desktop AppDir/mergers.desktop
+          cp mergers.png AppDir/mergers.png
+          ln -s usr/bin/mergers AppDir/AppRun
+          ./appimagetool --appimage-extract-and-run AppDir mergers-${{ matrix.arch }}.AppImage
       - name: Upload AppImage to GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ needs.checks.outputs.tag }}"
           gh release create "$TAG" --title "$TAG" --generate-notes 2>/dev/null || true
-          gh release upload "$TAG" merde-${{ matrix.arch }}.AppImage --clobber
+          gh release upload "$TAG" mergers-${{ matrix.arch }}.AppImage --clobber
