@@ -2,6 +2,8 @@
 name = "merde"
 version = "0.1.3"
 edition = "2024"
+description = "A visual diff and merge tool for files and directories"
+license = "GPL-2.0"
 
 [dependencies]
 walkdir = "2.5"
