@@ -140,11 +140,6 @@ jobs:
             package_prefix: mingw-w64-clang-aarch64
             rust_target: aarch64-pc-windows-gnullvm
             arch: aarch64
-          - runner: windows-11-arm
-            msystem: CLANGARM64
-            package_prefix: mingw-w64-clang-aarch64
-            rust_target: aarch64-pc-windows-gnullvm
-            arch: aarch64
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: write
