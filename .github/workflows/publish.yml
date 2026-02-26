@@ -157,12 +157,13 @@ jobs:
       - name: Install Rust
         shell: msys2 {0}
         run: |
+          export CARGO_HOME="$(pwd)/.cargo"
+          export RUSTUP_HOME="$(pwd)/.rustup"
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --target ${{ matrix.rust_target }}
-          echo 'source "$HOME/.cargo/env"' >> ~/.bashrc
       - name: Build release binary
         shell: msys2 {0}
         run: |
-          source "$HOME/.cargo/env"
+          export PATH="$(pwd)/.cargo/bin:$PATH"
           cargo build --release --target ${{ matrix.rust_target }}
       - name: Bundle binary with DLLs
         shell: msys2 {0}
