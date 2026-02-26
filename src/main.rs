@@ -10,7 +10,7 @@ mod ui;
 mod vcs;
 
 #[derive(Parser)]
-#[command(name = "mergers", about = "Visual diff and merge tool")]
+#[command(name = "mergers", version, about = "Visual diff and merge tool")]
 struct Cli {
     /// Paths to compare (2 files or 2 directories, or 3 files for 3-way merge)
     paths: Vec<PathBuf>,
