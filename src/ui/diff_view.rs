@@ -414,10 +414,11 @@ pub(super) fn build_diff_view(
         let cur = current_chunk.clone();
         let ltv = left_pane.text_view.clone();
         let lb = left_buf.clone();
+        let rb = right_buf.clone();
         let ls = left_pane.scroll.clone();
         let lbl = chunk_label.clone();
         prev_btn.connect_clicked(move |_| {
-            navigate_chunk(&ch.borrow(), &cur, -1, &ltv, &lb, &ls);
+            navigate_chunk(&ch.borrow(), &cur, -1, &ltv, &lb, &rb, &ls);
             update_chunk_label(&lbl, &ch.borrow(), cur.get());
         });
     }
@@ -428,10 +429,11 @@ pub(super) fn build_diff_view(
         let cur = current_chunk.clone();
         let ltv = left_pane.text_view.clone();
         let lb = left_buf.clone();
+        let rb = right_buf.clone();
         let ls = left_pane.scroll.clone();
         let lbl = chunk_label.clone();
         next_btn.connect_clicked(move |_| {
-            navigate_chunk(&ch.borrow(), &cur, 1, &ltv, &lb, &ls);
+            navigate_chunk(&ch.borrow(), &cur, 1, &ltv, &lb, &rb, &ls);
             update_chunk_label(&lbl, &ch.borrow(), cur.get());
         });
     }
@@ -904,10 +906,11 @@ pub(super) fn build_diff_view(
         let cur = current_chunk.clone();
         let ltv = left_pane.text_view.clone();
         let lb = left_buf.clone();
+        let rb = right_buf.clone();
         let ls = left_pane.scroll.clone();
         let lbl = chunk_label.clone();
         action.connect_activate(move |_, _| {
-            navigate_chunk(&ch.borrow(), &cur, -1, &ltv, &lb, &ls);
+            navigate_chunk(&ch.borrow(), &cur, -1, &ltv, &lb, &rb, &ls);
             update_chunk_label(&lbl, &ch.borrow(), cur.get());
         });
         action_group.add_action(&action);
@@ -918,10 +921,11 @@ pub(super) fn build_diff_view(
         let cur = current_chunk.clone();
         let ltv = left_pane.text_view.clone();
         let lb = left_buf.clone();
+        let rb = right_buf.clone();
         let ls = left_pane.scroll.clone();
         let lbl = chunk_label.clone();
         action.connect_activate(move |_, _| {
-            navigate_chunk(&ch.borrow(), &cur, 1, &ltv, &lb, &ls);
+            navigate_chunk(&ch.borrow(), &cur, 1, &ltv, &lb, &rb, &ls);
             update_chunk_label(&lbl, &ch.borrow(), cur.get());
         });
         action_group.add_action(&action);

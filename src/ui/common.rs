@@ -513,6 +513,25 @@ pub(super) fn setup_diff_tags(buffer: &TextBuffer) {
             .paragraph_background("#f5c6cb")
             .build(),
     );
+    // Darker "current chunk" variants for navigation highlighting
+    table.add(
+        &TextTag::builder()
+            .name("current-changed")
+            .paragraph_background("#ffd54f")
+            .build(),
+    );
+    table.add(
+        &TextTag::builder()
+            .name("current-deleted")
+            .paragraph_background("#e8878f")
+            .build(),
+    );
+    table.add(
+        &TextTag::builder()
+            .name("current-inserted")
+            .paragraph_background("#7dbd9a")
+            .build(),
+    );
     // Search match highlighting
     table.add(
         &TextTag::builder()
@@ -574,12 +593,101 @@ pub(super) fn remove_diff_tags(buf: &TextBuffer) {
         "inline-changed",
         "inline-deleted",
         "inline-inserted",
+        "current-changed",
+        "current-deleted",
+        "current-inserted",
     ] {
         if let Some(tag) = buf.tag_table().lookup(name) {
             buf.remove_tag(&tag, &start, &end);
         }
     }
     remove_filler_tags(buf);
+}
+
+// ─── Current chunk highlighting ─────────────────────────────────────────────
+
+pub(super) fn remove_current_chunk_highlight(buf: &TextBuffer) {
+    let start = buf.start_iter();
+    let end = buf.end_iter();
+    for name in &["current-changed", "current-deleted", "current-inserted"] {
+        if let Some(tag) = buf.tag_table().lookup(name) {
+            buf.remove_tag(&tag, &start, &end);
+        }
+    }
+}
+
+/// Highlight the current chunk in a 2-way diff view with darker background colors.
+pub(super) fn highlight_current_chunk(
+    left_buf: &TextBuffer,
+    right_buf: &TextBuffer,
+    chunks: &[DiffChunk],
+    idx: usize,
+) {
+    remove_current_chunk_highlight(left_buf);
+    remove_current_chunk_highlight(right_buf);
+    let chunk = &chunks[idx];
+    match chunk.tag {
+        DiffTag::Equal => {}
+        DiffTag::Replace => {
+            apply_line_tag(left_buf, "current-changed", chunk.start_a, chunk.end_a);
+            apply_line_tag(right_buf, "current-changed", chunk.start_b, chunk.end_b);
+        }
+        DiffTag::Delete => {
+            apply_line_tag(left_buf, "current-deleted", chunk.start_a, chunk.end_a);
+        }
+        DiffTag::Insert => {
+            apply_line_tag(right_buf, "current-inserted", chunk.start_b, chunk.end_b);
+        }
+    }
+}
+
+/// Highlight the current chunk in a 3-way merge view with darker background colors.
+/// `is_right` indicates whether the chunk is from `right_chunks` (true) or `left_chunks` (false).
+/// left_chunks = diff(left, middle): a-side = left, b-side = middle
+/// right_chunks = diff(middle, right): a-side = middle, b-side = right
+pub(super) fn highlight_current_merge_chunk(
+    left_buf: &TextBuffer,
+    middle_buf: &TextBuffer,
+    right_buf: &TextBuffer,
+    left_chunks: &[DiffChunk],
+    right_chunks: &[DiffChunk],
+    idx: usize,
+    is_right: bool,
+) {
+    remove_current_chunk_highlight(left_buf);
+    remove_current_chunk_highlight(middle_buf);
+    remove_current_chunk_highlight(right_buf);
+    if is_right {
+        let chunk = &right_chunks[idx];
+        match chunk.tag {
+            DiffTag::Equal => {}
+            DiffTag::Replace => {
+                apply_line_tag(middle_buf, "current-changed", chunk.start_a, chunk.end_a);
+                apply_line_tag(right_buf, "current-changed", chunk.start_b, chunk.end_b);
+            }
+            DiffTag::Delete => {
+                apply_line_tag(middle_buf, "current-deleted", chunk.start_a, chunk.end_a);
+            }
+            DiffTag::Insert => {
+                apply_line_tag(right_buf, "current-inserted", chunk.start_b, chunk.end_b);
+            }
+        }
+    } else {
+        let chunk = &left_chunks[idx];
+        match chunk.tag {
+            DiffTag::Equal => {}
+            DiffTag::Replace => {
+                apply_line_tag(left_buf, "current-changed", chunk.start_a, chunk.end_a);
+                apply_line_tag(middle_buf, "current-changed", chunk.start_b, chunk.end_b);
+            }
+            DiffTag::Delete => {
+                apply_line_tag(left_buf, "current-deleted", chunk.start_a, chunk.end_a);
+            }
+            DiffTag::Insert => {
+                apply_line_tag(middle_buf, "current-inserted", chunk.start_b, chunk.end_b);
+            }
+        }
+    }
 }
 
 // ─── Filler (placeholder) lines ────────────────────────────────────────────
@@ -1514,6 +1622,7 @@ pub(super) fn navigate_chunk(
     direction: i32, // -1 = prev, +1 = next
     left_tv: &TextView,
     left_buf: &TextBuffer,
+    right_buf: &TextBuffer,
     left_scroll: &ScrolledWindow,
 ) {
     let non_equal: Vec<usize> = chunks
@@ -1560,6 +1669,7 @@ pub(super) fn navigate_chunk(
 
     if let Some(&idx) = next_idx {
         current_chunk.set(Some(idx));
+        highlight_current_chunk(left_buf, right_buf, chunks, idx);
         let chunk = &chunks[idx];
         // Scroll left pane to the chunk
         scroll_to_line(left_tv, left_buf, chunk.start_a, left_scroll);

@@ -820,7 +820,9 @@ fn build_merge_view(
                                 cur: &Rc<Cell<Option<(usize, bool)>>>,
                                 direction: i32,
                                 mtv: &TextView,
+                                lb: &TextBuffer,
                                 mb: &TextBuffer,
+                                rb: &TextBuffer,
                                 ms: &ScrolledWindow| {
         let all = merge_change_indices(lch, rch);
         if all.is_empty() {
@@ -858,6 +860,7 @@ fn build_merge_view(
         };
         if let Some(&(idx, is_right)) = next {
             cur.set(Some((idx, is_right)));
+            highlight_current_merge_chunk(lb, mb, rb, lch, rch, idx, is_right);
             // Scroll middle pane to the chunk
             let line = if is_right {
                 rch[idx].start_a
@@ -894,13 +897,15 @@ fn build_merge_view(
         let rch = right_chunks.clone();
         let cur = current_chunk.clone();
         let mtv = middle_pane.text_view.clone();
+        let lb = left_buf.clone();
         let mb = middle_buf.clone();
+        let rb = right_buf.clone();
         let ms = middle_pane.scroll.clone();
         let lbl = chunk_label.clone();
         let nav = navigate_merge_chunk;
         let upd = update_merge_label;
         prev_btn.connect_clicked(move |_| {
-            nav(&lch.borrow(), &rch.borrow(), &cur, -1, &mtv, &mb, &ms);
+            nav(&lch.borrow(), &rch.borrow(), &cur, -1, &mtv, &lb, &mb, &rb, &ms);
             upd(&lbl, &lch.borrow(), &rch.borrow(), cur.get());
         });
     }
@@ -911,13 +916,15 @@ fn build_merge_view(
         let rch = right_chunks.clone();
         let cur = current_chunk.clone();
         let mtv = middle_pane.text_view.clone();
+        let lb = left_buf.clone();
         let mb = middle_buf.clone();
+        let rb = right_buf.clone();
         let ms = middle_pane.scroll.clone();
         let lbl = chunk_label.clone();
         let nav = navigate_merge_chunk;
         let upd = update_merge_label;
         next_btn.connect_clicked(move |_| {
-            nav(&lch.borrow(), &rch.borrow(), &cur, 1, &mtv, &mb, &ms);
+            nav(&lch.borrow(), &rch.borrow(), &cur, 1, &mtv, &lb, &mb, &rb, &ms);
             upd(&lbl, &lch.borrow(), &rch.borrow(), cur.get());
         });
     }
@@ -1543,11 +1550,13 @@ fn build_merge_view(
         let rch = right_chunks.clone();
         let cur = current_chunk.clone();
         let mtv = middle_pane.text_view.clone();
+        let lb = left_buf.clone();
         let mb = middle_buf.clone();
+        let rb = right_buf.clone();
         let ms = middle_pane.scroll.clone();
         let lbl = chunk_label.clone();
         action.connect_activate(move |_, _| {
-            navigate_merge_chunk(&lch.borrow(), &rch.borrow(), &cur, -1, &mtv, &mb, &ms);
+            navigate_merge_chunk(&lch.borrow(), &rch.borrow(), &cur, -1, &mtv, &lb, &mb, &rb, &ms);
             update_merge_label(&lbl, &lch.borrow(), &rch.borrow(), cur.get());
         });
         action_group.add_action(&action);
@@ -1558,11 +1567,13 @@ fn build_merge_view(
         let rch = right_chunks.clone();
         let cur = current_chunk.clone();
         let mtv = middle_pane.text_view.clone();
+        let lb = left_buf.clone();
         let mb = middle_buf.clone();
+        let rb = right_buf.clone();
         let ms = middle_pane.scroll.clone();
         let lbl = chunk_label.clone();
         action.connect_activate(move |_, _| {
-            navigate_merge_chunk(&lch.borrow(), &rch.borrow(), &cur, 1, &mtv, &mb, &ms);
+            navigate_merge_chunk(&lch.borrow(), &rch.borrow(), &cur, 1, &mtv, &lb, &mb, &rb, &ms);
             update_merge_label(&lbl, &lch.borrow(), &rch.borrow(), cur.get());
         });
         action_group.add_action(&action);
