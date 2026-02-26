@@ -148,10 +148,25 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: Build release binary
         run: cargo build --release
+      - name: Bundle binary with DLLs
+        run: |
+          mkdir -p dist
+          cp target/release/mergers.exe dist/
+          # Copy all required DLLs from MSYS2
+          ldd target/release/mergers.exe | grep "ucrt64" | awk '{print $3}' | xargs -I{} cp {} dist/
+          # Copy GtkSourceView language specs and styles
+          cp -r /$MSYSTEM/share/gtksourceview-5 dist/share/gtksourceview-5
+          # Copy GTK schema files
+          mkdir -p dist/share/glib-2.0/schemas
+          cp /$MSYSTEM/share/glib-2.0/schemas/gschemas.compiled dist/share/glib-2.0/schemas/
+          # Copy icon theme
+          mkdir -p dist/share/icons
+          cp -r /$MSYSTEM/share/icons/hicolor dist/share/icons/
+          cp -r /$MSYSTEM/share/icons/Adwaita dist/share/icons/ 2>/dev/null || true
       - name: Create zip
         run: |
-          cp target/release/mergers.exe .
-          7z a mergers-windows-x86_64.zip mergers.exe
+          cd dist
+          7z a ../mergers-windows-x86_64.zip ./*
       - name: Upload to GitHub release
         shell: bash
         env:
