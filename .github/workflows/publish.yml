@@ -136,7 +136,7 @@ jobs:
             rust_target: x86_64-pc-windows-gnu
             rust_host: x86_64-pc-windows-gnu
             arch: x86_64
-          - runner: windows-latest-arm
+          - runner: windows-11-arm
             msystem: CLANGARM64
             package_prefix: mingw-w64-clang-aarch64
             rust_target: aarch64-pc-windows-gnu
