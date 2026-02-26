@@ -135,6 +135,11 @@ jobs:
             package_prefix: mingw-w64-ucrt-x86_64
             rust_target: x86_64-pc-windows-gnu
             arch: x86_64
+          - runner: windows-11-arm
+            msystem: CLANGARM64
+            package_prefix: mingw-w64-clang-aarch64
+            rust_target: aarch64-pc-windows-gnullvm
+            arch: aarch64
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: write
@@ -144,6 +149,11 @@ jobs:
         with:
           msystem: ${{ matrix.msystem }}
           update: true
+      - name: Set MSYS2 mirror for ARM64
+        if: matrix.msystem == 'CLANGARM64'
+        shell: msys2 {0}
+        run: |
+          echo 'Server = https://repo.msys2.org/mingw/$repo/' > /etc/pacman.d/mirrorlist.mingw
       - name: Install MSYS2 packages
         shell: msys2 {0}
         run: |
