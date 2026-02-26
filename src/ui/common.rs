@@ -1621,28 +1621,22 @@ pub(super) fn setup_scroll_sync(
 ) {
     let syncing = Rc::new(Cell::new(false));
 
-    // Left → Right (vertical, deferred to idle to avoid layout loops)
+    // Left → Right
     {
         let rs = right_scroll.clone();
         let s = syncing.clone();
         let g = gutter.clone();
         left_scroll.vadjustment().connect_value_changed(move |adj| {
             if !s.get() {
-                let (val, upper, page) = (adj.value(), adj.upper(), adj.page_size());
-                let rs = rs.clone();
-                let s = s.clone();
-                let g = g.clone();
-                gtk4::glib::idle_add_local_once(move || {
-                    s.set(true);
-                    sync_adjustment_from(&rs.vadjustment(), val, upper, page);
-                    g.queue_draw();
-                    s.set(false);
-                });
+                s.set(true);
+                sync_adjustment_from(&rs.vadjustment(), adj.value(), adj.upper(), adj.page_size());
+                g.queue_draw();
+                s.set(false);
             }
         });
     }
 
-    // Right → Left (vertical, deferred)
+    // Right → Left
     {
         let ls = left_scroll.clone();
         let s = syncing.clone();
@@ -1651,39 +1645,28 @@ pub(super) fn setup_scroll_sync(
             .vadjustment()
             .connect_value_changed(move |adj| {
                 if !s.get() {
-                    let (val, upper, page) = (adj.value(), adj.upper(), adj.page_size());
-                    let ls = ls.clone();
-                    let s = s.clone();
-                    let g = g.clone();
-                    gtk4::glib::idle_add_local_once(move || {
-                        s.set(true);
-                        sync_adjustment_from(&ls.vadjustment(), val, upper, page);
-                        g.queue_draw();
-                        s.set(false);
-                    });
+                    s.set(true);
+                    sync_adjustment_from(&ls.vadjustment(), adj.value(), adj.upper(), adj.page_size());
+                    g.queue_draw();
+                    s.set(false);
                 }
             });
     }
 
-    // Horizontal: Left → Right (deferred)
+    // Horizontal: Left → Right
     {
         let rs = right_scroll.clone();
         let s = syncing.clone();
         left_scroll.hadjustment().connect_value_changed(move |adj| {
             if !s.get() {
-                let val = adj.value();
-                let rs = rs.clone();
-                let s = s.clone();
-                gtk4::glib::idle_add_local_once(move || {
-                    s.set(true);
-                    rs.hadjustment().set_value(val);
-                    s.set(false);
-                });
+                s.set(true);
+                rs.hadjustment().set_value(adj.value());
+                s.set(false);
             }
         });
     }
 
-    // Horizontal: Right → Left (deferred)
+    // Horizontal: Right → Left
     {
         let ls = left_scroll.clone();
         let s = syncing.clone();
@@ -1691,14 +1674,9 @@ pub(super) fn setup_scroll_sync(
             .hadjustment()
             .connect_value_changed(move |adj| {
                 if !s.get() {
-                    let val = adj.value();
-                    let ls = ls.clone();
-                    let s = s.clone();
-                    gtk4::glib::idle_add_local_once(move || {
-                        s.set(true);
-                        ls.hadjustment().set_value(val);
-                        s.set(false);
-                    });
+                    s.set(true);
+                    ls.hadjustment().set_value(adj.value());
+                    s.set(false);
                 }
             });
     }

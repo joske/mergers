@@ -96,7 +96,7 @@ fn setup_scroll_sync_3way(
 ) {
     let syncing = Rc::new(Cell::new(false));
 
-    // Left → Middle, Right (vertical, deferred to idle to avoid layout loops)
+    // Left → Middle, Right
     {
         let ms = middle_scroll.clone();
         let rs = right_scroll.clone();
@@ -105,25 +105,18 @@ fn setup_scroll_sync_3way(
         let rg = right_gutter.clone();
         left_scroll.vadjustment().connect_value_changed(move |adj| {
             if !s.get() {
+                s.set(true);
                 let (val, upper, page) = (adj.value(), adj.upper(), adj.page_size());
-                let ms = ms.clone();
-                let rs = rs.clone();
-                let s = s.clone();
-                let lg = lg.clone();
-                let rg = rg.clone();
-                gtk4::glib::idle_add_local_once(move || {
-                    s.set(true);
-                    sync_adjustment_from(&ms.vadjustment(), val, upper, page);
-                    sync_adjustment_from(&rs.vadjustment(), val, upper, page);
-                    lg.queue_draw();
-                    rg.queue_draw();
-                    s.set(false);
-                });
+                sync_adjustment_from(&ms.vadjustment(), val, upper, page);
+                sync_adjustment_from(&rs.vadjustment(), val, upper, page);
+                lg.queue_draw();
+                rg.queue_draw();
+                s.set(false);
             }
         });
     }
 
-    // Middle → Left, Right (vertical, deferred)
+    // Middle → Left, Right
     {
         let ls = left_scroll.clone();
         let rs = right_scroll.clone();
@@ -134,25 +127,18 @@ fn setup_scroll_sync_3way(
             .vadjustment()
             .connect_value_changed(move |adj| {
                 if !s.get() {
+                    s.set(true);
                     let (val, upper, page) = (adj.value(), adj.upper(), adj.page_size());
-                    let ls = ls.clone();
-                    let rs = rs.clone();
-                    let s = s.clone();
-                    let lg = lg.clone();
-                    let rg = rg.clone();
-                    gtk4::glib::idle_add_local_once(move || {
-                        s.set(true);
-                        sync_adjustment_from(&ls.vadjustment(), val, upper, page);
-                        sync_adjustment_from(&rs.vadjustment(), val, upper, page);
-                        lg.queue_draw();
-                        rg.queue_draw();
-                        s.set(false);
-                    });
+                    sync_adjustment_from(&ls.vadjustment(), val, upper, page);
+                    sync_adjustment_from(&rs.vadjustment(), val, upper, page);
+                    lg.queue_draw();
+                    rg.queue_draw();
+                    s.set(false);
                 }
             });
     }
 
-    // Right → Left, Middle (vertical, deferred)
+    // Right → Left, Middle
     {
         let ls = left_scroll.clone();
         let ms = middle_scroll.clone();
@@ -163,46 +149,33 @@ fn setup_scroll_sync_3way(
             .vadjustment()
             .connect_value_changed(move |adj| {
                 if !s.get() {
+                    s.set(true);
                     let (val, upper, page) = (adj.value(), adj.upper(), adj.page_size());
-                    let ls = ls.clone();
-                    let ms = ms.clone();
-                    let s = s.clone();
-                    let lg = lg.clone();
-                    let rg = rg.clone();
-                    gtk4::glib::idle_add_local_once(move || {
-                        s.set(true);
-                        sync_adjustment_from(&ls.vadjustment(), val, upper, page);
-                        sync_adjustment_from(&ms.vadjustment(), val, upper, page);
-                        lg.queue_draw();
-                        rg.queue_draw();
-                        s.set(false);
-                    });
+                    sync_adjustment_from(&ls.vadjustment(), val, upper, page);
+                    sync_adjustment_from(&ms.vadjustment(), val, upper, page);
+                    lg.queue_draw();
+                    rg.queue_draw();
+                    s.set(false);
                 }
             });
     }
 
-    // Horizontal: Left → Middle, Right (deferred)
+    // Horizontal: Left → Middle, Right
     {
         let ms = middle_scroll.clone();
         let rs = right_scroll.clone();
         let s = syncing.clone();
         left_scroll.hadjustment().connect_value_changed(move |adj| {
             if !s.get() {
-                let val = adj.value();
-                let ms = ms.clone();
-                let rs = rs.clone();
-                let s = s.clone();
-                gtk4::glib::idle_add_local_once(move || {
-                    s.set(true);
-                    ms.hadjustment().set_value(val);
-                    rs.hadjustment().set_value(val);
-                    s.set(false);
-                });
+                s.set(true);
+                ms.hadjustment().set_value(adj.value());
+                rs.hadjustment().set_value(adj.value());
+                s.set(false);
             }
         });
     }
 
-    // Horizontal: Middle → Left, Right (deferred)
+    // Horizontal: Middle → Left, Right
     {
         let ls = left_scroll.clone();
         let rs = right_scroll.clone();
@@ -211,21 +184,15 @@ fn setup_scroll_sync_3way(
             .hadjustment()
             .connect_value_changed(move |adj| {
                 if !s.get() {
-                    let val = adj.value();
-                    let ls = ls.clone();
-                    let rs = rs.clone();
-                    let s = s.clone();
-                    gtk4::glib::idle_add_local_once(move || {
-                        s.set(true);
-                        ls.hadjustment().set_value(val);
-                        rs.hadjustment().set_value(val);
-                        s.set(false);
-                    });
+                    s.set(true);
+                    ls.hadjustment().set_value(adj.value());
+                    rs.hadjustment().set_value(adj.value());
+                    s.set(false);
                 }
             });
     }
 
-    // Horizontal: Right → Left, Middle (deferred)
+    // Horizontal: Right → Left, Middle
     {
         let ls = left_scroll.clone();
         let ms = middle_scroll.clone();
@@ -234,16 +201,10 @@ fn setup_scroll_sync_3way(
             .hadjustment()
             .connect_value_changed(move |adj| {
                 if !s.get() {
-                    let val = adj.value();
-                    let ls = ls.clone();
-                    let ms = ms.clone();
-                    let s = s.clone();
-                    gtk4::glib::idle_add_local_once(move || {
-                        s.set(true);
-                        ls.hadjustment().set_value(val);
-                        ms.hadjustment().set_value(val);
-                        s.set(false);
-                    });
+                    s.set(true);
+                    ls.hadjustment().set_value(adj.value());
+                    ms.hadjustment().set_value(adj.value());
+                    s.set(false);
                 }
             });
     }
