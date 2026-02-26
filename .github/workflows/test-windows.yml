@@ -20,8 +20,8 @@ jobs:
             msystem: CLANGARM64
             package_prefix: mingw-w64-clang-aarch64
             rust_target: aarch64-pc-windows-gnullvm
-            cargo_target_flag: ""
-            binary_path: target/release/mergers.exe
+            cargo_target_flag: "--target aarch64-pc-windows-gnullvm"
+            binary_path: target/aarch64-pc-windows-gnullvm/release/mergers.exe
             arch: aarch64
     runs-on: ${{ matrix.runner }}
     steps:
@@ -51,12 +51,24 @@ jobs:
         run: |
           export CARGO_HOME="$(pwd)/.cargo"
           export RUSTUP_HOME="$(pwd)/.rustup"
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-host ${{ matrix.rust_target }} --default-toolchain stable
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          export PATH="$(pwd)/.cargo/bin:$PATH"
+          rustup target add ${{ matrix.rust_target }}
       - name: Configure cargo linker
         shell: msys2 {0}
         run: |
           mkdir -p .cargo
           printf '[target.x86_64-pc-windows-gnu]\nlinker = "gcc"\n[target.aarch64-pc-windows-gnullvm]\nlinker = "clang"\n' > .cargo/config.toml
+      - name: Debug info
+        shell: msys2 {0}
+        run: |
+          export PATH="$(pwd)/.cargo/bin:/$MSYSTEM/bin:/usr/bin"
+          rustc -vV
+          cat .cargo/config.toml
+          which gcc 2>/dev/null || true
+          which clang 2>/dev/null || true
+          which cc 2>/dev/null || true
+          which link 2>/dev/null || true
       - name: Build release binary
         shell: msys2 {0}
         run: |
