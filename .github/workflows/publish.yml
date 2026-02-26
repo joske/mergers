@@ -127,17 +127,20 @@ jobs:
   windows:
     needs: [checks, publish]
     strategy:
+      fail-fast: false
       matrix:
         include:
           - runner: windows-latest
             msystem: UCRT64
             package_prefix: mingw-w64-ucrt-x86_64
             rust_target: x86_64-pc-windows-gnu
+            rust_host: x86_64-pc-windows-gnu
             arch: x86_64
           - runner: windows-latest-arm
             msystem: CLANGARM64
             package_prefix: mingw-w64-clang-aarch64
             rust_target: aarch64-pc-windows-gnu
+            rust_host: aarch64-pc-windows-gnu
             arch: aarch64
     runs-on: ${{ matrix.runner }}
     permissions:
@@ -159,11 +162,12 @@ jobs:
         run: |
           export CARGO_HOME="$(pwd)/.cargo"
           export RUSTUP_HOME="$(pwd)/.rustup"
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --target ${{ matrix.rust_target }}
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-host ${{ matrix.rust_host }} --default-toolchain stable
       - name: Build release binary
         shell: msys2 {0}
         run: |
           export PATH="$(pwd)/.cargo/bin:$PATH"
+          export PKG_CONFIG_ALLOW_CROSS=1
           cargo build --release --target ${{ matrix.rust_target }}
       - name: Bundle binary with DLLs
         shell: msys2 {0}
