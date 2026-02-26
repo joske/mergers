@@ -4,6 +4,12 @@ use super::*;
 // ─── Data types ────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq)]
+pub(super) enum Side {
+    A,
+    B,
+}
+
+#[derive(Clone, Copy, PartialEq)]
 pub(super) enum FileStatus {
     Same,
     Different,
@@ -74,25 +80,14 @@ pub(super) fn is_saving_under(roots: &[&Path]) -> bool {
 
 pub(super) fn apply_diff_tags(left_buf: &TextBuffer, right_buf: &TextBuffer, chunks: &[DiffChunk]) {
     for chunk in chunks {
-        match chunk.tag {
-            DiffTag::Equal => {}
-            DiffTag::Replace => {
-                apply_line_tag(left_buf, "changed", chunk.start_a, chunk.end_a);
-                apply_line_tag(right_buf, "changed", chunk.start_b, chunk.end_b);
-                apply_inline_tags(left_buf, right_buf, chunk);
-            }
-            DiffTag::Delete => {
-                apply_line_tag(left_buf, "deleted", chunk.start_a, chunk.end_a);
-            }
-            DiffTag::Insert => {
-                apply_line_tag(right_buf, "inserted", chunk.start_b, chunk.end_b);
-            }
+        if chunk.tag == DiffTag::Replace {
+            apply_inline_tags(left_buf, right_buf, chunk);
         }
     }
 }
 
-/// 3-way merge tagging: outer panes get only their own side's tags,
-/// middle pane gets one-sided change highlights + conflict overlay.
+/// 3-way merge tagging: apply inline word-level tags only.
+/// Chunk backgrounds and conflict overlays are drawn via Cairo.
 pub(super) fn apply_merge_tags(
     left_buf: &TextBuffer,
     middle_buf: &TextBuffer,
@@ -100,53 +95,18 @@ pub(super) fn apply_merge_tags(
     left_chunks: &[DiffChunk],
     right_chunks: &[DiffChunk],
 ) {
-    // Left pane: a-side of left diff only
     // left_chunks = diff(left, middle): a-side = left, b-side = middle
     for chunk in left_chunks {
-        match chunk.tag {
-            DiffTag::Equal | DiffTag::Insert => {}
-            DiffTag::Replace => {
-                apply_line_tag(left_buf, "changed", chunk.start_a, chunk.end_a);
-                apply_inline_tags(left_buf, middle_buf, chunk);
-            }
-            DiffTag::Delete => apply_line_tag(left_buf, "deleted", chunk.start_a, chunk.end_a),
+        if chunk.tag == DiffTag::Replace {
+            apply_inline_tags(left_buf, middle_buf, chunk);
         }
     }
-
-    // Right pane: b-side of right diff only
     // right_chunks = diff(middle, right): a-side = middle, b-side = right
     for chunk in right_chunks {
-        match chunk.tag {
-            DiffTag::Equal | DiffTag::Delete => {}
-            DiffTag::Replace => {
-                apply_line_tag(right_buf, "changed", chunk.start_b, chunk.end_b);
-                apply_inline_tags(middle_buf, right_buf, chunk);
-            }
-            DiffTag::Insert => apply_line_tag(right_buf, "inserted", chunk.start_b, chunk.end_b),
+        if chunk.tag == DiffTag::Replace {
+            apply_inline_tags(middle_buf, right_buf, chunk);
         }
     }
-
-    // Middle pane: b-side of left diff (lines in middle that differ from left)
-    for chunk in left_chunks {
-        match chunk.tag {
-            DiffTag::Equal | DiffTag::Delete => {}
-            DiffTag::Replace | DiffTag::Insert => {
-                apply_line_tag(middle_buf, "changed", chunk.start_b, chunk.end_b);
-            }
-        }
-    }
-    // Middle pane: a-side of right diff (lines in middle that differ from right)
-    for chunk in right_chunks {
-        match chunk.tag {
-            DiffTag::Equal | DiffTag::Insert => {}
-            DiffTag::Replace | DiffTag::Delete => {
-                apply_line_tag(middle_buf, "changed", chunk.start_a, chunk.end_a);
-            }
-        }
-    }
-
-    // Conflict overlay (higher priority tag, added last in setup_diff_tags)
-    apply_conflict_tags(middle_buf, left_chunks, right_chunks);
 }
 
 /// Reload a file tab from disk. Returns `false` if a read failed (binary or
@@ -489,49 +449,6 @@ pub(super) fn generate_unified_diff(
 
 pub(super) fn setup_diff_tags(buffer: &TextBuffer) {
     let table = buffer.tag_table();
-    table.add(
-        &TextTag::builder()
-            .name("changed")
-            .paragraph_background("#fff3cd")
-            .build(),
-    );
-    table.add(
-        &TextTag::builder()
-            .name("deleted")
-            .paragraph_background("#f8d7da")
-            .build(),
-    );
-    table.add(
-        &TextTag::builder()
-            .name("inserted")
-            .paragraph_background("#d4edda")
-            .build(),
-    );
-    table.add(
-        &TextTag::builder()
-            .name("conflict")
-            .paragraph_background("#f5c6cb")
-            .build(),
-    );
-    // Darker "current chunk" variants for navigation highlighting
-    table.add(
-        &TextTag::builder()
-            .name("current-changed")
-            .paragraph_background("#ffd54f")
-            .build(),
-    );
-    table.add(
-        &TextTag::builder()
-            .name("current-deleted")
-            .paragraph_background("#e8878f")
-            .build(),
-    );
-    table.add(
-        &TextTag::builder()
-            .name("current-inserted")
-            .paragraph_background("#7dbd9a")
-            .build(),
-    );
     // Search match highlighting
     table.add(
         &TextTag::builder()
@@ -545,23 +462,23 @@ pub(super) fn setup_diff_tags(buffer: &TextBuffer) {
             .background("#ff9632")
             .build(),
     );
-    // Inline word-level highlighting (layered on top of line-level paragraph_background)
+    // Inline word-level highlighting (meld-style colors)
     table.add(
         &TextTag::builder()
             .name("inline-changed")
-            .background("#f0d080")
+            .background(INLINE_CHANGED)
             .build(),
     );
     table.add(
         &TextTag::builder()
             .name("inline-deleted")
-            .background("#f0b0b0")
+            .background(INLINE_DELETED)
             .build(),
     );
     table.add(
         &TextTag::builder()
             .name("inline-inserted")
-            .background("#a0dfa0")
+            .background(INLINE_INSERTED)
             .build(),
     );
 }
@@ -585,121 +502,228 @@ pub(super) fn create_source_buffer(file_path: &Path, settings: &Settings) -> Tex
 pub(super) fn remove_diff_tags(buf: &TextBuffer) {
     let start = buf.start_iter();
     let end = buf.end_iter();
-    for name in &[
-        "changed",
-        "deleted",
-        "inserted",
-        "conflict",
-        "inline-changed",
-        "inline-deleted",
-        "inline-inserted",
-        "current-changed",
-        "current-deleted",
-        "current-inserted",
-    ] {
-        if let Some(tag) = buf.tag_table().lookup(name) {
-            buf.remove_tag(&tag, &start, &end);
-        }
-    }
-    remove_filler_tags(buf);
-}
-
-// ─── Current chunk highlighting ─────────────────────────────────────────────
-
-pub(super) fn remove_current_chunk_highlight(buf: &TextBuffer) {
-    let start = buf.start_iter();
-    let end = buf.end_iter();
-    for name in &["current-changed", "current-deleted", "current-inserted"] {
+    for name in &["inline-changed", "inline-deleted", "inline-inserted"] {
         if let Some(tag) = buf.tag_table().lookup(name) {
             buf.remove_tag(&tag, &start, &end);
         }
     }
 }
 
-/// Highlight the current chunk in a 2-way diff view with darker background colors.
-pub(super) fn highlight_current_chunk(
-    left_buf: &TextBuffer,
-    right_buf: &TextBuffer,
+// Meld-style chunk background fill colors (with alpha for overlay transparency)
+const BG_INSERT: (f64, f64, f64, f64) = (0.816, 1.0, 0.639, 0.45); // #d0ffa3
+const BG_REPLACE: (f64, f64, f64, f64) = (0.741, 0.867, 1.0, 0.45); // #bdddff
+const BG_CONFLICT: (f64, f64, f64, f64) = (1.0, 0.647, 0.639, 0.45); // #ffa5a3
+
+// Meld-style chunk outline/stroke colors
+const STROKE_INSERT: (f64, f64, f64, f64) = (0.647, 1.0, 0.298, 0.7); // #a5ff4c
+const STROKE_REPLACE: (f64, f64, f64, f64) = (0.396, 0.698, 1.0, 0.7); // #65b2ff
+const STROKE_CONFLICT: (f64, f64, f64, f64) = (1.0, 0.31, 0.298, 0.7); // #ff4f4c
+
+// Gutter/chunk-map band colors (meld-style)
+const BAND_INSERT: (f64, f64, f64) = (0.647, 1.0, 0.298); // #a5ff4c
+const BAND_REPLACE: (f64, f64, f64) = (0.396, 0.698, 1.0); // #65b2ff
+
+// Filler line colors (derived from band colors)
+const FILLER_INSERT: (f64, f64, f64) = (BAND_INSERT.0, BAND_INSERT.1, BAND_INSERT.2);
+const FILLER_REPLACE: (f64, f64, f64) = (BAND_REPLACE.0, BAND_REPLACE.1, BAND_REPLACE.2);
+
+// Inline highlight colors (meld-style)
+const INLINE_CHANGED: &str = "#c8c864"; // yellowish highlight for changed words
+const INLINE_DELETED: &str = "#ff9696"; // pinkish for deleted words
+const INLINE_INSERTED: &str = "#64c864"; // greenish for inserted words
+
+/// Draw chunk background rectangles via Cairo (replaces `paragraph_background` tags).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn draw_chunk_backgrounds(
+    cr: &gtk4::cairo::Context,
+    width: f64,
+    tv: &TextView,
+    scroll: &ScrolledWindow,
     chunks: &[DiffChunk],
-    idx: usize,
+    side: Side,
+    current_chunk_idx: Option<usize>,
 ) {
-    remove_current_chunk_highlight(left_buf);
-    remove_current_chunk_highlight(right_buf);
-    let chunk = &chunks[idx];
-    match chunk.tag {
-        DiffTag::Equal => {}
-        DiffTag::Replace => {
-            apply_line_tag(left_buf, "current-changed", chunk.start_a, chunk.end_a);
-            apply_line_tag(right_buf, "current-changed", chunk.start_b, chunk.end_b);
+    let scroll_y = scroll.vadjustment().value();
+    let view_h = scroll.vadjustment().page_size();
+    let buf = tv.buffer();
+
+    for (i, chunk) in chunks.iter().enumerate() {
+        if chunk.tag == DiffTag::Equal {
+            continue;
         }
-        DiffTag::Delete => {
-            apply_line_tag(left_buf, "current-deleted", chunk.start_a, chunk.end_a);
+
+        let (start, end) = match side {
+            Side::A => (chunk.start_a, chunk.end_a),
+            Side::B => (chunk.start_b, chunk.end_b),
+        };
+
+        // Skip empty ranges (e.g. pure insert on the other side)
+        if start == end {
+            continue;
         }
-        DiffTag::Insert => {
-            apply_line_tag(right_buf, "current-inserted", chunk.start_b, chunk.end_b);
+
+        // Compute Y start (top of first line)
+        let y_top_buf = if let Some(iter) = buf.iter_at_line(start as i32) {
+            tv.line_yrange(&iter).0 as f64
+        } else {
+            let iter = buf.end_iter();
+            let (y, h) = tv.line_yrange(&iter);
+            (y + h) as f64
+        };
+
+        // Compute Y end (bottom of last line)
+        let last = end - 1;
+        let y_bot_buf = if let Some(iter) = buf.iter_at_line(last as i32) {
+            let (y, h) = tv.line_yrange(&iter);
+            (y + h) as f64
+        } else {
+            let iter = buf.end_iter();
+            let (y, h) = tv.line_yrange(&iter);
+            (y + h) as f64
+        };
+
+        let y_top = y_top_buf - scroll_y;
+        let y_bot = y_bot_buf - scroll_y;
+
+        // Skip if not visible
+        if y_bot < 0.0 || y_top > view_h {
+            continue;
+        }
+
+        let rect_h = y_bot - y_top;
+
+        // Color based on whether the OTHER side also has content:
+        //   Both sides have lines → replace (blue)
+        //   Only this side has lines → insert (green)
+        let other_has_content = match side {
+            Side::A => chunk.end_b > chunk.start_b,
+            Side::B => chunk.end_a > chunk.start_a,
+        };
+        let (fill, stroke) = if other_has_content {
+            (BG_REPLACE, STROKE_REPLACE)
+        } else {
+            (BG_INSERT, STROKE_INSERT)
+        };
+
+        // Fill
+        cr.set_source_rgba(fill.0, fill.1, fill.2, fill.3);
+        cr.rectangle(0.0, y_top, width, rect_h);
+        let _ = cr.fill();
+
+        // Outline strokes (top and bottom)
+        if current_chunk_idx == Some(i) {
+            // Current chunk: bold dark borders drawn outside the text area
+            cr.set_source_rgba(stroke.0 * 0.5, stroke.1 * 0.5, stroke.2 * 0.5, 1.0);
+            cr.rectangle(0.0, y_top - 2.0, width, 3.0);
+            let _ = cr.fill();
+            cr.rectangle(0.0, y_bot - 1.0, width, 3.0);
+            let _ = cr.fill();
+        } else {
+            cr.set_source_rgba(stroke.0, stroke.1, stroke.2, stroke.3);
+            cr.rectangle(0.0, y_top, width, 1.0);
+            let _ = cr.fill();
+            cr.rectangle(0.0, y_bot - 1.0, width, 1.0);
+            let _ = cr.fill();
         }
     }
 }
 
-/// Highlight the current chunk in a 3-way merge view with darker background colors.
-/// `is_right` indicates whether the chunk is from `right_chunks` (true) or `left_chunks` (false).
-/// `left_chunks` = diff(left, middle): a-side = left, b-side = middle
-/// `right_chunks` = diff(middle, right): a-side = middle, b-side = right
-pub(super) fn highlight_current_merge_chunk(
-    left_buf: &TextBuffer,
-    middle_buf: &TextBuffer,
-    right_buf: &TextBuffer,
+/// Draw conflict background overlays on the middle pane of a 3-way merge.
+pub(super) fn draw_conflict_backgrounds(
+    cr: &gtk4::cairo::Context,
+    width: f64,
+    tv: &TextView,
+    scroll: &ScrolledWindow,
     left_chunks: &[DiffChunk],
     right_chunks: &[DiffChunk],
-    idx: usize,
-    is_right: bool,
 ) {
-    remove_current_chunk_highlight(left_buf);
-    remove_current_chunk_highlight(middle_buf);
-    remove_current_chunk_highlight(right_buf);
-    if is_right {
-        let chunk = &right_chunks[idx];
-        match chunk.tag {
-            DiffTag::Equal => {}
-            DiffTag::Replace => {
-                apply_line_tag(middle_buf, "current-changed", chunk.start_a, chunk.end_a);
-                apply_line_tag(right_buf, "current-changed", chunk.start_b, chunk.end_b);
-            }
-            DiffTag::Delete => {
-                apply_line_tag(middle_buf, "current-deleted", chunk.start_a, chunk.end_a);
-            }
-            DiffTag::Insert => {
-                apply_line_tag(right_buf, "current-inserted", chunk.start_b, chunk.end_b);
-            }
+    let scroll_y = scroll.vadjustment().value();
+    let view_h = scroll.vadjustment().page_size();
+    let buf = tv.buffer();
+
+    for lc in left_chunks {
+        if lc.tag == DiffTag::Equal {
+            continue;
         }
-    } else {
-        let chunk = &left_chunks[idx];
-        match chunk.tag {
-            DiffTag::Equal => {}
-            DiffTag::Replace => {
-                apply_line_tag(left_buf, "current-changed", chunk.start_a, chunk.end_a);
-                apply_line_tag(middle_buf, "current-changed", chunk.start_b, chunk.end_b);
+        let l_start = lc.start_b;
+        let l_end = lc.end_b;
+
+        for rc in right_chunks {
+            if rc.tag == DiffTag::Equal {
+                continue;
             }
-            DiffTag::Delete => {
-                apply_line_tag(left_buf, "current-deleted", chunk.start_a, chunk.end_a);
+            let r_start = rc.start_a;
+            let r_end = rc.end_a;
+
+            // Check for overlap (same logic as apply_conflict_tags)
+            let overlap_start = l_start.max(r_start);
+            let overlap_end = l_end.max(l_start).min(r_end.max(r_start));
+            let overlaps = if l_start == l_end && r_start == r_end {
+                l_start == r_start
+            } else if l_start == l_end {
+                l_start >= r_start && l_start < r_end
+            } else if r_start == r_end {
+                r_start >= l_start && r_start < l_end
+            } else {
+                overlap_start < overlap_end
+            };
+
+            if !overlaps {
+                continue;
             }
-            DiffTag::Insert => {
-                apply_line_tag(middle_buf, "current-inserted", chunk.start_b, chunk.end_b);
+
+            let tag_start = l_start.min(r_start);
+            let tag_end = l_end.max(r_end);
+            if tag_start == tag_end {
+                continue;
             }
+
+            let y_top_buf = if let Some(iter) = buf.iter_at_line(tag_start as i32) {
+                tv.line_yrange(&iter).0 as f64
+            } else {
+                let iter = buf.end_iter();
+                let (y, h) = tv.line_yrange(&iter);
+                (y + h) as f64
+            };
+
+            let last = tag_end - 1;
+            let y_bot_buf = if let Some(iter) = buf.iter_at_line(last as i32) {
+                let (y, h) = tv.line_yrange(&iter);
+                (y + h) as f64
+            } else {
+                let iter = buf.end_iter();
+                let (y, h) = tv.line_yrange(&iter);
+                (y + h) as f64
+            };
+
+            let y_top = y_top_buf - scroll_y;
+            let y_bot = y_bot_buf - scroll_y;
+
+            if y_bot < 0.0 || y_top > view_h {
+                continue;
+            }
+
+            let rect_h = y_bot - y_top;
+
+            cr.set_source_rgba(BG_CONFLICT.0, BG_CONFLICT.1, BG_CONFLICT.2, BG_CONFLICT.3);
+            cr.rectangle(0.0, y_top, width, rect_h);
+            let _ = cr.fill();
+
+            cr.set_source_rgba(
+                STROKE_CONFLICT.0,
+                STROKE_CONFLICT.1,
+                STROKE_CONFLICT.2,
+                STROKE_CONFLICT.3,
+            );
+            cr.rectangle(0.0, y_top, width, 1.0);
+            let _ = cr.fill();
+            cr.rectangle(0.0, y_bot - 1.0, width, 1.0);
+            let _ = cr.fill();
         }
     }
 }
 
-// ─── Filler (placeholder) lines ────────────────────────────────────────────
-
-// Colors matching the diff tag backgrounds
-const FILLER_DELETE: (f64, f64, f64) = (0.973, 0.843, 0.855); // #f8d7da
-const FILLER_INSERT: (f64, f64, f64) = (0.831, 0.929, 0.855); // #d4edda
-const FILLER_REPLACE: (f64, f64, f64) = (1.0, 0.953, 0.804); // #fff3cd
-
-/// Draw thin colored lines at filler (pixel-padding) gaps to indicate missing content.
-/// The line is drawn at the boundary between the filler gap and the anchor line,
-/// which aligns with where the gutter arrow points.
+/// Draw thin colored lines where the other side has content that this side lacks.
 pub(super) fn draw_fillers(
     cr: &gtk4::cairo::Context,
     width: f64,
@@ -722,7 +746,7 @@ pub(super) fn draw_fillers(
             continue;
         }
 
-        // Determine if this pane needs a filler for this chunk
+        // Determine if this pane needs a filler indicator for this chunk
         let (need_filler, anchor) = if side_is_left && right_lines > left_lines {
             (true, chunk.end_a)
         } else if !side_is_left && left_lines > right_lines {
@@ -735,15 +759,11 @@ pub(super) fn draw_fillers(
         }
 
         let color = match chunk.tag {
-            DiffTag::Delete => FILLER_DELETE,
-            DiffTag::Insert => FILLER_INSERT,
+            DiffTag::Delete | DiffTag::Insert => FILLER_INSERT,
             DiffTag::Replace => FILLER_REPLACE,
             DiffTag::Equal => unreachable!(),
         };
 
-        // The anchor line is right after the filler gap. Draw the thin line
-        // at the top of the anchor line (= bottom of the filler gap), which
-        // matches where the gutter arrow/band points.
         let buf = tv.buffer();
         let anchor_y_buf = {
             let anchor_i32 = anchor.min(buf.line_count().max(0) as usize) as i32;
@@ -766,221 +786,6 @@ pub(super) fn draw_fillers(
         cr.set_source_rgb(color.0, color.1, color.2);
         cr.rectangle(0.0, line_y - line_thickness / 2.0, width, line_thickness);
         let _ = cr.fill();
-    }
-}
-
-pub(super) fn get_line_height(tv: &TextView) -> i32 {
-    let buf = tv.buffer();
-    if buf.line_count() > 0
-        && let Some(iter) = buf.iter_at_line(0)
-    {
-        let (_y, h) = tv.line_yrange(&iter);
-        if h > 0 {
-            return h;
-        }
-    }
-    16 // fallback
-}
-
-pub(super) fn remove_filler_tags(buf: &TextBuffer) {
-    let table = buf.tag_table();
-    let to_remove: Rc<RefCell<Vec<TextTag>>> = Rc::new(RefCell::new(Vec::new()));
-    let tr = to_remove.clone();
-    table.foreach(move |tag| {
-        if tag.name().is_some_and(|n| n.starts_with("filler-")) {
-            tr.borrow_mut().push(tag.clone());
-        }
-    });
-    let (start, end) = (buf.start_iter(), buf.end_iter());
-    for tag in to_remove.borrow().iter() {
-        buf.remove_tag(tag, &start, &end);
-        table.remove(tag);
-    }
-}
-
-pub(super) fn apply_single_filler(buf: &TextBuffer, anchor_line: usize, pixels: i32) {
-    if pixels <= 0 {
-        return;
-    }
-    let name = format!("filler-{anchor_line}");
-    let tag = if anchor_line == 0 {
-        TextTag::builder()
-            .name(&name)
-            .pixels_above_lines(pixels)
-            .build()
-    } else {
-        TextTag::builder()
-            .name(&name)
-            .pixels_below_lines(pixels)
-            .build()
-    };
-    buf.tag_table().add(&tag);
-
-    let target_line = if anchor_line == 0 {
-        0
-    } else {
-        anchor_line as i32 - 1
-    };
-    if let Some(start) = buf.iter_at_line(target_line) {
-        let end = buf.iter_at_line(target_line + 1).unwrap_or(buf.end_iter());
-        buf.apply_tag(&tag, &start, &end);
-    }
-}
-
-pub(super) fn apply_filler_tags(
-    left_buf: &TextBuffer,
-    right_buf: &TextBuffer,
-    chunks: &[DiffChunk],
-    line_height: i32,
-) {
-    remove_filler_tags(left_buf);
-    remove_filler_tags(right_buf);
-
-    for chunk in chunks {
-        if chunk.tag == DiffTag::Equal {
-            continue;
-        }
-        let left_lines = chunk.end_a - chunk.start_a;
-        let right_lines = chunk.end_b - chunk.start_b;
-        if left_lines == right_lines {
-            continue;
-        }
-        if left_lines > right_lines {
-            let pixels = (left_lines - right_lines) as i32 * line_height;
-            apply_single_filler(right_buf, chunk.end_b, pixels);
-        } else {
-            let pixels = (right_lines - left_lines) as i32 * line_height;
-            apply_single_filler(left_buf, chunk.end_a, pixels);
-        }
-    }
-}
-
-pub(super) fn apply_merge_filler_tags(
-    left_buf: &TextBuffer,
-    middle_buf: &TextBuffer,
-    right_buf: &TextBuffer,
-    left_chunks: &[DiffChunk],
-    right_chunks: &[DiffChunk],
-    line_height: i32,
-) {
-    remove_filler_tags(left_buf);
-    remove_filler_tags(middle_buf);
-    remove_filler_tags(right_buf);
-
-    // Middle buffer may get fillers from both diff pairs — accumulate
-    let mut middle_fillers: HashMap<usize, i32> = HashMap::new();
-
-    // left_chunks = diff(left, middle): a-side = left, b-side = middle
-    for chunk in left_chunks {
-        if chunk.tag == DiffTag::Equal {
-            continue;
-        }
-        let left_lines = chunk.end_a - chunk.start_a;
-        let mid_lines = chunk.end_b - chunk.start_b;
-        if left_lines == mid_lines {
-            continue;
-        }
-        if left_lines > mid_lines {
-            let pixels = (left_lines - mid_lines) as i32 * line_height;
-            *middle_fillers.entry(chunk.end_b).or_insert(0) += pixels;
-            // Right side also needs this filler to stay aligned
-            apply_single_filler(right_buf, chunk.end_b, pixels);
-        } else {
-            let pixels = (mid_lines - left_lines) as i32 * line_height;
-            apply_single_filler(left_buf, chunk.end_a, pixels);
-        }
-    }
-
-    // right_chunks = diff(middle, right): a-side = middle, b-side = right
-    for chunk in right_chunks {
-        if chunk.tag == DiffTag::Equal {
-            continue;
-        }
-        let mid_lines = chunk.end_a - chunk.start_a;
-        let right_lines = chunk.end_b - chunk.start_b;
-        if mid_lines == right_lines {
-            continue;
-        }
-        if mid_lines > right_lines {
-            let pixels = (mid_lines - right_lines) as i32 * line_height;
-            apply_single_filler(right_buf, chunk.end_b, pixels);
-        } else {
-            let pixels = (right_lines - mid_lines) as i32 * line_height;
-            *middle_fillers.entry(chunk.end_a).or_insert(0) += pixels;
-            // Left side also needs this filler to stay aligned
-            apply_single_filler(left_buf, chunk.end_a, pixels);
-        }
-    }
-
-    // Apply accumulated middle fillers
-    for (anchor, pixels) in &middle_fillers {
-        apply_single_filler(middle_buf, *anchor, *pixels);
-    }
-}
-
-/// Detect conflicts: overlapping non-Equal regions from two pairwise diffs on the middle file.
-/// `left_chunks`: diff(left, middle) — middle lines are `start_b..end_b`
-/// `right_chunks`: diff(middle, right) — middle lines are `start_a..end_a`
-pub(super) fn apply_conflict_tags(
-    middle_buf: &TextBuffer,
-    left_chunks: &[DiffChunk],
-    right_chunks: &[DiffChunk],
-) {
-    for lc in left_chunks {
-        if lc.tag == DiffTag::Equal {
-            continue;
-        }
-        // In the left diff (left vs middle), the middle file range is start_b..end_b
-        let l_start = lc.start_b;
-        let l_end = lc.end_b;
-
-        for rc in right_chunks {
-            if rc.tag == DiffTag::Equal {
-                continue;
-            }
-            // In the right diff (middle vs right), the middle file range is start_a..end_a
-            let r_start = rc.start_a;
-            let r_end = rc.end_a;
-
-            // Check for overlap (handle zero-length ranges as point insertions)
-            let overlap_start = l_start.max(r_start);
-            let overlap_end = l_end.max(l_start).min(r_end.max(r_start));
-
-            // Two ranges overlap if they share any lines, or if both are insertions at the same point
-            let overlaps = if l_start == l_end && r_start == r_end {
-                l_start == r_start
-            } else if l_start == l_end {
-                l_start >= r_start && l_start < r_end
-            } else if r_start == r_end {
-                r_start >= l_start && r_start < l_end
-            } else {
-                overlap_start < overlap_end
-            };
-
-            if overlaps {
-                // Tag the union of both ranges on the middle buffer
-                let tag_start = l_start.min(r_start);
-                let tag_end = l_end.max(r_end);
-                apply_line_tag(middle_buf, "conflict", tag_start, tag_end);
-            }
-        }
-    }
-}
-
-pub(super) fn apply_line_tag(
-    buffer: &TextBuffer,
-    tag_name: &str,
-    start_line: usize,
-    end_line: usize,
-) {
-    let start = buffer.iter_at_line(start_line as i32);
-    let end = if (end_line as i32) < buffer.line_count() {
-        buffer.iter_at_line(end_line as i32)
-    } else {
-        Some(buffer.end_iter())
-    };
-    if let (Some(s), Some(e)) = (start, end) {
-        buffer.apply_tag_by_name(tag_name, &s, &e);
     }
 }
 
@@ -1134,6 +939,7 @@ pub(super) fn make_diff_pane(
     sv.set_editable(true);
     sv.set_wrap_mode(settings.wrap_mode_gtk());
     sv.set_left_margin(4);
+    sv.set_bottom_margin(16);
     sv.set_show_line_numbers(settings.show_line_numbers);
     sv.set_highlight_current_line(settings.highlight_current_line);
     sv.set_tab_width(settings.tab_width);
@@ -1206,6 +1012,7 @@ pub(super) fn make_diff_pane(
 
 // ─── Gutter (link map) ────────────────────────────────────────────────────
 
+/// Y coordinate of `line` in the gutter widget's coordinate space.
 pub(super) fn line_to_gutter_y(
     tv: &TextView,
     buf: &TextBuffer,
@@ -1213,14 +1020,17 @@ pub(super) fn line_to_gutter_y(
     scroll: &ScrolledWindow,
     gutter: &impl IsA<gtk4::Widget>,
 ) -> f64 {
-    // Use line_yrange per line so word-wrapped lines get correct positions.
-    if let Some(iter) = buf.iter_at_line(line as i32) {
-        let (y, _h) = tv.line_yrange(&iter);
-        let visible_y = y as f64 - scroll.vadjustment().value();
-        let point = gtk4::graphene::Point::new(0.0, visible_y as f32);
-        if let Some(out) = scroll.compute_point(gutter, &point) {
-            return out.y() as f64;
-        }
+    let y_buf = if let Some(iter) = buf.iter_at_line(line as i32) {
+        tv.line_yrange(&iter).0 as f64
+    } else {
+        let iter = buf.end_iter();
+        let (y, h) = tv.line_yrange(&iter);
+        (y + h) as f64
+    };
+    let visible_y = y_buf - scroll.vadjustment().value();
+    let point = gtk4::graphene::Point::new(0.0, visible_y as f32);
+    if let Some(out) = scroll.compute_point(gutter, &point) {
+        return out.y() as f64;
     }
     0.0
 }
@@ -1249,9 +1059,8 @@ pub(super) fn draw_gutter(
         let rb = line_to_gutter_y(right_tv, right_buf, chunk.end_b, right_scroll, gutter);
 
         let (r, g, b) = match chunk.tag {
-            DiffTag::Replace => (0.45, 0.62, 0.81),
-            DiffTag::Delete => (0.96, 0.47, 0.0),
-            DiffTag::Insert => (0.45, 0.82, 0.09),
+            DiffTag::Replace => BAND_REPLACE,
+            DiffTag::Delete | DiffTag::Insert => BAND_INSERT,
             DiffTag::Equal => continue,
         };
 
@@ -1388,13 +1197,10 @@ pub(super) fn copy_chunk(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn refresh_diff(
     left_buf: &TextBuffer,
     right_buf: &TextBuffer,
-    left_tv: &TextView,
     chunks: &Rc<RefCell<Vec<DiffChunk>>>,
-    line_height_cell: &Rc<Cell<i32>>,
     on_complete: impl Fn() + 'static,
     ignore_blanks: bool,
     ignore_whitespace: bool,
@@ -1414,9 +1220,6 @@ pub(super) fn refresh_diff(
     let rb = right_buf.clone();
     let ch = chunks.clone();
     let p = pending.clone();
-    // Capture line height AFTER filler tags are removed but BEFORE new ones are applied
-    let lh = get_line_height(left_tv);
-    line_height_cell.set(lh);
 
     gtk4::glib::spawn_future_local(async move {
         let (lt_cmp, lt_map) = filter_for_diff(&lt, ignore_whitespace, ignore_blanks);
@@ -1432,7 +1235,6 @@ pub(super) fn refresh_diff(
             remap_chunks(raw, &lt_map, lt_total, &rt_map, rt_total)
         };
         apply_diff_tags(&lb, &rb, &new_chunks);
-        apply_filler_tags(&lb, &rb, &new_chunks, lh);
         *ch.borrow_mut() = new_chunks;
         on_complete();
         p.set(false);
@@ -1583,9 +1385,8 @@ pub(super) fn draw_chunk_map(
         let rect_h = (y_end - y_start).max(2.0);
 
         let (r, g, b) = match chunk.tag {
-            DiffTag::Replace => (0.45, 0.62, 0.81),
-            DiffTag::Delete => (0.96, 0.47, 0.0),
-            DiffTag::Insert => (0.45, 0.82, 0.09),
+            DiffTag::Replace => BAND_REPLACE,
+            DiffTag::Delete | DiffTag::Insert => BAND_INSERT,
             DiffTag::Equal => continue,
         };
 
@@ -1616,14 +1417,17 @@ pub(super) fn count_changes(chunks: &[DiffChunk]) -> usize {
     chunks.iter().filter(|c| c.tag != DiffTag::Equal).count()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn navigate_chunk(
     chunks: &[DiffChunk],
     current_chunk: &Rc<Cell<Option<usize>>>,
     direction: i32, // -1 = prev, +1 = next
     left_tv: &TextView,
     left_buf: &TextBuffer,
-    right_buf: &TextBuffer,
     left_scroll: &ScrolledWindow,
+    right_tv: &TextView,
+    right_buf: &TextBuffer,
+    right_scroll: &ScrolledWindow,
 ) {
     let non_equal: Vec<usize> = chunks
         .iter()
@@ -1669,10 +1473,9 @@ pub(super) fn navigate_chunk(
 
     if let Some(&idx) = next_idx {
         current_chunk.set(Some(idx));
-        highlight_current_chunk(left_buf, right_buf, chunks, idx);
         let chunk = &chunks[idx];
-        // Scroll left pane to the chunk
         scroll_to_line(left_tv, left_buf, chunk.start_a, left_scroll);
+        scroll_to_line(right_tv, right_buf, chunk.start_b, right_scroll);
     }
 }
 
@@ -1731,41 +1534,18 @@ pub(super) fn setup_scroll_sync(
 ) {
     let syncing = Rc::new(Cell::new(false));
 
-    // Left → Right
+    // Redraw gutter when either side scrolls (no vertical sync — each side scrolls independently)
     {
-        let rs = right_scroll.clone();
-        let s = syncing.clone();
         let g = gutter.clone();
-        left_scroll.vadjustment().connect_value_changed(move |adj| {
-            if !s.get() {
-                s.set(true);
-                sync_adjustment_from(&rs.vadjustment(), adj.value(), adj.upper(), adj.page_size());
-                g.queue_draw();
-                s.set(false);
-            }
+        left_scroll.vadjustment().connect_value_changed(move |_| {
+            g.queue_draw();
         });
     }
-
-    // Right → Left
     {
-        let ls = left_scroll.clone();
-        let s = syncing.clone();
         let g = gutter.clone();
-        right_scroll
-            .vadjustment()
-            .connect_value_changed(move |adj| {
-                if !s.get() {
-                    s.set(true);
-                    sync_adjustment_from(
-                        &ls.vadjustment(),
-                        adj.value(),
-                        adj.upper(),
-                        adj.page_size(),
-                    );
-                    g.queue_draw();
-                    s.set(false);
-                }
-            });
+        right_scroll.vadjustment().connect_value_changed(move |_| {
+            g.queue_draw();
+        });
     }
 
     // Horizontal: Left → Right
@@ -1794,27 +1574,6 @@ pub(super) fn setup_scroll_sync(
                     s.set(false);
                 }
             });
-    }
-}
-
-/// Proportional scroll sync using captured source values.
-/// Includes a threshold to avoid sub-pixel oscillation from floating-point rounding.
-pub(super) fn sync_adjustment_from(
-    target: &Adjustment,
-    src_val: f64,
-    src_upper: f64,
-    src_page: f64,
-) {
-    let src_max = src_upper - src_page;
-    if src_max <= 0.0 {
-        return;
-    }
-    let ratio = src_val / src_max;
-    let value = ratio * target.upper() - ratio * target.page_size();
-    let tgt_max = target.upper() - target.page_size();
-    let clamped = value.clamp(0.0, tgt_max);
-    if (clamped - target.value()).abs() > 0.5 {
-        target.set_value(clamped);
     }
 }
 
