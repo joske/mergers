@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.github.joske.mergers</id>
+
+  <name>Mergers</name>
+  <summary>Visual diff and merge tool</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-2.0</project_license>
+
+  <description>
+    <p>
+      Mergers is a visual diff and merge tool for files and directories,
+      written in Rust with GTK4. It supports two-way and three-way file
+      comparison and merging.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">com.github.joske.mergers.desktop</launchable>
+
+  <url type="homepage">https://github.com/joske/mergers</url>
+  <url type="bugtracker">https://github.com/joske/mergers/issues</url>
+  <url type="vcs-browser">https://github.com/joske/mergers</url>
+
+  <content_rating type="oars-1.1" />
+
+  <categories>
+    <category>Development</category>
+    <category>TextEditor</category>
+  </categories>
+
+  <provides>
+    <binary>mergers</binary>
+  </provides>
+
+  <releases>
+    <release version="0.4.1" date="2025-06-01">
+      <description>
+        <p>Bug fixes and improvements.</p>
+      </description>
+    </release>
+  </releases>
+</component>

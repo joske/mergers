@@ -1,0 +1,43 @@
+{
+  "id": "com.github.joske.mergers",
+  "runtime": "org.gnome.Platform",
+  "runtime-version": "47",
+  "sdk": "org.gnome.Sdk",
+  "sdk-extensions": [
+    "org.freedesktop.Sdk.Extension.rust-stable"
+  ],
+  "command": "mergers",
+  "finish-args": [
+    "--share=ipc",
+    "--socket=fallback-x11",
+    "--socket=wayland",
+    "--filesystem=host"
+  ],
+  "build-options": {
+    "append-path": "/usr/lib/sdk/rust-stable/bin",
+    "env": {
+      "CARGO_HOME": "/run/build/mergers/cargo",
+      "RUST_BACKTRACE": "1"
+    }
+  },
+  "modules": [
+    {
+      "name": "mergers",
+      "buildsystem": "simple",
+      "build-commands": [
+        "cargo --offline fetch --manifest-path Cargo.toml --verbose",
+        "cargo --offline build --release",
+        "install -Dm755 target/release/mergers /app/bin/mergers",
+        "install -Dm644 assets/com.github.joske.mergers.desktop /app/share/applications/com.github.joske.mergers.desktop",
+        "install -Dm644 assets/com.github.joske.mergers.svg /app/share/icons/hicolor/scalable/apps/com.github.joske.mergers.svg",
+        "install -Dm644 assets/com.github.joske.mergers.metainfo.xml /app/share/metainfo/com.github.joske.mergers.metainfo.xml"
+      ],
+      "sources": [
+        {
+          "type": "dir",
+          "path": "."
+        }
+      ]
+    }
+  ]
+}

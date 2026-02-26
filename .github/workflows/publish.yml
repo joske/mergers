@@ -82,7 +82,7 @@ jobs:
       - name: Build release binary
         run: cargo build --release
       - name: Convert SVG icon to PNG
-        run: rsvg-convert -w 256 -h 256 assets/mergers.svg -o mergers.png
+        run: rsvg-convert -w 256 -h 256 assets/com.github.joske.mergers.svg -o mergers.png
       - name: Download appimagetool
         run: |
           curl -fsSL -o appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${{ matrix.arch }}.AppImage
@@ -91,7 +91,7 @@ jobs:
         run: |
           mkdir -p AppDir/usr/bin
           cp target/release/mergers AppDir/usr/bin/mergers
-          cp assets/mergers.desktop AppDir/mergers.desktop
+          cp assets/com.github.joske.mergers.desktop AppDir/mergers.desktop
           cp mergers.png AppDir/mergers.png
           ln -s usr/bin/mergers AppDir/AppRun
           ./appimagetool --appimage-extract-and-run AppDir mergers-${{ matrix.arch }}.AppImage
