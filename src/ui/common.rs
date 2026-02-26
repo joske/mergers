@@ -643,8 +643,8 @@ pub(super) fn highlight_current_chunk(
 
 /// Highlight the current chunk in a 3-way merge view with darker background colors.
 /// `is_right` indicates whether the chunk is from `right_chunks` (true) or `left_chunks` (false).
-/// left_chunks = diff(left, middle): a-side = left, b-side = middle
-/// right_chunks = diff(middle, right): a-side = middle, b-side = right
+/// `left_chunks` = diff(left, middle): a-side = left, b-side = middle
+/// `right_chunks` = diff(middle, right): a-side = middle, b-side = right
 pub(super) fn highlight_current_merge_chunk(
     left_buf: &TextBuffer,
     middle_buf: &TextBuffer,
