@@ -17,10 +17,8 @@ fn refresh_merge_diffs(
     left_buf: &TextBuffer,
     middle_buf: &TextBuffer,
     right_buf: &TextBuffer,
-    left_tv: &TextView,
     left_chunks: &Rc<RefCell<Vec<DiffChunk>>>,
     right_chunks: &Rc<RefCell<Vec<DiffChunk>>>,
-    line_height_cell: &Rc<Cell<i32>>,
     on_complete: impl Fn() + 'static,
     ignore_blanks: bool,
     ignore_whitespace: bool,
@@ -46,8 +44,6 @@ fn refresh_merge_diffs(
     let lch = left_chunks.clone();
     let rch = right_chunks.clone();
     let p = pending.clone();
-    let lh = get_line_height(left_tv);
-    line_height_cell.set(lh);
 
     gtk4::glib::spawn_future_local(async move {
         let (lt_cmp, lt_map) = filter_for_diff(&lt, ignore_whitespace, ignore_blanks);
@@ -78,7 +74,6 @@ fn refresh_merge_diffs(
         let new_right = remap_chunks(new_right, &mt_map, mt_total, &rt_map, rt_total);
 
         apply_merge_tags(&lb, &mb, &rb, &new_left, &new_right);
-        apply_merge_filler_tags(&lb, &mb, &rb, &new_left, &new_right, lh);
 
         *lch.borrow_mut() = new_left;
         *rch.borrow_mut() = new_right;
@@ -96,68 +91,14 @@ fn setup_scroll_sync_3way(
 ) {
     let syncing = Rc::new(Cell::new(false));
 
-    // Left → Middle, Right
-    {
-        let ms = middle_scroll.clone();
-        let rs = right_scroll.clone();
-        let s = syncing.clone();
+    // Redraw gutters when any side scrolls (no vertical sync — each side scrolls independently)
+    for scroll in [left_scroll, middle_scroll, right_scroll] {
         let lg = left_gutter.clone();
         let rg = right_gutter.clone();
-        left_scroll.vadjustment().connect_value_changed(move |adj| {
-            if !s.get() {
-                s.set(true);
-                let (val, upper, page) = (adj.value(), adj.upper(), adj.page_size());
-                sync_adjustment_from(&ms.vadjustment(), val, upper, page);
-                sync_adjustment_from(&rs.vadjustment(), val, upper, page);
-                lg.queue_draw();
-                rg.queue_draw();
-                s.set(false);
-            }
+        scroll.vadjustment().connect_value_changed(move |_| {
+            lg.queue_draw();
+            rg.queue_draw();
         });
-    }
-
-    // Middle → Left, Right
-    {
-        let ls = left_scroll.clone();
-        let rs = right_scroll.clone();
-        let s = syncing.clone();
-        let lg = left_gutter.clone();
-        let rg = right_gutter.clone();
-        middle_scroll
-            .vadjustment()
-            .connect_value_changed(move |adj| {
-                if !s.get() {
-                    s.set(true);
-                    let (val, upper, page) = (adj.value(), adj.upper(), adj.page_size());
-                    sync_adjustment_from(&ls.vadjustment(), val, upper, page);
-                    sync_adjustment_from(&rs.vadjustment(), val, upper, page);
-                    lg.queue_draw();
-                    rg.queue_draw();
-                    s.set(false);
-                }
-            });
-    }
-
-    // Right → Left, Middle
-    {
-        let ls = left_scroll.clone();
-        let ms = middle_scroll.clone();
-        let s = syncing.clone();
-        let lg = left_gutter.clone();
-        let rg = right_gutter.clone();
-        right_scroll
-            .vadjustment()
-            .connect_value_changed(move |adj| {
-                if !s.get() {
-                    s.set(true);
-                    let (val, upper, page) = (adj.value(), adj.upper(), adj.page_size());
-                    sync_adjustment_from(&ls.vadjustment(), val, upper, page);
-                    sync_adjustment_from(&ms.vadjustment(), val, upper, page);
-                    lg.queue_draw();
-                    rg.queue_draw();
-                    s.set(false);
-                }
-            });
     }
 
     // Horizontal: Left → Middle, Right
@@ -617,18 +558,25 @@ fn build_merge_view(
         &right_gutter,
     );
 
+    // ── Toolbar with chunk navigation ───────────────────────────
+    let current_chunk: Rc<Cell<Option<(usize, bool)>>> = Rc::new(Cell::new(None));
+
     // ── Filler overlay drawing (3-way) ──────────────────────────
-    let filler_lh: Rc<Cell<i32>> = Rc::new(Cell::new(get_line_height(&left_pane.text_view)));
     {
         let ltv = left_pane.text_view.clone();
         let ls = left_pane.scroll.clone();
         let lch = left_chunks.clone();
         let rch = right_chunks.clone();
+        let cur = current_chunk.clone();
         left_pane
             .filler_overlay
             .set_draw_func(move |_area, cr, w, _h| {
-                draw_fillers(cr, w as f64, &ltv, &ls, &lch.borrow(), true);
-                draw_fillers(cr, w as f64, &ltv, &ls, &rch.borrow(), true);
+                let w = w as f64;
+                // Left pane shows a-side of left_chunks
+                let cur_left = cur.get().and_then(|(i, r)| if r { None } else { Some(i) });
+                draw_chunk_backgrounds(cr, w, &ltv, &ls, &lch.borrow(), Side::A, cur_left);
+                draw_fillers(cr, w, &ltv, &ls, &lch.borrow(), true);
+                draw_fillers(cr, w, &ltv, &ls, &rch.borrow(), true);
             });
     }
     {
@@ -636,11 +584,16 @@ fn build_merge_view(
         let rs = right_pane.scroll.clone();
         let lch = left_chunks.clone();
         let rch = right_chunks.clone();
+        let cur = current_chunk.clone();
         right_pane
             .filler_overlay
             .set_draw_func(move |_area, cr, w, _h| {
-                draw_fillers(cr, w as f64, &rtv, &rs, &rch.borrow(), false);
-                draw_fillers(cr, w as f64, &rtv, &rs, &lch.borrow(), false);
+                let w = w as f64;
+                // Right pane shows b-side of right_chunks
+                let cur_right = cur.get().and_then(|(i, r)| if r { Some(i) } else { None });
+                draw_chunk_backgrounds(cr, w, &rtv, &rs, &rch.borrow(), Side::B, cur_right);
+                draw_fillers(cr, w, &rtv, &rs, &rch.borrow(), false);
+                draw_fillers(cr, w, &rtv, &rs, &lch.borrow(), false);
             });
     }
     {
@@ -648,11 +601,20 @@ fn build_merge_view(
         let ms = middle_pane.scroll.clone();
         let lch = left_chunks.clone();
         let rch = right_chunks.clone();
+        let cur = current_chunk.clone();
         middle_pane
             .filler_overlay
             .set_draw_func(move |_area, cr, w, _h| {
-                draw_fillers(cr, w as f64, &mtv, &ms, &lch.borrow(), false);
-                draw_fillers(cr, w as f64, &mtv, &ms, &rch.borrow(), true);
+                let w = w as f64;
+                // Middle pane: b-side of left_chunks, a-side of right_chunks
+                let cur_val = cur.get();
+                let cur_left = cur_val.and_then(|(i, r)| if r { None } else { Some(i) });
+                let cur_right = cur_val.and_then(|(i, r)| if r { Some(i) } else { None });
+                draw_chunk_backgrounds(cr, w, &mtv, &ms, &lch.borrow(), Side::B, cur_left);
+                draw_chunk_backgrounds(cr, w, &mtv, &ms, &rch.borrow(), Side::A, cur_right);
+                draw_conflict_backgrounds(cr, w, &mtv, &ms, &lch.borrow(), &rch.borrow());
+                draw_fillers(cr, w, &mtv, &ms, &lch.borrow(), false);
+                draw_fillers(cr, w, &mtv, &ms, &rch.borrow(), true);
             });
     }
     // Redraw filler overlays on scroll
@@ -671,9 +633,6 @@ fn build_merge_view(
             });
         }
     }
-
-    // ── Toolbar with chunk navigation ───────────────────────────
-    let current_chunk: Rc<Cell<Option<(usize, bool)>>> = Rc::new(Cell::new(None));
 
     let chunk_label = Label::new(None);
     chunk_label.add_css_class("chunk-label");
@@ -815,15 +774,23 @@ fn build_merge_view(
     toolbar.append(&merge_prefs_btn);
 
     // Navigate helper for merge view
+    #[allow(clippy::too_many_arguments)]
     let navigate_merge_chunk = |lch: &[DiffChunk],
                                 rch: &[DiffChunk],
                                 cur: &Rc<Cell<Option<(usize, bool)>>>,
                                 direction: i32,
-                                mtv: &TextView,
+                                ltv: &TextView,
                                 lb: &TextBuffer,
+                                l_scroll: &ScrolledWindow,
+                                mtv: &TextView,
                                 mb: &TextBuffer,
+                                ms: &ScrolledWindow,
+                                rtv: &TextView,
                                 rb: &TextBuffer,
-                                ms: &ScrolledWindow| {
+                                r_scroll: &ScrolledWindow,
+                                lf: &DrawingArea,
+                                mf: &DrawingArea,
+                                rf: &DrawingArea| {
         let all = merge_change_indices(lch, rch);
         if all.is_empty() {
             return;
@@ -860,14 +827,21 @@ fn build_merge_view(
         };
         if let Some(&(idx, is_right)) = next {
             cur.set(Some((idx, is_right)));
-            highlight_current_merge_chunk(lb, mb, rb, lch, rch, idx, is_right);
-            // Scroll middle pane to the chunk
-            let line = if is_right {
-                rch[idx].start_a
+            // Scroll all three panes to the chunk
+            if is_right {
+                let chunk = &rch[idx];
+                scroll_to_line(mtv, mb, chunk.start_a, ms);
+                scroll_to_line(rtv, rb, chunk.start_b, r_scroll);
+                scroll_to_line(ltv, lb, chunk.start_a, l_scroll);
             } else {
-                lch[idx].start_b
-            };
-            scroll_to_line(mtv, mb, line, ms);
+                let chunk = &lch[idx];
+                scroll_to_line(mtv, mb, chunk.start_b, ms);
+                scroll_to_line(ltv, lb, chunk.start_a, l_scroll);
+                scroll_to_line(rtv, rb, chunk.start_b, r_scroll);
+            }
+            lf.queue_draw();
+            mf.queue_draw();
+            rf.queue_draw();
         }
     };
 
@@ -896,12 +870,19 @@ fn build_merge_view(
         let lch = left_chunks.clone();
         let rch = right_chunks.clone();
         let cur = current_chunk.clone();
-        let mtv = middle_pane.text_view.clone();
+        let ltv = left_pane.text_view.clone();
         let lb = left_buf.clone();
+        let l_scroll = left_pane.scroll.clone();
+        let mtv = middle_pane.text_view.clone();
         let mb = middle_buf.clone();
-        let rb = right_buf.clone();
         let ms = middle_pane.scroll.clone();
+        let rtv = right_pane.text_view.clone();
+        let rb = right_buf.clone();
+        let r_scroll = right_pane.scroll.clone();
         let lbl = chunk_label.clone();
+        let lf = left_pane.filler_overlay.clone();
+        let mf = middle_pane.filler_overlay.clone();
+        let rf = right_pane.filler_overlay.clone();
         let nav = navigate_merge_chunk;
         let upd = update_merge_label;
         prev_btn.connect_clicked(move |_| {
@@ -910,11 +891,18 @@ fn build_merge_view(
                 &rch.borrow(),
                 &cur,
                 -1,
-                &mtv,
+                &ltv,
                 &lb,
+                &l_scroll,
+                &mtv,
                 &mb,
-                &rb,
                 &ms,
+                &rtv,
+                &rb,
+                &r_scroll,
+                &lf,
+                &mf,
+                &rf,
             );
             upd(&lbl, &lch.borrow(), &rch.borrow(), cur.get());
         });
@@ -925,12 +913,19 @@ fn build_merge_view(
         let lch = left_chunks.clone();
         let rch = right_chunks.clone();
         let cur = current_chunk.clone();
-        let mtv = middle_pane.text_view.clone();
+        let ltv = left_pane.text_view.clone();
         let lb = left_buf.clone();
+        let l_scroll = left_pane.scroll.clone();
+        let mtv = middle_pane.text_view.clone();
         let mb = middle_buf.clone();
-        let rb = right_buf.clone();
         let ms = middle_pane.scroll.clone();
+        let rtv = right_pane.text_view.clone();
+        let rb = right_buf.clone();
+        let r_scroll = right_pane.scroll.clone();
         let lbl = chunk_label.clone();
+        let lf = left_pane.filler_overlay.clone();
+        let mf = middle_pane.filler_overlay.clone();
+        let rf = right_pane.filler_overlay.clone();
         let nav = navigate_merge_chunk;
         let upd = update_merge_label;
         next_btn.connect_clicked(move |_| {
@@ -939,11 +934,18 @@ fn build_merge_view(
                 &rch.borrow(),
                 &cur,
                 1,
-                &mtv,
+                &ltv,
                 &lb,
+                &l_scroll,
+                &mtv,
                 &mb,
-                &rb,
                 &ms,
+                &rtv,
+                &rb,
+                &r_scroll,
+                &lf,
+                &mf,
+                &rf,
             );
             upd(&lbl, &lch.borrow(), &rch.borrow(), cur.get());
         });
@@ -1168,10 +1170,8 @@ fn build_merge_view(
             let lb = left_buf.clone();
             let mb = middle_buf.clone();
             let rb = right_buf.clone();
-            let ltv = left_pane.text_view.clone();
             let lch = left_chunks.clone();
             let rch = right_chunks.clone();
-            let flh = filler_lh.clone();
             let p = pending.clone();
             let ib = ignore_blanks.clone();
             let iw = ignore_whitespace.clone();
@@ -1182,28 +1182,14 @@ fn build_merge_view(
                     let lb = lb.clone();
                     let mb = mb.clone();
                     let rb = rb.clone();
-                    let ltv = ltv.clone();
                     let lch = lch.clone();
                     let rch = rch.clone();
-                    let flh = flh.clone();
                     let p = p.clone();
                     let ib = ib.clone();
                     let iw = iw.clone();
                     let cb = make_cb();
                     gtk4::glib::idle_add_local_once(move || {
-                        refresh_merge_diffs(
-                            &lb,
-                            &mb,
-                            &rb,
-                            &ltv,
-                            &lch,
-                            &rch,
-                            &flh,
-                            cb,
-                            ib.get(),
-                            iw.get(),
-                            &p,
-                        );
+                        refresh_merge_diffs(&lb, &mb, &rb, &lch, &rch, cb, ib.get(), iw.get(), &p);
                     });
                 }
             });
@@ -1217,10 +1203,8 @@ fn build_merge_view(
             let lb = left_buf.clone();
             let mb = middle_buf.clone();
             let rb = right_buf.clone();
-            let ltv = left_pane.text_view.clone();
             let lch = left_chunks.clone();
             let rch = right_chunks.clone();
-            let flh = filler_lh.clone();
             let on_complete = make_on_complete();
             pending.set(true);
             let p = pending.clone();
@@ -1254,10 +1238,7 @@ fn build_merge_view(
                 let new_left = remap_chunks(new_left_raw, &lt_map, lt_total, &mt_map, mt_total);
                 let new_right = remap_chunks(new_right_raw, &mt_map, mt_total, &rt_map, rt_total);
 
-                let lh = get_line_height(&ltv);
-                flh.set(lh);
                 apply_merge_tags(&lb, &mb, &rb, &new_left, &new_right);
-                apply_merge_filler_tags(&lb, &mb, &rb, &new_left, &new_right, lh);
                 *lch.borrow_mut() = new_left;
                 *rch.borrow_mut() = new_right;
                 on_complete();
@@ -1272,10 +1253,8 @@ fn build_merge_view(
             let lb = left_buf.clone();
             let mb = middle_buf.clone();
             let rb = right_buf.clone();
-            let ltv = left_pane.text_view.clone();
             let lch = left_chunks.clone();
             let rch = right_chunks.clone();
-            let flh = filler_lh.clone();
             let make_cb = make_on_complete.clone();
             let dummy = Rc::new(Cell::new(true));
             blank_toggle.connect_toggled(move |btn| {
@@ -1285,10 +1264,8 @@ fn build_merge_view(
                     &lb,
                     &mb,
                     &rb,
-                    &ltv,
                     &lch,
                     &rch,
-                    &flh,
                     make_cb(),
                     ib.get(),
                     iw.get(),
@@ -1302,10 +1279,8 @@ fn build_merge_view(
             let lb = left_buf.clone();
             let mb = middle_buf.clone();
             let rb = right_buf.clone();
-            let ltv = left_pane.text_view.clone();
             let lch = left_chunks.clone();
             let rch = right_chunks.clone();
-            let flh = filler_lh.clone();
             let dummy = Rc::new(Cell::new(true));
             ws_toggle.connect_toggled(move |btn| {
                 iw.set(btn.is_active());
@@ -1314,10 +1289,8 @@ fn build_merge_view(
                     &lb,
                     &mb,
                     &rb,
-                    &ltv,
                     &lch,
                     &rch,
-                    &flh,
                     make_on_complete(),
                     ib.get(),
                     iw.get(),
@@ -1569,23 +1542,37 @@ fn build_merge_view(
         let lch = left_chunks.clone();
         let rch = right_chunks.clone();
         let cur = current_chunk.clone();
-        let mtv = middle_pane.text_view.clone();
+        let ltv = left_pane.text_view.clone();
         let lb = left_buf.clone();
+        let l_scroll = left_pane.scroll.clone();
+        let mtv = middle_pane.text_view.clone();
         let mb = middle_buf.clone();
-        let rb = right_buf.clone();
         let ms = middle_pane.scroll.clone();
+        let rtv = right_pane.text_view.clone();
+        let rb = right_buf.clone();
+        let r_scroll = right_pane.scroll.clone();
         let lbl = chunk_label.clone();
+        let lf = left_pane.filler_overlay.clone();
+        let mf = middle_pane.filler_overlay.clone();
+        let rf = right_pane.filler_overlay.clone();
         action.connect_activate(move |_, _| {
             navigate_merge_chunk(
                 &lch.borrow(),
                 &rch.borrow(),
                 &cur,
                 -1,
-                &mtv,
+                &ltv,
                 &lb,
+                &l_scroll,
+                &mtv,
                 &mb,
-                &rb,
                 &ms,
+                &rtv,
+                &rb,
+                &r_scroll,
+                &lf,
+                &mf,
+                &rf,
             );
             update_merge_label(&lbl, &lch.borrow(), &rch.borrow(), cur.get());
         });
@@ -1596,23 +1583,37 @@ fn build_merge_view(
         let lch = left_chunks.clone();
         let rch = right_chunks.clone();
         let cur = current_chunk.clone();
-        let mtv = middle_pane.text_view.clone();
+        let ltv = left_pane.text_view.clone();
         let lb = left_buf.clone();
+        let l_scroll = left_pane.scroll.clone();
+        let mtv = middle_pane.text_view.clone();
         let mb = middle_buf.clone();
-        let rb = right_buf.clone();
         let ms = middle_pane.scroll.clone();
+        let rtv = right_pane.text_view.clone();
+        let rb = right_buf.clone();
+        let r_scroll = right_pane.scroll.clone();
         let lbl = chunk_label.clone();
+        let lf = left_pane.filler_overlay.clone();
+        let mf = middle_pane.filler_overlay.clone();
+        let rf = right_pane.filler_overlay.clone();
         action.connect_activate(move |_, _| {
             navigate_merge_chunk(
                 &lch.borrow(),
                 &rch.borrow(),
                 &cur,
                 1,
-                &mtv,
+                &ltv,
                 &lb,
+                &l_scroll,
+                &mtv,
                 &mb,
-                &rb,
                 &ms,
+                &rtv,
+                &rb,
+                &r_scroll,
+                &lf,
+                &mf,
+                &rf,
             );
             update_merge_label(&lbl, &lch.borrow(), &rch.borrow(), cur.get());
         });

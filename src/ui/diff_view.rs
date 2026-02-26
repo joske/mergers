@@ -225,26 +225,34 @@ pub(super) fn build_diff_view(
     // Scroll synchronization
     setup_scroll_sync(&left_pane.scroll, &right_pane.scroll, &gutter);
 
+    // ── Toolbar with chunk navigation ───────────────────────────
+    let current_chunk: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+
     // ── Filler overlay drawing ──────────────────────────────────
-    let filler_lh: Rc<Cell<i32>> = Rc::new(Cell::new(get_line_height(&left_pane.text_view)));
     {
         let ltv = left_pane.text_view.clone();
         let ls = left_pane.scroll.clone();
         let ch = chunks.clone();
+        let cur = current_chunk.clone();
         left_pane
             .filler_overlay
             .set_draw_func(move |_area, cr, w, _h| {
-                draw_fillers(cr, w as f64, &ltv, &ls, &ch.borrow(), true);
+                let w = w as f64;
+                draw_chunk_backgrounds(cr, w, &ltv, &ls, &ch.borrow(), Side::A, cur.get());
+                draw_fillers(cr, w, &ltv, &ls, &ch.borrow(), true);
             });
     }
     {
         let rtv = right_pane.text_view.clone();
         let rs = right_pane.scroll.clone();
         let ch = chunks.clone();
+        let cur = current_chunk.clone();
         right_pane
             .filler_overlay
             .set_draw_func(move |_area, cr, w, _h| {
-                draw_fillers(cr, w as f64, &rtv, &rs, &ch.borrow(), false);
+                let w = w as f64;
+                draw_chunk_backgrounds(cr, w, &rtv, &rs, &ch.borrow(), Side::B, cur.get());
+                draw_fillers(cr, w, &rtv, &rs, &ch.borrow(), false);
             });
     }
     // Redraw filler overlays on scroll
@@ -270,9 +278,6 @@ pub(super) fn build_diff_view(
                 rf.queue_draw();
             });
     }
-
-    // ── Toolbar with chunk navigation ───────────────────────────
-    let current_chunk: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
 
     let chunk_label = Label::new(None);
     chunk_label.add_css_class("chunk-label");
@@ -413,13 +418,19 @@ pub(super) fn build_diff_view(
         let ch = chunks.clone();
         let cur = current_chunk.clone();
         let ltv = left_pane.text_view.clone();
+        let rtv = right_pane.text_view.clone();
         let lb = left_buf.clone();
         let rb = right_buf.clone();
         let ls = left_pane.scroll.clone();
+        let rs = right_pane.scroll.clone();
         let lbl = chunk_label.clone();
+        let lf = left_pane.filler_overlay.clone();
+        let rf = right_pane.filler_overlay.clone();
         prev_btn.connect_clicked(move |_| {
-            navigate_chunk(&ch.borrow(), &cur, -1, &ltv, &lb, &rb, &ls);
+            navigate_chunk(&ch.borrow(), &cur, -1, &ltv, &lb, &ls, &rtv, &rb, &rs);
             update_chunk_label(&lbl, &ch.borrow(), cur.get());
+            lf.queue_draw();
+            rf.queue_draw();
         });
     }
 
@@ -428,13 +439,19 @@ pub(super) fn build_diff_view(
         let ch = chunks.clone();
         let cur = current_chunk.clone();
         let ltv = left_pane.text_view.clone();
+        let rtv = right_pane.text_view.clone();
         let lb = left_buf.clone();
         let rb = right_buf.clone();
         let ls = left_pane.scroll.clone();
+        let rs = right_pane.scroll.clone();
         let lbl = chunk_label.clone();
+        let lf = left_pane.filler_overlay.clone();
+        let rf = right_pane.filler_overlay.clone();
         next_btn.connect_clicked(move |_| {
-            navigate_chunk(&ch.borrow(), &cur, 1, &ltv, &lb, &rb, &ls);
+            navigate_chunk(&ch.borrow(), &cur, 1, &ltv, &lb, &ls, &rtv, &rb, &rs);
             update_chunk_label(&lbl, &ch.borrow(), cur.get());
+            lf.queue_draw();
+            rf.queue_draw();
         });
     }
 
@@ -552,9 +569,7 @@ pub(super) fn build_diff_view(
         let connect_refresh = |buf: &TextBuffer| {
             let lb = left_buf.clone();
             let rb = right_buf.clone();
-            let ltv = left_pane.text_view.clone();
             let ch = chunks.clone();
-            let flh = filler_lh.clone();
             let p = pending.clone();
             let ib = ignore_blanks.clone();
             let iw = ignore_whitespace.clone();
@@ -564,15 +579,13 @@ pub(super) fn build_diff_view(
                     p.set(true);
                     let lb = lb.clone();
                     let rb = rb.clone();
-                    let ltv = ltv.clone();
                     let ch = ch.clone();
-                    let flh = flh.clone();
                     let p = p.clone();
                     let ib = ib.clone();
                     let iw = iw.clone();
                     let cb = make_cb();
                     gtk4::glib::idle_add_local_once(move || {
-                        refresh_diff(&lb, &rb, &ltv, &ch, &flh, cb, ib.get(), iw.get(), &p);
+                        refresh_diff(&lb, &rb, &ch, cb, ib.get(), iw.get(), &p);
                     });
                 }
             });
@@ -584,9 +597,7 @@ pub(super) fn build_diff_view(
         if !identical && !any_binary {
             let lb = left_buf.clone();
             let rb = right_buf.clone();
-            let ltv = left_pane.text_view.clone();
             let ch = chunks.clone();
-            let flh = filler_lh.clone();
             let on_complete = make_on_complete();
             pending.set(true);
             let p = pending.clone();
@@ -605,10 +616,7 @@ pub(super) fn build_diff_view(
                         .unwrap_or_default();
                     remap_chunks(raw, &lt_map, lt_total, &rt_map, rt_total)
                 };
-                let lh = get_line_height(&ltv);
-                flh.set(lh);
                 apply_diff_tags(&lb, &rb, &new_chunks);
-                apply_filler_tags(&lb, &rb, &new_chunks, lh);
                 *ch.borrow_mut() = new_chunks;
                 on_complete();
                 p.set(false);
@@ -621,25 +629,13 @@ pub(super) fn build_diff_view(
             let iw = ignore_whitespace.clone();
             let lb = left_buf.clone();
             let rb = right_buf.clone();
-            let ltv = left_pane.text_view.clone();
             let ch = chunks.clone();
-            let flh = filler_lh.clone();
             let make_cb = make_on_complete.clone();
             let dummy = Rc::new(Cell::new(true));
             blank_toggle.connect_toggled(move |btn| {
                 ib.set(btn.is_active());
                 dummy.set(true);
-                refresh_diff(
-                    &lb,
-                    &rb,
-                    &ltv,
-                    &ch,
-                    &flh,
-                    make_cb(),
-                    ib.get(),
-                    iw.get(),
-                    &dummy,
-                );
+                refresh_diff(&lb, &rb, &ch, make_cb(), ib.get(), iw.get(), &dummy);
             });
         }
         {
@@ -647,9 +643,7 @@ pub(super) fn build_diff_view(
             let iw = ignore_whitespace.clone();
             let lb = left_buf.clone();
             let rb = right_buf.clone();
-            let ltv = left_pane.text_view.clone();
             let ch = chunks.clone();
-            let flh = filler_lh.clone();
             let dummy = Rc::new(Cell::new(true));
             ws_toggle.connect_toggled(move |btn| {
                 iw.set(btn.is_active());
@@ -657,9 +651,7 @@ pub(super) fn build_diff_view(
                 refresh_diff(
                     &lb,
                     &rb,
-                    &ltv,
                     &ch,
-                    &flh,
                     make_on_complete(),
                     ib.get(),
                     iw.get(),
@@ -905,13 +897,19 @@ pub(super) fn build_diff_view(
         let ch = chunks.clone();
         let cur = current_chunk.clone();
         let ltv = left_pane.text_view.clone();
+        let rtv = right_pane.text_view.clone();
         let lb = left_buf.clone();
         let rb = right_buf.clone();
         let ls = left_pane.scroll.clone();
+        let rs = right_pane.scroll.clone();
         let lbl = chunk_label.clone();
+        let lf = left_pane.filler_overlay.clone();
+        let rf = right_pane.filler_overlay.clone();
         action.connect_activate(move |_, _| {
-            navigate_chunk(&ch.borrow(), &cur, -1, &ltv, &lb, &rb, &ls);
+            navigate_chunk(&ch.borrow(), &cur, -1, &ltv, &lb, &ls, &rtv, &rb, &rs);
             update_chunk_label(&lbl, &ch.borrow(), cur.get());
+            lf.queue_draw();
+            rf.queue_draw();
         });
         action_group.add_action(&action);
     }
@@ -920,13 +918,19 @@ pub(super) fn build_diff_view(
         let ch = chunks.clone();
         let cur = current_chunk.clone();
         let ltv = left_pane.text_view.clone();
+        let rtv = right_pane.text_view.clone();
         let lb = left_buf.clone();
         let rb = right_buf.clone();
         let ls = left_pane.scroll.clone();
+        let rs = right_pane.scroll.clone();
         let lbl = chunk_label.clone();
+        let lf = left_pane.filler_overlay.clone();
+        let rf = right_pane.filler_overlay.clone();
         action.connect_activate(move |_, _| {
-            navigate_chunk(&ch.borrow(), &cur, 1, &ltv, &lb, &rb, &ls);
+            navigate_chunk(&ch.borrow(), &cur, 1, &ltv, &lb, &ls, &rtv, &rb, &rs);
             update_chunk_label(&lbl, &ch.borrow(), cur.get());
+            lf.queue_draw();
+            rf.queue_draw();
         });
         action_group.add_action(&action);
     }
