@@ -104,7 +104,14 @@ jobs:
           gh release upload "$TAG" mergers-${{ matrix.arch }}.AppImage --clobber
   macos:
     needs: [checks, publish]
-    runs-on: macos-latest
+    strategy:
+      matrix:
+        include:
+          - runner: macos-latest
+            arch: aarch64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: write
     steps:
@@ -116,14 +123,14 @@ jobs:
       - name: Build release binary
         run: cargo build --release
       - name: Create tarball
-        run: tar -czf mergers-darwin-aarch64.tar.gz -C target/release mergers
+        run: tar -czf mergers-darwin-${{ matrix.arch }}.tar.gz -C target/release mergers
       - name: Upload to GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ needs.checks.outputs.tag }}"
           gh release create "$TAG" --title "$TAG" --generate-notes 2>/dev/null || true
-          gh release upload "$TAG" mergers-darwin-aarch64.tar.gz --clobber
+          gh release upload "$TAG" mergers-darwin-${{ matrix.arch }}.tar.gz --clobber
   windows:
     needs: [checks, publish]
     strategy:
