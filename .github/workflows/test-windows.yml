@@ -1,0 +1,71 @@
+name: Test Windows Build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            msystem: UCRT64
+            package_prefix: mingw-w64-ucrt-x86_64
+            rust_target: x86_64-pc-windows-gnu
+            cargo_target_flag: "--target x86_64-pc-windows-gnu"
+            binary_path: target/x86_64-pc-windows-gnu/release/mergers.exe
+            arch: x86_64
+          - runner: windows-11-arm
+            msystem: CLANGARM64
+            package_prefix: mingw-w64-clang-aarch64
+            rust_target: aarch64-pc-windows-gnullvm
+            cargo_target_flag: ""
+            binary_path: target/release/mergers.exe
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: ${{ matrix.msystem }}
+          update: true
+      - name: Set MSYS2 mirror for ARM64
+        if: matrix.msystem == 'CLANGARM64'
+        shell: msys2 {0}
+        run: |
+          echo 'Server = https://repo.msys2.org/mingw/$repo/' > /etc/pacman.d/mirrorlist.mingw
+      - name: Install MSYS2 packages (UCRT64)
+        if: matrix.msystem == 'UCRT64'
+        shell: msys2 {0}
+        run: |
+          pacman -S --noconfirm ${{ matrix.package_prefix }}-gtk4 ${{ matrix.package_prefix }}-gtksourceview5 ${{ matrix.package_prefix }}-pkgconf ${{ matrix.package_prefix }}-gcc
+      - name: Install MSYS2 packages (CLANGARM64)
+        if: matrix.msystem == 'CLANGARM64'
+        shell: msys2 {0}
+        run: |
+          pacman -S --noconfirm ${{ matrix.package_prefix }}-gtk4 ${{ matrix.package_prefix }}-gtksourceview5 ${{ matrix.package_prefix }}-pkgconf ${{ matrix.package_prefix }}-clang
+      - uses: actions/checkout@v6
+      - name: Install Rust
+        shell: msys2 {0}
+        run: |
+          export CARGO_HOME="$(pwd)/.cargo"
+          export RUSTUP_HOME="$(pwd)/.rustup"
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-host ${{ matrix.rust_target }} --default-toolchain stable
+      - name: Configure cargo linker
+        shell: msys2 {0}
+        run: |
+          mkdir -p .cargo
+          printf '[target.x86_64-pc-windows-gnu]\nlinker = "gcc"\n[target.aarch64-pc-windows-gnullvm]\nlinker = "clang"\n' > .cargo/config.toml
+      - name: Build release binary
+        shell: msys2 {0}
+        run: |
+          # Use only MSYS2 paths to avoid picking up link.exe from Visual Studio
+          export PATH="$(pwd)/.cargo/bin:/$MSYSTEM/bin:/usr/bin"
+          export PKG_CONFIG_ALLOW_CROSS=1
+          cargo build --release ${{ matrix.cargo_target_flag }}
+      - name: Verify binary
+        shell: msys2 {0}
+        run: |
+          ls -la ${{ matrix.binary_path }}
+          file ${{ matrix.binary_path }}
