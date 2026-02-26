@@ -153,7 +153,7 @@ jobs:
         if: matrix.msystem == 'CLANGARM64'
         shell: msys2 {0}
         run: |
-          echo 'Server = https://repo.msys2.org/mingw/clangarm64/' > /etc/pacman.d/mirrorlist.clangarm64
+          echo 'Server = https://repo.msys2.org/mingw/$repo/' > /etc/pacman.d/mirrorlist.mingw
       - name: Install MSYS2 packages
         shell: msys2 {0}
         run: |
