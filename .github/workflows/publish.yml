@@ -187,10 +187,8 @@ jobs:
           cp -r /$MSYSTEM/share/icons/hicolor dist/share/icons/
           cp -r /$MSYSTEM/share/icons/Adwaita dist/share/icons/ 2>/dev/null || true
       - name: Create zip
-        shell: msys2 {0}
-        run: |
-          cd dist
-          7z a ../mergers-windows-${{ matrix.arch }}.zip ./*
+        shell: pwsh
+        run: Compress-Archive -Path dist\* -DestinationPath mergers-windows-${{ matrix.arch }}.zip
       - name: Upload to GitHub release
         shell: bash
         env:
