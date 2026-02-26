@@ -126,69 +126,53 @@ jobs:
           gh release upload "$TAG" mergers-darwin-aarch64.tar.gz --clobber
   windows:
     needs: [checks, publish]
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: windows-latest
-            msystem: UCRT64
-            package_prefix: mingw-w64-ucrt-x86_64
-            rust_target: x86_64-pc-windows-gnu
-            rust_host: x86_64-pc-windows-gnu
-            arch: x86_64
-          - runner: windows-11-arm
-            msystem: CLANGARM64
-            package_prefix: mingw-w64-clang-aarch64
-            rust_target: aarch64-pc-windows-gnu
-            rust_host: aarch64-pc-windows-gnu
-            arch: aarch64
-    runs-on: ${{ matrix.runner }}
+    runs-on: windows-latest
     permissions:
       contents: write
     steps:
       - name: Setup MSYS2
         uses: msys2/setup-msys2@v2
         with:
-          msystem: ${{ matrix.msystem }}
+          msystem: UCRT64
           update: true
           install: >-
-            ${{ matrix.package_prefix }}-gtk4
-            ${{ matrix.package_prefix }}-gtksourceview5
-            ${{ matrix.package_prefix }}-pkgconf
-            ${{ matrix.package_prefix }}-gcc
+            mingw-w64-ucrt-x86_64-gtk4
+            mingw-w64-ucrt-x86_64-gtksourceview5
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-gcc
       - uses: actions/checkout@v6
       - name: Install Rust
         shell: msys2 {0}
         run: |
           export CARGO_HOME="$(pwd)/.cargo"
           export RUSTUP_HOME="$(pwd)/.rustup"
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-host ${{ matrix.rust_host }} --default-toolchain stable
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-host x86_64-pc-windows-gnu --default-toolchain stable
       - name: Build release binary
         shell: msys2 {0}
         run: |
           export PATH="$(pwd)/.cargo/bin:$PATH"
           export PKG_CONFIG_ALLOW_CROSS=1
-          cargo build --release --target ${{ matrix.rust_target }}
+          cargo build --release --target x86_64-pc-windows-gnu
       - name: Bundle binary with DLLs
         shell: msys2 {0}
         run: |
           mkdir -p dist
-          cp target/${{ matrix.rust_target }}/release/mergers.exe dist/
+          cp target/x86_64-pc-windows-gnu/release/mergers.exe dist/
           # Copy all required DLLs from MSYS2
-          ldd target/${{ matrix.rust_target }}/release/mergers.exe | grep -i "$MSYSTEM" | awk '{print $3}' | xargs -I{} cp {} dist/
+          ldd target/x86_64-pc-windows-gnu/release/mergers.exe | grep -i ucrt64 | awk '{print $3}' | xargs -I{} cp {} dist/
           # Copy GtkSourceView language specs and styles
           mkdir -p dist/share
-          cp -r /$MSYSTEM/share/gtksourceview-5 dist/share/gtksourceview-5
+          cp -r /ucrt64/share/gtksourceview-5 dist/share/gtksourceview-5
           # Copy GTK schema files
           mkdir -p dist/share/glib-2.0/schemas
-          cp /$MSYSTEM/share/glib-2.0/schemas/gschemas.compiled dist/share/glib-2.0/schemas/
+          cp /ucrt64/share/glib-2.0/schemas/gschemas.compiled dist/share/glib-2.0/schemas/
           # Copy icon theme
           mkdir -p dist/share/icons
-          cp -r /$MSYSTEM/share/icons/hicolor dist/share/icons/
-          cp -r /$MSYSTEM/share/icons/Adwaita dist/share/icons/ 2>/dev/null || true
+          cp -r /ucrt64/share/icons/hicolor dist/share/icons/
+          cp -r /ucrt64/share/icons/Adwaita dist/share/icons/ 2>/dev/null || true
       - name: Create zip
         shell: pwsh
-        run: Compress-Archive -Path dist\* -DestinationPath mergers-windows-${{ matrix.arch }}.zip
+        run: Compress-Archive -Path dist\* -DestinationPath mergers-windows-x86_64.zip
       - name: Upload to GitHub release
         shell: bash
         env:
@@ -196,7 +180,7 @@ jobs:
         run: |
           TAG="${{ needs.checks.outputs.tag }}"
           gh release create "$TAG" --title "$TAG" --generate-notes 2>/dev/null || true
-          gh release upload "$TAG" mergers-windows-${{ matrix.arch }}.zip --clobber
+          gh release upload "$TAG" mergers-windows-x86_64.zip --clobber
   homebrew:
     needs: [checks, macos]
     runs-on: ubuntu-latest
