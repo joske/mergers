@@ -739,7 +739,7 @@ dependencies = [
 
 [[package]]
 name = "mergers"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "chrono",
  "clap",
