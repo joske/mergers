@@ -142,19 +142,22 @@ jobs:
             mingw-w64-ucrt-x86_64-gcc
       - uses: actions/checkout@v6
       - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        shell: msys2 {0}
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --target x86_64-pc-windows-gnu
+          echo 'source "$HOME/.cargo/env"' >> ~/.bashrc
       - name: Build release binary
         shell: msys2 {0}
         run: |
-          export PATH="/c/Users/runneradmin/.cargo/bin:$PATH"
-          cargo build --release
+          source "$HOME/.cargo/env"
+          cargo build --release --target x86_64-pc-windows-gnu
       - name: Bundle binary with DLLs
         shell: msys2 {0}
         run: |
           mkdir -p dist
-          cp target/release/mergers.exe dist/
+          cp target/x86_64-pc-windows-gnu/release/mergers.exe dist/
           # Copy all required DLLs from MSYS2
-          ldd target/release/mergers.exe | grep "ucrt64" | awk '{print $3}' | xargs -I{} cp {} dist/
+          ldd target/x86_64-pc-windows-gnu/release/mergers.exe | grep "ucrt64" | awk '{print $3}' | xargs -I{} cp {} dist/
           # Copy GtkSourceView language specs and styles
           mkdir -p dist/share
           cp -r /$MSYSTEM/share/gtksourceview-5 dist/share/gtksourceview-5
