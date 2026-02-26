@@ -115,9 +115,7 @@ fn main() -> glib::ExitCode {
         std::process::exit(1);
     };
 
-    let application = Application::builder()
-        .application_id("mergers")
-        .build();
+    let application = Application::builder().application_id("mergers").build();
 
     ui::build_ui(&application, mode);
 
