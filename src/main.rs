@@ -116,7 +116,7 @@ fn main() -> glib::ExitCode {
     };
 
     let application = Application::builder()
-        .application_id("com.example.MeldRs")
+        .application_id("com.github.joske.mergers")
         .build();
 
     ui::build_ui(&application, mode);
