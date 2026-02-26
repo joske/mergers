@@ -1621,22 +1621,28 @@ pub(super) fn setup_scroll_sync(
 ) {
     let syncing = Rc::new(Cell::new(false));
 
-    // Left → Right
+    // Left → Right (vertical, deferred to idle to avoid layout loops)
     {
         let rs = right_scroll.clone();
         let s = syncing.clone();
         let g = gutter.clone();
         left_scroll.vadjustment().connect_value_changed(move |adj| {
             if !s.get() {
-                s.set(true);
-                sync_adjustment(&rs.vadjustment(), adj);
-                g.queue_draw();
-                s.set(false);
+                let (val, upper, page) = (adj.value(), adj.upper(), adj.page_size());
+                let rs = rs.clone();
+                let s = s.clone();
+                let g = g.clone();
+                gtk4::glib::idle_add_local_once(move || {
+                    s.set(true);
+                    sync_adjustment_from(&rs.vadjustment(), val, upper, page);
+                    g.queue_draw();
+                    s.set(false);
+                });
             }
         });
     }
 
-    // Right → Left
+    // Right → Left (vertical, deferred)
     {
         let ls = left_scroll.clone();
         let s = syncing.clone();
@@ -1645,28 +1651,39 @@ pub(super) fn setup_scroll_sync(
             .vadjustment()
             .connect_value_changed(move |adj| {
                 if !s.get() {
-                    s.set(true);
-                    sync_adjustment(&ls.vadjustment(), adj);
-                    g.queue_draw();
-                    s.set(false);
+                    let (val, upper, page) = (adj.value(), adj.upper(), adj.page_size());
+                    let ls = ls.clone();
+                    let s = s.clone();
+                    let g = g.clone();
+                    gtk4::glib::idle_add_local_once(move || {
+                        s.set(true);
+                        sync_adjustment_from(&ls.vadjustment(), val, upper, page);
+                        g.queue_draw();
+                        s.set(false);
+                    });
                 }
             });
     }
 
-    // Horizontal: Left → Right
+    // Horizontal: Left → Right (deferred)
     {
         let rs = right_scroll.clone();
         let s = syncing.clone();
         left_scroll.hadjustment().connect_value_changed(move |adj| {
             if !s.get() {
-                s.set(true);
-                rs.hadjustment().set_value(adj.value());
-                s.set(false);
+                let val = adj.value();
+                let rs = rs.clone();
+                let s = s.clone();
+                gtk4::glib::idle_add_local_once(move || {
+                    s.set(true);
+                    rs.hadjustment().set_value(val);
+                    s.set(false);
+                });
             }
         });
     }
 
-    // Horizontal: Right → Left
+    // Horizontal: Right → Left (deferred)
     {
         let ls = left_scroll.clone();
         let s = syncing.clone();
@@ -1674,25 +1691,35 @@ pub(super) fn setup_scroll_sync(
             .hadjustment()
             .connect_value_changed(move |adj| {
                 if !s.get() {
-                    s.set(true);
-                    ls.hadjustment().set_value(adj.value());
-                    s.set(false);
+                    let val = adj.value();
+                    let ls = ls.clone();
+                    let s = s.clone();
+                    gtk4::glib::idle_add_local_once(move || {
+                        s.set(true);
+                        ls.hadjustment().set_value(val);
+                        s.set(false);
+                    });
                 }
             });
     }
 }
 
-pub(super) fn sync_adjustment(target: &Adjustment, source: &Adjustment) {
-    let src_max = source.upper() - source.page_size();
+/// Proportional scroll sync using captured source values.
+/// Includes a threshold to avoid sub-pixel oscillation from floating-point rounding.
+pub(super) fn sync_adjustment_from(target: &Adjustment, src_val: f64, src_upper: f64, src_page: f64) {
+    let src_max = src_upper - src_page;
     if src_max <= 0.0 {
         return;
     }
-    let ratio = source.value() / src_max;
-    // Syncpoint-based: use the scroll ratio as a virtual anchor position
+    let ratio = src_val / src_max;
     let value = ratio * target.upper() - ratio * target.page_size();
     let tgt_max = target.upper() - target.page_size();
-    target.set_value(value.clamp(0.0, tgt_max));
+    let clamped = value.clamp(0.0, tgt_max);
+    if (clamped - target.value()).abs() > 0.5 {
+        target.set_value(clamped);
+    }
 }
+
 
 // ─── Unsaved-changes helpers ────────────────────────────────────────────────
 
