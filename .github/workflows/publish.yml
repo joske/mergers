@@ -165,6 +165,8 @@ jobs:
           export CARGO_HOME="$(pwd)/.cargo"
           export RUSTUP_HOME="$(pwd)/.rustup"
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-host ${{ matrix.rust_target }} --default-toolchain stable
+          export PATH="$(pwd)/.cargo/bin:$PATH"
+          rustup target add ${{ matrix.rust_target }}
       - name: Build release binary
         shell: msys2 {0}
         run: |
