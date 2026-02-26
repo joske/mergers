@@ -62,8 +62,11 @@ jobs:
       - name: Debug info
         shell: msys2 {0}
         run: |
+          export CARGO_HOME="$(pwd)/.cargo"
+          export RUSTUP_HOME="$(pwd)/.rustup"
           export PATH="$(pwd)/.cargo/bin:/$MSYSTEM/bin:/usr/bin"
           rustc -vV
+          rustup target list --installed
           cat .cargo/config.toml
           which gcc 2>/dev/null || true
           which clang 2>/dev/null || true
@@ -72,6 +75,8 @@ jobs:
       - name: Build release binary
         shell: msys2 {0}
         run: |
+          export CARGO_HOME="$(pwd)/.cargo"
+          export RUSTUP_HOME="$(pwd)/.rustup"
           # Use only MSYS2 paths to avoid picking up link.exe from Visual Studio
           export PATH="$(pwd)/.cargo/bin:/$MSYSTEM/bin:/usr/bin"
           export PKG_CONFIG_ALLOW_CROSS=1

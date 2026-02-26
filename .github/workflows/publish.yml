@@ -185,6 +185,8 @@ jobs:
       - name: Build release binary
         shell: msys2 {0}
         run: |
+          export CARGO_HOME="$(pwd)/.cargo"
+          export RUSTUP_HOME="$(pwd)/.rustup"
           # Use only MSYS2 paths to avoid picking up link.exe from Visual Studio
           export PATH="$(pwd)/.cargo/bin:/$MSYSTEM/bin:/usr/bin"
           export PKG_CONFIG_ALLOW_CROSS=1
