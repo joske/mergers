@@ -905,7 +905,17 @@ fn build_merge_view(
         let nav = navigate_merge_chunk;
         let upd = update_merge_label;
         prev_btn.connect_clicked(move |_| {
-            nav(&lch.borrow(), &rch.borrow(), &cur, -1, &mtv, &lb, &mb, &rb, &ms);
+            nav(
+                &lch.borrow(),
+                &rch.borrow(),
+                &cur,
+                -1,
+                &mtv,
+                &lb,
+                &mb,
+                &rb,
+                &ms,
+            );
             upd(&lbl, &lch.borrow(), &rch.borrow(), cur.get());
         });
     }
@@ -924,7 +934,17 @@ fn build_merge_view(
         let nav = navigate_merge_chunk;
         let upd = update_merge_label;
         next_btn.connect_clicked(move |_| {
-            nav(&lch.borrow(), &rch.borrow(), &cur, 1, &mtv, &lb, &mb, &rb, &ms);
+            nav(
+                &lch.borrow(),
+                &rch.borrow(),
+                &cur,
+                1,
+                &mtv,
+                &lb,
+                &mb,
+                &rb,
+                &ms,
+            );
             upd(&lbl, &lch.borrow(), &rch.borrow(), cur.get());
         });
     }
@@ -1556,7 +1576,17 @@ fn build_merge_view(
         let ms = middle_pane.scroll.clone();
         let lbl = chunk_label.clone();
         action.connect_activate(move |_, _| {
-            navigate_merge_chunk(&lch.borrow(), &rch.borrow(), &cur, -1, &mtv, &lb, &mb, &rb, &ms);
+            navigate_merge_chunk(
+                &lch.borrow(),
+                &rch.borrow(),
+                &cur,
+                -1,
+                &mtv,
+                &lb,
+                &mb,
+                &rb,
+                &ms,
+            );
             update_merge_label(&lbl, &lch.borrow(), &rch.borrow(), cur.get());
         });
         action_group.add_action(&action);
@@ -1573,7 +1603,17 @@ fn build_merge_view(
         let ms = middle_pane.scroll.clone();
         let lbl = chunk_label.clone();
         action.connect_activate(move |_, _| {
-            navigate_merge_chunk(&lch.borrow(), &rch.borrow(), &cur, 1, &mtv, &lb, &mb, &rb, &ms);
+            navigate_merge_chunk(
+                &lch.borrow(),
+                &rch.borrow(),
+                &cur,
+                1,
+                &mtv,
+                &lb,
+                &mb,
+                &rb,
+                &ms,
+            );
             update_merge_label(&lbl, &lch.borrow(), &rch.borrow(), cur.get());
         });
         action_group.add_action(&action);

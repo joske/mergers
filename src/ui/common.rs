@@ -1756,7 +1756,12 @@ pub(super) fn setup_scroll_sync(
             .connect_value_changed(move |adj| {
                 if !s.get() {
                     s.set(true);
-                    sync_adjustment_from(&ls.vadjustment(), adj.value(), adj.upper(), adj.page_size());
+                    sync_adjustment_from(
+                        &ls.vadjustment(),
+                        adj.value(),
+                        adj.upper(),
+                        adj.page_size(),
+                    );
                     g.queue_draw();
                     s.set(false);
                 }
@@ -1794,7 +1799,12 @@ pub(super) fn setup_scroll_sync(
 
 /// Proportional scroll sync using captured source values.
 /// Includes a threshold to avoid sub-pixel oscillation from floating-point rounding.
-pub(super) fn sync_adjustment_from(target: &Adjustment, src_val: f64, src_upper: f64, src_page: f64) {
+pub(super) fn sync_adjustment_from(
+    target: &Adjustment,
+    src_val: f64,
+    src_upper: f64,
+    src_page: f64,
+) {
     let src_max = src_upper - src_page;
     if src_max <= 0.0 {
         return;
@@ -1807,7 +1817,6 @@ pub(super) fn sync_adjustment_from(target: &Adjustment, src_val: f64, src_upper:
         target.set_value(clamped);
     }
 }
-
 
 // ─── Unsaved-changes helpers ────────────────────────────────────────────────
 
