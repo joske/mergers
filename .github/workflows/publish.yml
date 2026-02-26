@@ -124,3 +124,61 @@ jobs:
           TAG="${{ needs.checks.outputs.tag }}"
           gh release create "$TAG" --title "$TAG" --generate-notes 2>/dev/null || true
           gh release upload "$TAG" mergers-darwin-aarch64.tar.gz --clobber
+  homebrew:
+    needs: [checks, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine version
+        id: version
+        run: |
+          TAG="${{ needs.checks.outputs.tag }}"
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+      - name: Compute SHA256 checksum
+        id: sha
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          URL="https://github.com/joske/mergers/releases/download/${TAG}/mergers-darwin-aarch64.tar.gz"
+          SHA=$(curl -sL "$URL" | shasum -a 256 | cut -d' ' -f1)
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+      - name: Checkout tap repository
+        uses: actions/checkout@v6
+        with:
+          repository: joske/homebrew-mergers
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      - name: Update formula
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          SHA: ${{ steps.sha.outputs.sha }}
+        run: |
+          cat > Formula/mergers.rb << EOF
+          class Mergers < Formula
+            desc "Visual diff and merge tool written in Rust with GTK4"
+            homepage "https://github.com/joske/mergers"
+            version "${VERSION}"
+            license "GPL-2.0-only"
+            url "https://github.com/joske/mergers/releases/download/${TAG}/mergers-darwin-aarch64.tar.gz"
+            sha256 "${SHA}"
+
+            depends_on :macos
+            depends_on "gtk4"
+            depends_on "gtksourceview5"
+
+            def install
+              bin.install "mergers"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("\#{bin}/mergers --version")
+            end
+          end
+          EOF
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/mergers.rb
+          git commit -m "Update mergers to ${{ steps.version.outputs.tag }}"
+          git push
