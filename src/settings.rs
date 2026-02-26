@@ -41,6 +41,8 @@ impl Settings {
     pub fn config_path() -> PathBuf {
         let mut p = if let Some(config) = std::env::var_os("XDG_CONFIG_HOME") {
             PathBuf::from(config)
+        } else if let Some(appdata) = std::env::var_os("APPDATA") {
+            PathBuf::from(appdata)
         } else if let Some(home) = std::env::var_os("HOME") {
             PathBuf::from(home).join(".config")
         } else {
