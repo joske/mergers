@@ -165,6 +165,16 @@ jobs:
           export CARGO_HOME="$(pwd)/.cargo"
           export RUSTUP_HOME="$(pwd)/.rustup"
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-host ${{ matrix.rust_target }} --default-toolchain stable
+      - name: Configure cargo linker
+        shell: msys2 {0}
+        run: |
+          mkdir -p .cargo
+          cat > .cargo/config.toml << 'EOF'
+          [target.x86_64-pc-windows-gnu]
+          linker = "cc"
+          [target.aarch64-pc-windows-gnullvm]
+          linker = "cc"
+          EOF
       - name: Build release binary
         shell: msys2 {0}
         run: |
