@@ -140,6 +140,11 @@ jobs:
             package_prefix: mingw-w64-clang-aarch64
             rust_target: aarch64-pc-windows-gnullvm
             arch: aarch64
+          - runner: windows-11-arm
+            msystem: CLANGARM64
+            package_prefix: mingw-w64-clang-aarch64
+            rust_target: aarch64-pc-windows-gnullvm
+            arch: aarch64
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: write
@@ -165,21 +170,19 @@ jobs:
           export CARGO_HOME="$(pwd)/.cargo"
           export RUSTUP_HOME="$(pwd)/.rustup"
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-host ${{ matrix.rust_target }} --default-toolchain stable
-          export PATH="$(pwd)/.cargo/bin:$PATH"
-          rustup target add ${{ matrix.rust_target }}
       - name: Build release binary
         shell: msys2 {0}
         run: |
           export PATH="$(pwd)/.cargo/bin:$PATH"
           export PKG_CONFIG_ALLOW_CROSS=1
-          cargo build --release --target ${{ matrix.rust_target }}
+          cargo build --release
       - name: Bundle binary with DLLs
         shell: msys2 {0}
         run: |
           mkdir -p dist
-          cp target/${{ matrix.rust_target }}/release/mergers.exe dist/
+          cp target/release/mergers.exe dist/
           # Copy all required DLLs from MSYS2
-          ldd target/${{ matrix.rust_target }}/release/mergers.exe | grep -i "$MSYSTEM" | awk '{print $3}' | xargs -I{} cp {} dist/
+          ldd target/release/mergers.exe | grep -i "$MSYSTEM" | awk '{print $3}' | xargs -I{} cp {} dist/
           # Copy GtkSourceView language specs and styles
           mkdir -p dist/share
           cp -r /$MSYSTEM/share/gtksourceview-5 dist/share/gtksourceview-5
