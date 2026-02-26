@@ -134,11 +134,15 @@ jobs:
             msystem: UCRT64
             package_prefix: mingw-w64-ucrt-x86_64
             rust_target: x86_64-pc-windows-gnu
+            cargo_target_flag: "--target x86_64-pc-windows-gnu"
+            binary_path: target/x86_64-pc-windows-gnu/release/mergers.exe
             arch: x86_64
           - runner: windows-11-arm
             msystem: CLANGARM64
             package_prefix: mingw-w64-clang-aarch64
             rust_target: aarch64-pc-windows-gnullvm
+            cargo_target_flag: ""
+            binary_path: target/release/mergers.exe
             arch: aarch64
     runs-on: ${{ matrix.runner }}
     permissions:
@@ -169,25 +173,20 @@ jobs:
         shell: msys2 {0}
         run: |
           mkdir -p .cargo
-          cat > .cargo/config.toml << 'EOF'
-          [target.x86_64-pc-windows-gnu]
-          linker = "cc"
-          [target.aarch64-pc-windows-gnullvm]
-          linker = "cc"
-          EOF
+          printf '[target.x86_64-pc-windows-gnu]\nlinker = "cc"\n[target.aarch64-pc-windows-gnullvm]\nlinker = "cc"\n' > .cargo/config.toml
       - name: Build release binary
         shell: msys2 {0}
         run: |
           export PATH="$(pwd)/.cargo/bin:$PATH"
           export PKG_CONFIG_ALLOW_CROSS=1
-          cargo build --release
+          cargo build --release ${{ matrix.cargo_target_flag }}
       - name: Bundle binary with DLLs
         shell: msys2 {0}
         run: |
           mkdir -p dist
-          cp target/release/mergers.exe dist/
+          cp ${{ matrix.binary_path }} dist/
           # Copy all required DLLs from MSYS2
-          ldd target/release/mergers.exe | grep -i "$MSYSTEM" | awk '{print $3}' | xargs -I{} cp {} dist/
+          ldd ${{ matrix.binary_path }} | grep -i "$MSYSTEM" | awk '{print $3}' | xargs -I{} cp {} dist/
           # Copy GtkSourceView language specs and styles
           mkdir -p dist/share
           cp -r /$MSYSTEM/share/gtksourceview-5 dist/share/gtksourceview-5
