@@ -298,35 +298,41 @@ fn build_merge_view(
                 &ms,
                 area,
                 &ch.borrow(),
+                &GutterArrows::LeftToRight,
             );
         });
     }
 
-    // Left gutter click: → copies left→middle, ← copies middle→left
+    // Left gutter click: → copies left→middle only (left is read-only)
     {
         let gesture = GestureClick::new();
         let ltv = left_pane.text_view.clone();
-        let mtv = middle_pane.text_view.clone();
         let lb = left_buf.clone();
         let mb = middle_buf.clone();
         let ls = left_pane.scroll.clone();
-        let ms = middle_pane.scroll.clone();
         let ch = left_chunks.clone();
         let g = left_gutter.clone();
-        gesture.connect_pressed(move |_, _, x, y| {
-            handle_gutter_click(
-                x,
-                y,
-                g.width() as f64,
-                &ltv,
-                &mtv,
-                &lb,
-                &mb,
-                &ls,
-                &ms,
-                &g,
-                &ch,
-            );
+        gesture.connect_pressed(move |_, _, _x, y| {
+            let snapshot: Vec<DiffChunk> = ch.borrow().clone();
+            for chunk in &snapshot {
+                if chunk.tag == DiffTag::Equal {
+                    continue;
+                }
+                let lt = line_to_gutter_y(&ltv, &lb, chunk.start_a, &ls, &g);
+                let lbot = line_to_gutter_y(&ltv, &lb, chunk.end_a, &ls, &g);
+                let mid = f64::midpoint(lt, lbot);
+                if (y - mid).abs() < 12.0 {
+                    copy_chunk(
+                        &lb,
+                        chunk.start_a,
+                        chunk.end_a,
+                        &mb,
+                        chunk.start_b,
+                        chunk.end_b,
+                    );
+                    return;
+                }
+            }
         });
         left_gutter.add_controller(gesture);
     }
@@ -351,32 +357,12 @@ fn build_merge_view(
             });
             lg_ctx.add_action(&action);
         }
-        {
-            let action = gio::SimpleAction::new("copy-middle-left", None);
-            let pc = lg_pending.clone();
-            let ch = left_chunks.clone();
-            let lb = left_buf.clone();
-            let mb = middle_buf.clone();
-            action.connect_activate(move |_, _| {
-                if let Some(idx) = pc.get() {
-                    let s = ch.borrow();
-                    if let Some(c) = s.get(idx) {
-                        copy_chunk(&mb, c.start_b, c.end_b, &lb, c.start_a, c.end_a);
-                    }
-                }
-            });
-            lg_ctx.add_action(&action);
-        }
         left_gutter.insert_action_group("lgutter", Some(&lg_ctx));
 
         let lg_menu = gio::Menu::new();
         lg_menu.append(
             Some("Copy Left \u{2192} Middle"),
             Some("lgutter.copy-left-middle"),
-        );
-        lg_menu.append(
-            Some("Copy Middle \u{2192} Left"),
-            Some("lgutter.copy-middle-left"),
         );
         let lg_popover = PopoverMenu::from_model(Some(&lg_menu));
         lg_popover.set_parent(&left_gutter);
@@ -442,35 +428,41 @@ fn build_merge_view(
                 &rs,
                 area,
                 &ch.borrow(),
+                &GutterArrows::RightToLeft,
             );
         });
     }
 
-    // Right gutter click: → copies middle→right, ← copies right→middle
+    // Right gutter click: ← copies right→middle only (right is read-only)
     {
         let gesture = GestureClick::new();
-        let mtv = middle_pane.text_view.clone();
         let rtv = right_pane.text_view.clone();
         let mb = middle_buf.clone();
         let rb = right_buf.clone();
-        let ms = middle_pane.scroll.clone();
         let rs = right_pane.scroll.clone();
         let ch = right_chunks.clone();
         let g = right_gutter.clone();
-        gesture.connect_pressed(move |_, _, x, y| {
-            handle_gutter_click(
-                x,
-                y,
-                g.width() as f64,
-                &mtv,
-                &rtv,
-                &mb,
-                &rb,
-                &ms,
-                &rs,
-                &g,
-                &ch,
-            );
+        gesture.connect_pressed(move |_, _, _x, y| {
+            let snapshot: Vec<DiffChunk> = ch.borrow().clone();
+            for chunk in &snapshot {
+                if chunk.tag == DiffTag::Equal {
+                    continue;
+                }
+                let rt = line_to_gutter_y(&rtv, &rb, chunk.start_b, &rs, &g);
+                let rbot = line_to_gutter_y(&rtv, &rb, chunk.end_b, &rs, &g);
+                let mid = f64::midpoint(rt, rbot);
+                if (y - mid).abs() < 12.0 {
+                    copy_chunk(
+                        &rb,
+                        chunk.start_b,
+                        chunk.end_b,
+                        &mb,
+                        chunk.start_a,
+                        chunk.end_a,
+                    );
+                    return;
+                }
+            }
         });
         right_gutter.add_controller(gesture);
     }
@@ -479,22 +471,6 @@ fn build_merge_view(
     {
         let rg_pending: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
         let rg_ctx = gio::SimpleActionGroup::new();
-        {
-            let action = gio::SimpleAction::new("copy-middle-right", None);
-            let pc = rg_pending.clone();
-            let ch = right_chunks.clone();
-            let mb = middle_buf.clone();
-            let rb = right_buf.clone();
-            action.connect_activate(move |_, _| {
-                if let Some(idx) = pc.get() {
-                    let s = ch.borrow();
-                    if let Some(c) = s.get(idx) {
-                        copy_chunk(&mb, c.start_a, c.end_a, &rb, c.start_b, c.end_b);
-                    }
-                }
-            });
-            rg_ctx.add_action(&action);
-        }
         {
             let action = gio::SimpleAction::new("copy-right-middle", None);
             let pc = rg_pending.clone();
@@ -514,10 +490,6 @@ fn build_merge_view(
         right_gutter.insert_action_group("rgutter", Some(&rg_ctx));
 
         let rg_menu = gio::Menu::new();
-        rg_menu.append(
-            Some("Copy Middle \u{2192} Right"),
-            Some("rgutter.copy-middle-right"),
-        );
         rg_menu.append(
             Some("Copy Right \u{2192} Middle"),
             Some("rgutter.copy-right-middle"),

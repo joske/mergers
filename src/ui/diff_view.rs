@@ -116,6 +116,7 @@ pub(super) fn build_diff_view(
                 &rs,
                 area,
                 &ch.borrow(),
+                &GutterArrows::Both,
             );
         });
     }
@@ -1275,13 +1276,22 @@ pub(super) fn open_file_diff(
     let page_num = notebook.append_page(&dv.widget, Some(&tab_label_box));
     notebook.set_current_page(Some(page_num));
 
-    let nb = notebook.clone();
-    let w = dv.widget.clone();
-    let tabs = open_tabs.clone();
-    close_btn.connect_clicked(move |_| {
-        if let Some(n) = nb.page_num(&w) {
-            nb.remove_page(Some(n));
-        }
-        tabs.borrow_mut().retain(|t| t.id != tab_id);
-    });
+    {
+        let nb = notebook.clone();
+        let w = dv.widget.clone();
+        let tabs = open_tabs.clone();
+        close_btn.connect_clicked(move |_| {
+            if let Some(n) = nb.page_num(&w) {
+                let win = nb
+                    .root()
+                    .and_then(|r| r.downcast::<ApplicationWindow>().ok());
+                if let Some(win) = win {
+                    close_notebook_tab(&win, &nb, &tabs, n);
+                } else {
+                    nb.remove_page(Some(n));
+                    tabs.borrow_mut().retain(|t| t.id != tab_id);
+                }
+            }
+        });
+    }
 }

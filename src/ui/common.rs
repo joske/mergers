@@ -1084,6 +1084,17 @@ pub(super) fn line_to_gutter_y(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Which copy arrows to draw on a gutter.
+pub(super) enum GutterArrows {
+    /// Both left→right (→) and right→left (←).
+    Both,
+    /// Only the left→right (→) arrow.
+    LeftToRight,
+    /// Only the right→left (←) arrow.
+    RightToLeft,
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) fn draw_gutter(
     cr: &gtk4::cairo::Context,
     width: f64,
@@ -1095,6 +1106,7 @@ pub(super) fn draw_gutter(
     right_scroll: &ScrolledWindow,
     gutter: &DrawingArea,
     chunks: &[DiffChunk],
+    arrows: &GutterArrows,
 ) {
     for chunk in chunks {
         if chunk.tag == DiffTag::Equal {
@@ -1124,8 +1136,12 @@ pub(super) fn draw_gutter(
         // Edge-aligned arrows (meld style)
         let left_mid = f64::midpoint(lt, lb);
         let right_mid = f64::midpoint(rt, rb);
-        draw_edge_arrow(cr, 2.0, left_mid, true, r, g, b);
-        draw_edge_arrow(cr, width - 2.0, right_mid, false, r, g, b);
+        if matches!(arrows, GutterArrows::Both | GutterArrows::LeftToRight) {
+            draw_edge_arrow(cr, 2.0, left_mid, true, r, g, b);
+        }
+        if matches!(arrows, GutterArrows::Both | GutterArrows::RightToLeft) {
+            draw_edge_arrow(cr, width - 2.0, right_mid, false, r, g, b);
+        }
     }
 }
 
