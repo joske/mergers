@@ -3,6 +3,8 @@ use super::*;
 
 // ─── Shared diff view construction ─────────────────────────────────────────
 
+type SwapCallback = Rc<RefCell<Option<Box<dyn Fn()>>>>;
+
 pub(super) struct DiffViewResult {
     pub(super) widget: GtkBox,
     pub(super) left_buf: TextBuffer,
@@ -10,6 +12,7 @@ pub(super) struct DiffViewResult {
     pub(super) left_save: Button,
     pub(super) right_save: Button,
     pub(super) action_group: gio::SimpleActionGroup,
+    pub(super) swap_callback: SwapCallback,
 }
 
 /// Build a complete diff view widget for two files.
@@ -413,6 +416,7 @@ pub(super) fn build_diff_view(
     toolbar.append(&prefs_btn);
 
     // Swap panes: swap buffer text + labels + save paths, re-diff happens via connect_changed
+    let swap_callback: SwapCallback = Rc::new(RefCell::new(None));
     {
         let lb = left_buf.clone();
         let rb = right_buf.clone();
@@ -420,16 +424,32 @@ pub(super) fn build_diff_view(
         let rl = right_pane.path_label.clone();
         let lsp = left_pane.save_path.clone();
         let rsp = right_pane.save_path.clone();
+        let ls = left_pane.save_btn.clone();
+        let rs = right_pane.save_btn.clone();
+        let cb = swap_callback.clone();
         swap_btn.connect_clicked(move |_| {
+            // Preserve unsaved-state before set_text triggers connect_changed
+            let l_dirty = ls.is_sensitive();
+            let r_dirty = rs.is_sensitive();
             let lt = lb.text(&lb.start_iter(), &lb.end_iter(), false).to_string();
             let rt = rb.text(&rb.start_iter(), &rb.end_iter(), false).to_string();
             lb.set_text(&rt);
             rb.set_text(&lt);
+            // Restore swapped dirty state (left gets right's, right gets left's)
+            ls.set_sensitive(r_dirty);
+            rs.set_sensitive(l_dirty);
             let ll_text = ll.text().to_string();
             let rl_text = rl.text().to_string();
             ll.set_text(&rl_text);
             rl.set_text(&ll_text);
+            let ll_tip = ll.tooltip_text().map(|s| s.to_string());
+            let rl_tip = rl.tooltip_text().map(|s| s.to_string());
+            ll.set_tooltip_text(rl_tip.as_deref());
+            rl.set_tooltip_text(ll_tip.as_deref());
             std::mem::swap(&mut *lsp.borrow_mut(), &mut *rsp.borrow_mut());
+            if let Some(f) = cb.borrow().as_ref() {
+                f();
+            }
         });
     }
 
@@ -1177,6 +1197,7 @@ pub(super) fn build_diff_view(
         left_save: left_pane.save_btn,
         right_save: right_pane.save_btn,
         action_group,
+        swap_callback,
     }
 }
 
@@ -1232,6 +1253,24 @@ pub(super) fn open_file_diff(
     close_btn.set_has_frame(false);
     tab_label_box.append(&label);
     tab_label_box.append(&close_btn);
+
+    // Update tab label when panes are swapped
+    {
+        let lbl = label.clone();
+        let ln = left_dir_name;
+        let rn = right_dir_name;
+        let fn_ = file_name;
+        let swapped = Rc::new(Cell::new(false));
+        *dv.swap_callback.borrow_mut() = Some(Box::new(move || {
+            let s = !swapped.get();
+            swapped.set(s);
+            if s {
+                lbl.set_text(&format!("[{rn}] {fn_} — [{ln}] {fn_}"));
+            } else {
+                lbl.set_text(&format!("[{ln}] {fn_} — [{rn}] {fn_}"));
+            }
+        }));
+    }
 
     let page_num = notebook.append_page(&dv.widget, Some(&tab_label_box));
     notebook.set_current_page(Some(page_num));

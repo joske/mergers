@@ -1009,6 +1009,8 @@ pub(super) fn make_diff_pane(
     save_btn.set_sensitive(false);
     let display_name = label_override.map_or_else(|| shortened_path(file_path), String::from);
     let path_label = Label::new(Some(&display_name));
+    path_label.set_tooltip_text(Some(&file_path.display().to_string()));
+    path_label.set_ellipsize(gtk4::pango::EllipsizeMode::Start);
     path_label.set_hexpand(true);
     path_label.set_halign(gtk4::Align::Center);
     header.append(&save_btn);
