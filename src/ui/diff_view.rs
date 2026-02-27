@@ -1221,12 +1221,14 @@ pub(super) fn open_file_diff(
 
     // Track tab
     let tab_id = NEXT_TAB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tab_left_path = Rc::new(RefCell::new(left_path.display().to_string()));
+    let tab_right_path = Rc::new(RefCell::new(right_path.display().to_string()));
     open_tabs.borrow_mut().push(FileTab {
         id: tab_id,
         rel_path: rel_path.to_string(),
         widget: dv.widget.clone(),
-        left_path: left_path.display().to_string(),
-        right_path: right_path.display().to_string(),
+        left_path: tab_left_path.clone(),
+        right_path: tab_right_path.clone(),
         left_buf: dv.left_buf,
         right_buf: dv.right_buf,
         left_save: dv.left_save,
@@ -1255,13 +1257,15 @@ pub(super) fn open_file_diff(
     tab_label_box.append(&label);
     tab_label_box.append(&close_btn);
 
-    // Update tab label when panes are swapped
+    // Update tab label and FileTab paths when panes are swapped
     {
         let lbl = label.clone();
         let ln = left_dir_name;
         let rn = right_dir_name;
         let fn_ = file_name;
         let swapped = Rc::new(Cell::new(false));
+        let tlp = tab_left_path;
+        let trp = tab_right_path;
         *dv.swap_callback.borrow_mut() = Some(Box::new(move || {
             let s = !swapped.get();
             swapped.set(s);
@@ -1270,6 +1274,7 @@ pub(super) fn open_file_diff(
             } else {
                 lbl.set_text(&format!("[{ln}] {fn_} — [{rn}] {fn_}"));
             }
+            std::mem::swap(&mut *tlp.borrow_mut(), &mut *trp.borrow_mut());
         }));
     }
 

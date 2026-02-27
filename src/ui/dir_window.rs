@@ -562,9 +562,36 @@ pub(super) fn build_dir_window(
             });
     }
 
+    // Directory path headers above each pane
+    let left_header = Label::new(Some(&shortened_path(Path::new(&*left_dir.borrow()))));
+    left_header.set_tooltip_text(Some(&*left_dir.borrow()));
+    left_header.set_ellipsize(gtk4::pango::EllipsizeMode::Start);
+    left_header.set_hexpand(true);
+    left_header.set_margin_start(6);
+    left_header.set_margin_end(6);
+    left_header.set_margin_top(4);
+    left_header.set_margin_bottom(4);
+    let right_header = Label::new(Some(&shortened_path(Path::new(&*right_dir.borrow()))));
+    right_header.set_tooltip_text(Some(&*right_dir.borrow()));
+    right_header.set_ellipsize(gtk4::pango::EllipsizeMode::Start);
+    right_header.set_hexpand(true);
+    right_header.set_margin_start(6);
+    right_header.set_margin_end(6);
+    right_header.set_margin_top(4);
+    right_header.set_margin_bottom(4);
+
+    let left_pane_box = GtkBox::new(Orientation::Vertical, 0);
+    left_pane_box.append(&left_header);
+    left_scroll.set_vexpand(true);
+    left_pane_box.append(&left_scroll);
+    let right_pane_box = GtkBox::new(Orientation::Vertical, 0);
+    right_pane_box.append(&right_header);
+    right_scroll.set_vexpand(true);
+    right_pane_box.append(&right_scroll);
+
     let dir_paned = Paned::new(Orientation::Horizontal);
-    dir_paned.set_start_child(Some(&left_scroll));
-    dir_paned.set_end_child(Some(&right_scroll));
+    dir_paned.set_start_child(Some(&left_pane_box));
+    dir_paned.set_end_child(Some(&right_pane_box));
 
     // ── Directory toolbar with copy buttons ───────────────────────
     let copy_left_btn = Button::from_icon_name("go-previous-symbolic");
@@ -734,10 +761,29 @@ pub(super) fn build_dir_window(
         let ld = left_dir.clone();
         let rd = right_dir.clone();
         let reload = reload_dir.clone();
-        dir_swap_btn.connect_clicked(move |_| {
+        let lh = left_header.clone();
+        let rh = right_header.clone();
+        dir_swap_btn.connect_clicked(move |btn| {
             let tmp = ld.borrow().clone();
             (*ld.borrow_mut()).clone_from(&rd.borrow());
             *rd.borrow_mut() = tmp;
+            lh.set_text(&shortened_path(Path::new(&*ld.borrow())));
+            lh.set_tooltip_text(Some(&*ld.borrow()));
+            rh.set_text(&shortened_path(Path::new(&*rd.borrow())));
+            rh.set_tooltip_text(Some(&*rd.borrow()));
+            // Update window title
+            if let Some(win) = btn
+                .root()
+                .and_then(|r| r.downcast::<ApplicationWindow>().ok())
+            {
+                let ln = Path::new(ld.borrow().as_str())
+                    .file_name()
+                    .map_or_else(|| ld.borrow().clone(), |n| n.to_string_lossy().into_owned());
+                let rn = Path::new(rd.borrow().as_str())
+                    .file_name()
+                    .map_or_else(|| rd.borrow().clone(), |n| n.to_string_lossy().into_owned());
+                win.set_title(Some(&format!("{ln} — {rn}")));
+            }
             reload();
         });
     }
@@ -1115,7 +1161,7 @@ pub(super) fn build_dir_window(
             let tm = tree_model.clone();
             let v = view.clone();
             gesture.connect_pressed(move |_, _, x, y| {
-                if let Some(pos) = column_view_row_at_y(&v, y, tm.n_items()) {
+                if let Some(pos) = column_view_row_at_y(&v, x, y, tm.n_items()) {
                     sel.set_selected(pos);
                 }
                 if let Some(raw) = get_row() {

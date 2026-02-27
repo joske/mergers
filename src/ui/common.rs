@@ -38,8 +38,8 @@ pub(super) struct FileTab {
     pub(super) id: u64,
     pub(super) rel_path: String,
     pub(super) widget: GtkBox,
-    pub(super) left_path: String,
-    pub(super) right_path: String,
+    pub(super) left_path: Rc<RefCell<String>>,
+    pub(super) right_path: Rc<RefCell<String>>,
     pub(super) left_buf: TextBuffer,
     pub(super) right_buf: TextBuffer,
     pub(super) left_save: Button,
@@ -891,46 +891,37 @@ pub(super) fn apply_inline_tags(left_buf: &TextBuffer, right_buf: &TextBuffer, c
 }
 
 /// Compute the row index at a given y-coordinate in a `ColumnView`.
-/// Returns `None` if the y position is outside the row area.
-pub(super) fn column_view_row_at_y(view: &ColumnView, y: f64, n_items: u32) -> Option<u32> {
+/// Uses `pick()` to find the widget under the cursor, then walks
+/// up to the row widget and counts siblings to determine position.
+pub(super) fn column_view_row_at_y(view: &ColumnView, x: f64, y: f64, n_items: u32) -> Option<u32> {
     if n_items == 0 {
         return None;
     }
-    // The header is the first child of the ColumnView
-    let header_height = view.first_child().map_or(0.0, |h| h.height() as f64);
-    if y < header_height {
-        return None;
-    }
-    // Find ancestor ScrolledWindow (ColumnView → Viewport → ScrolledWindow)
-    let sw = {
-        let mut w: Option<gtk4::Widget> = view.parent();
-        loop {
-            match w {
-                Some(widget) => {
-                    if let Ok(sw) = widget.clone().downcast::<ScrolledWindow>() {
-                        break Some(sw);
-                    }
-                    w = widget.parent();
+    // Pick the widget at the click point
+    let picked = view.pick(x, y, gtk4::PickFlags::DEFAULT)?;
+    // Walk up from the picked widget until we find one whose parent
+    // is a direct child of the ColumnView (the list area container).
+    // Row widgets are children of that container.
+    let mut widget = picked;
+    loop {
+        let parent = widget.parent()?;
+        let grandparent = parent.parent()?;
+        if grandparent == *view.upcast_ref::<gtk4::Widget>() {
+            // `parent` is a direct child of the ColumnView (the list container),
+            // and `widget` is a row inside it. Count preceding siblings.
+            let mut pos = 0u32;
+            let mut sibling = parent.first_child();
+            while let Some(s) = sibling {
+                if s == widget {
+                    return if pos < n_items { Some(pos) } else { None };
                 }
-                None => break None,
+                pos += 1;
+                sibling = s.next_sibling();
             }
-        }
-    };
-    let row_height = if let Some(sw) = sw {
-        let upper = sw.vadjustment().upper();
-        if upper > 0.0 && n_items > 0 {
-            (upper - header_height) / n_items as f64
-        } else {
             return None;
         }
-    } else {
-        return None;
-    };
-    if row_height <= 0.0 {
-        return None;
+        widget = parent;
     }
-    let pos = ((y - header_height) / row_height) as u32;
-    if pos < n_items { Some(pos) } else { None }
 }
 
 pub(super) fn make_info_bar(message: &str) -> GtkBox {
@@ -1825,8 +1816,8 @@ pub(super) fn close_notebook_tab(
         if notebook.page_num(&t.widget) == Some(page) {
             Some((
                 t.id,
-                t.left_path.clone(),
-                t.right_path.clone(),
+                t.left_path.borrow().clone(),
+                t.right_path.borrow().clone(),
                 t.left_save.clone(),
                 t.right_save.clone(),
             ))
@@ -1871,10 +1862,10 @@ pub(super) fn handle_notebook_close_request(
         .flat_map(|t| {
             let mut v = Vec::new();
             if t.left_save.is_sensitive() {
-                v.push((t.left_path.clone(), t.left_save.clone()));
+                v.push((t.left_path.borrow().clone(), t.left_save.clone()));
             }
             if t.right_save.is_sensitive() {
-                v.push((t.right_path.clone(), t.right_save.clone()));
+                v.push((t.right_path.borrow().clone(), t.right_save.clone()));
             }
             v
         })
