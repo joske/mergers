@@ -694,6 +694,22 @@ fn build_merge_view(
 
     let current_conflict: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
 
+    // Reset tracked chunk/conflict on focus change so navigation seeks from cursor
+    for tv in [
+        &left_pane.text_view,
+        &middle_pane.text_view,
+        &right_pane.text_view,
+    ] {
+        let cc = current_chunk.clone();
+        let ccf = current_conflict.clone();
+        let fc = EventControllerFocus::new();
+        fc.connect_enter(move |_| {
+            cc.set(None);
+            ccf.set(None);
+        });
+        tv.add_controller(fc);
+    }
+
     // Undo/Redo buttons
     let undo_btn = Button::from_icon_name("edit-undo-symbolic");
     undo_btn.set_tooltip_text(Some("Undo (Ctrl+Z)"));

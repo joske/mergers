@@ -242,6 +242,16 @@ pub(super) fn build_diff_view(
     // ── Toolbar with chunk navigation ───────────────────────────
     let current_chunk: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
 
+    // Reset tracked chunk on focus change so navigation seeks from cursor
+    for tv in [&left_pane.text_view, &right_pane.text_view] {
+        let cc = current_chunk.clone();
+        let fc = EventControllerFocus::new();
+        fc.connect_enter(move |_| {
+            cc.set(None);
+        });
+        tv.add_controller(fc);
+    }
+
     // ── Filler overlay drawing ──────────────────────────────────
     {
         let ltv = left_pane.text_view.clone();
