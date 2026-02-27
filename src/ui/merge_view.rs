@@ -841,14 +841,22 @@ fn build_merge_view(
                     lch[idx].start_b
                 }
             };
+            // Middle-file end line for each entry (exclusive)
+            let middle_end = |&(idx, is_right): &(usize, bool)| -> usize {
+                if is_right {
+                    rch[idx].end_a
+                } else {
+                    lch[idx].end_b
+                }
+            };
             if direction > 0 {
                 all.iter()
-                    .find(|e| middle_line(e) >= cursor_line)
+                    .find(|e| middle_line(e) > cursor_line)
                     .or(all.first())
             } else {
                 all.iter()
                     .rev()
-                    .find(|e| middle_line(e) <= cursor_line)
+                    .find(|e| middle_end(e) <= cursor_line)
                     .or(all.last())
             }
         };
@@ -1037,13 +1045,13 @@ fn build_merge_view(
                 if direction > 0 {
                     markers
                         .iter()
-                        .find(|&&l| l >= cursor_line)
+                        .find(|&&l| l > cursor_line)
                         .or(markers.first())
                 } else {
                     markers
                         .iter()
                         .rev()
-                        .find(|&&l| l <= cursor_line)
+                        .find(|&&l| l < cursor_line)
                         .or(markers.last())
                 }
             }

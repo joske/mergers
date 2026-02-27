@@ -1473,17 +1473,17 @@ fn chunk_near_cursor<'a>(
     direction: i32,
 ) -> Option<&'a usize> {
     if direction > 0 {
-        // First chunk whose start_a >= cursor_line, else wrap to first
+        // First chunk that starts strictly after cursor, else wrap to first
         non_equal
             .iter()
-            .find(|&&i| chunks[i].start_a >= cursor_line)
+            .find(|&&i| chunks[i].start_a > cursor_line)
             .or(non_equal.first())
     } else {
-        // Last chunk whose start_a <= cursor_line, else wrap to last
+        // Last chunk that ends at or before cursor, else wrap to last
         non_equal
             .iter()
             .rev()
-            .find(|&&i| chunks[i].start_a <= cursor_line)
+            .find(|&&i| chunks[i].end_a <= cursor_line)
             .or(non_equal.last())
     }
 }
