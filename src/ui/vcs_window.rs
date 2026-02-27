@@ -189,8 +189,8 @@ fn open_vcs_diff(
         id: tab_id,
         rel_path: rel_path.to_string(),
         widget: dv.widget.clone(),
-        left_path: left_path.display().to_string(),
-        right_path: right_path.display().to_string(),
+        left_path: Rc::new(RefCell::new(left_path.display().to_string())),
+        right_path: Rc::new(RefCell::new(right_path.display().to_string())),
         left_buf: dv.left_buf,
         right_buf: dv.right_buf,
         left_save: dv.left_save,
@@ -214,15 +214,24 @@ fn open_vcs_diff(
     let page_num = notebook.append_page(&dv.widget, Some(&tab_label_box));
     notebook.set_current_page(Some(page_num));
 
-    let nb = notebook.clone();
-    let w = dv.widget.clone();
-    let tabs = open_tabs.clone();
-    close_btn.connect_clicked(move |_| {
-        if let Some(n) = nb.page_num(&w) {
-            nb.remove_page(Some(n));
-        }
-        tabs.borrow_mut().retain(|t| t.id != tab_id);
-    });
+    {
+        let nb = notebook.clone();
+        let w = dv.widget.clone();
+        let tabs = open_tabs.clone();
+        close_btn.connect_clicked(move |_| {
+            if let Some(n) = nb.page_num(&w) {
+                let win = nb
+                    .root()
+                    .and_then(|r| r.downcast::<ApplicationWindow>().ok());
+                if let Some(win) = win {
+                    close_notebook_tab(&win, &nb, &tabs, n);
+                } else {
+                    nb.remove_page(Some(n));
+                    tabs.borrow_mut().retain(|t| t.id != tab_id);
+                }
+            }
+        });
+    }
 }
 
 pub(super) fn build_vcs_window(
@@ -558,7 +567,12 @@ pub(super) fn build_vcs_window(
             .and_downcast::<gio::SimpleAction>()
             .unwrap();
         let pop = vcs_popover.clone();
+        let v = view.clone();
+        let st = store.clone();
         gesture.connect_pressed(move |_, _, x, y| {
+            if let Some(pos) = column_view_row_at_y(&v, x, y, st.n_items()) {
+                s.set_selected(pos);
+            }
             if let Some(item) = s.selected_item() {
                 let obj = item.downcast::<StringObject>().unwrap();
                 let raw = obj.string();

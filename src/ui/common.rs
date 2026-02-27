@@ -38,8 +38,8 @@ pub(super) struct FileTab {
     pub(super) id: u64,
     pub(super) rel_path: String,
     pub(super) widget: GtkBox,
-    pub(super) left_path: String,
-    pub(super) right_path: String,
+    pub(super) left_path: Rc<RefCell<String>>,
+    pub(super) right_path: Rc<RefCell<String>>,
     pub(super) left_buf: TextBuffer,
     pub(super) right_buf: TextBuffer,
     pub(super) left_save: Button,
@@ -890,6 +890,40 @@ pub(super) fn apply_inline_tags(left_buf: &TextBuffer, right_buf: &TextBuffer, c
     }
 }
 
+/// Compute the row index at a given y-coordinate in a `ColumnView`.
+/// Uses `pick()` to find the widget under the cursor, then walks
+/// up to the row widget and counts siblings to determine position.
+pub(super) fn column_view_row_at_y(view: &ColumnView, x: f64, y: f64, n_items: u32) -> Option<u32> {
+    if n_items == 0 {
+        return None;
+    }
+    // Pick the widget at the click point
+    let picked = view.pick(x, y, gtk4::PickFlags::DEFAULT)?;
+    // Walk up from the picked widget until we find one whose parent
+    // is a direct child of the ColumnView (the list area container).
+    // Row widgets are children of that container.
+    let mut widget = picked;
+    loop {
+        let parent = widget.parent()?;
+        let grandparent = parent.parent()?;
+        if grandparent == *view.upcast_ref::<gtk4::Widget>() {
+            // `parent` is a direct child of the ColumnView (the list container),
+            // and `widget` is a row inside it. Count preceding siblings.
+            let mut pos = 0u32;
+            let mut sibling = parent.first_child();
+            while let Some(s) = sibling {
+                if s == widget {
+                    return if pos < n_items { Some(pos) } else { None };
+                }
+                pos += 1;
+                sibling = s.next_sibling();
+            }
+            return None;
+        }
+        widget = parent;
+    }
+}
+
 pub(super) fn make_info_bar(message: &str) -> GtkBox {
     let bar = GtkBox::new(Orientation::Horizontal, 8);
     bar.add_css_class("info-bar");
@@ -923,6 +957,7 @@ pub(super) struct DiffPane {
     pub(super) filler_overlay: DrawingArea,
     pub(super) save_btn: Button,
     pub(super) path_label: Label,
+    pub(super) save_path: Rc<RefCell<PathBuf>>,
 }
 
 pub(super) fn make_diff_pane(
@@ -965,6 +1000,8 @@ pub(super) fn make_diff_pane(
     save_btn.set_sensitive(false);
     let display_name = label_override.map_or_else(|| shortened_path(file_path), String::from);
     let path_label = Label::new(Some(&display_name));
+    path_label.set_tooltip_text(Some(&file_path.display().to_string()));
+    path_label.set_ellipsize(gtk4::pango::EllipsizeMode::Start);
     path_label.set_hexpand(true);
     path_label.set_halign(gtk4::Align::Center);
     header.append(&save_btn);
@@ -979,11 +1016,12 @@ pub(super) fn make_diff_pane(
     }
 
     let buf_clone = buf.clone();
-    let path_owned = file_path.to_path_buf();
+    let save_path = Rc::new(RefCell::new(file_path.to_path_buf()));
+    let save_path_clone = save_path.clone();
     let save_btn_ref = save_btn.clone();
     save_btn.connect_clicked(move |_| {
         let text = buf_clone.text(&buf_clone.start_iter(), &buf_clone.end_iter(), false);
-        save_file(&path_owned, text.as_str(), &save_btn_ref);
+        save_file(&save_path_clone.borrow(), text.as_str(), &save_btn_ref);
     });
 
     let filler_overlay = DrawingArea::new();
@@ -1007,6 +1045,7 @@ pub(super) fn make_diff_pane(
         filler_overlay,
         save_btn,
         path_label,
+        save_path,
     }
 }
 
@@ -1036,6 +1075,17 @@ pub(super) fn line_to_gutter_y(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Which copy arrows to draw on a gutter.
+pub(super) enum GutterArrows {
+    /// Both left→right (→) and right→left (←).
+    Both,
+    /// Only the left→right (→) arrow.
+    LeftToRight,
+    /// Only the right→left (←) arrow.
+    RightToLeft,
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) fn draw_gutter(
     cr: &gtk4::cairo::Context,
     width: f64,
@@ -1047,6 +1097,7 @@ pub(super) fn draw_gutter(
     right_scroll: &ScrolledWindow,
     gutter: &DrawingArea,
     chunks: &[DiffChunk],
+    arrows: &GutterArrows,
 ) {
     for chunk in chunks {
         if chunk.tag == DiffTag::Equal {
@@ -1076,8 +1127,12 @@ pub(super) fn draw_gutter(
         // Edge-aligned arrows (meld style)
         let left_mid = f64::midpoint(lt, lb);
         let right_mid = f64::midpoint(rt, rb);
-        draw_edge_arrow(cr, 2.0, left_mid, true, r, g, b);
-        draw_edge_arrow(cr, width - 2.0, right_mid, false, r, g, b);
+        if matches!(arrows, GutterArrows::Both | GutterArrows::LeftToRight) {
+            draw_edge_arrow(cr, 2.0, left_mid, true, r, g, b);
+        }
+        if matches!(arrows, GutterArrows::Both | GutterArrows::RightToLeft) {
+            draw_edge_arrow(cr, width - 2.0, right_mid, false, r, g, b);
+        }
     }
 }
 
@@ -1417,6 +1472,36 @@ pub(super) fn count_changes(chunks: &[DiffChunk]) -> usize {
     chunks.iter().filter(|c| c.tag != DiffTag::Equal).count()
 }
 
+/// Find the next/previous chunk relative to `cursor_line`.
+/// `side` selects whether to compare against side-A or side-B line numbers.
+fn chunk_near_cursor<'a>(
+    non_equal: &'a [usize],
+    chunks: &[DiffChunk],
+    cursor_line: usize,
+    direction: i32,
+    side: Side,
+) -> Option<&'a usize> {
+    let start_line = |i: usize| -> usize {
+        if side == Side::A {
+            chunks[i].start_a
+        } else {
+            chunks[i].start_b
+        }
+    };
+    if direction > 0 {
+        non_equal
+            .iter()
+            .find(|&&i| start_line(i) > cursor_line)
+            .or(non_equal.first())
+    } else {
+        non_equal
+            .iter()
+            .rev()
+            .find(|&&i| start_line(i) < cursor_line)
+            .or(non_equal.last())
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn navigate_chunk(
     chunks: &[DiffChunk],
@@ -1428,6 +1513,7 @@ pub(super) fn navigate_chunk(
     right_tv: &TextView,
     right_buf: &TextBuffer,
     right_scroll: &ScrolledWindow,
+    active_tv: &TextView,
 ) {
     let non_equal: Vec<usize> = chunks
         .iter()
@@ -1440,42 +1526,21 @@ pub(super) fn navigate_chunk(
         return;
     }
 
-    let next_idx = match current_chunk.get() {
-        Some(cur) => {
-            let pos = non_equal.iter().position(|&i| i == cur);
-            match pos {
-                Some(p) => {
-                    if direction > 0 {
-                        non_equal.get(p + 1).or(non_equal.first())
-                    } else if p > 0 {
-                        non_equal.get(p - 1)
-                    } else {
-                        non_equal.last()
-                    }
-                }
-                None => {
-                    if direction > 0 {
-                        non_equal.first()
-                    } else {
-                        non_equal.last()
-                    }
-                }
-            }
-        }
-        None => {
-            if direction > 0 {
-                non_equal.first()
-            } else {
-                non_equal.last()
-            }
-        }
+    let cursor_line = cursor_line_from_view(active_tv);
+    let side = if active_tv == right_tv {
+        Side::B
+    } else {
+        Side::A
     };
+    let next_idx = chunk_near_cursor(&non_equal, chunks, cursor_line, direction, side);
 
     if let Some(&idx) = next_idx {
         current_chunk.set(Some(idx));
         let chunk = &chunks[idx];
         scroll_to_line(left_tv, left_buf, chunk.start_a, left_scroll);
         scroll_to_line(right_tv, right_buf, chunk.start_b, right_scroll);
+        place_cursor_at_line(left_buf, chunk.start_a);
+        place_cursor_at_line(right_buf, chunk.start_b);
     }
 }
 
@@ -1484,6 +1549,21 @@ pub(super) fn scroll_for_view(tv: &TextView, fallback: &ScrolledWindow) -> Scrol
     tv.ancestor(ScrolledWindow::static_type())
         .and_then(|w| w.downcast::<ScrolledWindow>().ok())
         .unwrap_or_else(|| fallback.clone())
+}
+
+/// Get the cursor line number from a `TextView`.
+pub(super) fn cursor_line_from_view(tv: &TextView) -> usize {
+    let buf = tv.buffer();
+    let mark = buf.get_insert();
+    let iter = buf.iter_at_mark(&mark);
+    iter.line() as usize
+}
+
+/// Place the cursor at the beginning of `line` in the given buffer.
+pub(super) fn place_cursor_at_line(buf: &TextBuffer, line: usize) {
+    if let Some(iter) = buf.iter_at_line(line as i32) {
+        buf.place_cursor(&iter);
+    }
 }
 
 pub(super) fn scroll_to_line(
@@ -1736,8 +1816,8 @@ pub(super) fn close_notebook_tab(
         if notebook.page_num(&t.widget) == Some(page) {
             Some((
                 t.id,
-                t.left_path.clone(),
-                t.right_path.clone(),
+                t.left_path.borrow().clone(),
+                t.right_path.borrow().clone(),
                 t.left_save.clone(),
                 t.right_save.clone(),
             ))
@@ -1782,10 +1862,10 @@ pub(super) fn handle_notebook_close_request(
         .flat_map(|t| {
             let mut v = Vec::new();
             if t.left_save.is_sensitive() {
-                v.push((t.left_path.clone(), t.left_save.clone()));
+                v.push((t.left_path.borrow().clone(), t.left_save.clone()));
             }
             if t.right_save.is_sensitive() {
-                v.push((t.right_path.clone(), t.right_save.clone()));
+                v.push((t.right_path.borrow().clone(), t.right_save.clone()));
             }
             v
         })

@@ -3,6 +3,8 @@ use super::*;
 
 // ─── Shared diff view construction ─────────────────────────────────────────
 
+type SwapCallback = Rc<RefCell<Option<Box<dyn Fn()>>>>;
+
 pub(super) struct DiffViewResult {
     pub(super) widget: GtkBox,
     pub(super) left_buf: TextBuffer,
@@ -10,6 +12,7 @@ pub(super) struct DiffViewResult {
     pub(super) left_save: Button,
     pub(super) right_save: Button,
     pub(super) action_group: gio::SimpleActionGroup,
+    pub(super) swap_callback: SwapCallback,
 }
 
 /// Build a complete diff view widget for two files.
@@ -33,19 +36,33 @@ pub(super) fn build_diff_view(
     let identical = !any_binary && left_content == right_content;
     let chunks = Rc::new(RefCell::new(Vec::new()));
 
-    let info_msg = if any_binary {
+    let binary_msg = if any_binary {
         Some("Binary file — cannot display diff")
-    } else if identical {
-        Some("Files are identical")
     } else {
         None
     };
 
     let left_label = labels.first().map(String::as_str);
     let right_label = labels.get(1).map(String::as_str);
-    let left_pane = make_diff_pane(&left_buf, left_path, info_msg, left_label, &s);
-    let right_pane = make_diff_pane(&right_buf, right_path, info_msg, right_label, &s);
+    let left_pane = make_diff_pane(&left_buf, left_path, binary_msg, left_label, &s);
+    let right_pane = make_diff_pane(&right_buf, right_path, binary_msg, right_label, &s);
     drop(s);
+
+    // "Files are identical" info bar — dynamically shown/hidden on re-diff
+    let identical_bars: Vec<GtkBox> = if any_binary {
+        Vec::new()
+    } else {
+        [&left_pane, &right_pane]
+            .iter()
+            .map(|pane| {
+                let bar = make_info_bar("Files are identical");
+                bar.set_visible(identical);
+                pane.container
+                    .insert_child_after(&bar, pane.container.first_child().as_ref());
+                bar
+            })
+            .collect()
+    };
 
     if any_binary {
         left_pane.text_view.set_editable(false);
@@ -99,6 +116,7 @@ pub(super) fn build_diff_view(
                 &rs,
                 area,
                 &ch.borrow(),
+                &GutterArrows::Both,
             );
         });
     }
@@ -383,6 +401,9 @@ pub(super) fn build_diff_view(
 
     let patch_btn = Button::from_icon_name("document-save-as-symbolic");
     patch_btn.set_tooltip_text(Some("Export patch (Ctrl+Shift+P)"));
+    if any_binary {
+        patch_btn.set_sensitive(false);
+    }
 
     toolbar.append(&nav_box);
     toolbar.append(&chunk_label);
@@ -395,21 +416,41 @@ pub(super) fn build_diff_view(
     prefs_btn.set_action_name(Some("win.prefs"));
     toolbar.append(&prefs_btn);
 
-    // Swap panes: swap buffer text + labels, re-diff happens via connect_changed
+    // Swap panes: swap buffer text + labels + save paths, re-diff happens via connect_changed
+    let swap_callback: SwapCallback = Rc::new(RefCell::new(None));
     {
         let lb = left_buf.clone();
         let rb = right_buf.clone();
         let ll = left_pane.path_label.clone();
         let rl = right_pane.path_label.clone();
+        let lsp = left_pane.save_path.clone();
+        let rsp = right_pane.save_path.clone();
+        let ls = left_pane.save_btn.clone();
+        let rs = right_pane.save_btn.clone();
+        let cb = swap_callback.clone();
         swap_btn.connect_clicked(move |_| {
+            // Preserve unsaved-state before set_text triggers connect_changed
+            let l_dirty = ls.is_sensitive();
+            let r_dirty = rs.is_sensitive();
             let lt = lb.text(&lb.start_iter(), &lb.end_iter(), false).to_string();
             let rt = rb.text(&rb.start_iter(), &rb.end_iter(), false).to_string();
             lb.set_text(&rt);
             rb.set_text(&lt);
+            // Restore swapped dirty state (left gets right's, right gets left's)
+            ls.set_sensitive(r_dirty);
+            rs.set_sensitive(l_dirty);
             let ll_text = ll.text().to_string();
             let rl_text = rl.text().to_string();
             ll.set_text(&rl_text);
             rl.set_text(&ll_text);
+            let ll_tip = ll.tooltip_text().map(|s| s.to_string());
+            let rl_tip = rl.tooltip_text().map(|s| s.to_string());
+            ll.set_tooltip_text(rl_tip.as_deref());
+            rl.set_tooltip_text(ll_tip.as_deref());
+            std::mem::swap(&mut *lsp.borrow_mut(), &mut *rsp.borrow_mut());
+            if let Some(f) = cb.borrow().as_ref() {
+                f();
+            }
         });
     }
 
@@ -426,11 +467,25 @@ pub(super) fn build_diff_view(
         let lbl = chunk_label.clone();
         let lf = left_pane.filler_overlay.clone();
         let rf = right_pane.filler_overlay.clone();
+        let av = active_view.clone();
         prev_btn.connect_clicked(move |_| {
-            navigate_chunk(&ch.borrow(), &cur, -1, &ltv, &lb, &ls, &rtv, &rb, &rs);
+            navigate_chunk(
+                &ch.borrow(),
+                &cur,
+                -1,
+                &ltv,
+                &lb,
+                &ls,
+                &rtv,
+                &rb,
+                &rs,
+                &av.borrow(),
+            );
             update_chunk_label(&lbl, &ch.borrow(), cur.get());
             lf.queue_draw();
             rf.queue_draw();
+            let focused_tv = av.borrow().clone();
+            focused_tv.grab_focus();
         });
     }
 
@@ -447,11 +502,25 @@ pub(super) fn build_diff_view(
         let lbl = chunk_label.clone();
         let lf = left_pane.filler_overlay.clone();
         let rf = right_pane.filler_overlay.clone();
+        let av = active_view.clone();
         next_btn.connect_clicked(move |_| {
-            navigate_chunk(&ch.borrow(), &cur, 1, &ltv, &lb, &ls, &rtv, &rb, &rs);
+            navigate_chunk(
+                &ch.borrow(),
+                &cur,
+                1,
+                &ltv,
+                &lb,
+                &ls,
+                &rtv,
+                &rb,
+                &rs,
+                &av.borrow(),
+            );
             update_chunk_label(&lbl, &ch.borrow(), cur.get());
             lf.queue_draw();
             rf.queue_draw();
+            let focused_tv = av.borrow().clone();
+            focused_tv.grab_focus();
         });
     }
 
@@ -544,6 +613,7 @@ pub(super) fn build_diff_view(
             let cur = current_chunk.clone();
             let lf = left_pane.filler_overlay.clone();
             let rf = right_pane.filler_overlay.clone();
+            let ibars = identical_bars.clone();
             move || {
                 let g = g.clone();
                 let lcm = lcm.clone();
@@ -553,6 +623,7 @@ pub(super) fn build_diff_view(
                 let cur = cur.clone();
                 let lf = lf.clone();
                 let rf = rf.clone();
+                let ibars = ibars.clone();
                 move || {
                     g.queue_draw();
                     lcm.queue_draw();
@@ -561,6 +632,10 @@ pub(super) fn build_diff_view(
                     rf.queue_draw();
                     cur.set(None);
                     update_chunk_label(&lbl, &ch.borrow(), None);
+                    let is_identical = ch.borrow().is_empty();
+                    for bar in &ibars {
+                        bar.set_visible(is_identical);
+                    }
                 }
             }
         };
@@ -905,8 +980,20 @@ pub(super) fn build_diff_view(
         let lbl = chunk_label.clone();
         let lf = left_pane.filler_overlay.clone();
         let rf = right_pane.filler_overlay.clone();
+        let av = active_view.clone();
         action.connect_activate(move |_, _| {
-            navigate_chunk(&ch.borrow(), &cur, -1, &ltv, &lb, &ls, &rtv, &rb, &rs);
+            navigate_chunk(
+                &ch.borrow(),
+                &cur,
+                -1,
+                &ltv,
+                &lb,
+                &ls,
+                &rtv,
+                &rb,
+                &rs,
+                &av.borrow(),
+            );
             update_chunk_label(&lbl, &ch.borrow(), cur.get());
             lf.queue_draw();
             rf.queue_draw();
@@ -926,8 +1013,20 @@ pub(super) fn build_diff_view(
         let lbl = chunk_label.clone();
         let lf = left_pane.filler_overlay.clone();
         let rf = right_pane.filler_overlay.clone();
+        let av = active_view.clone();
         action.connect_activate(move |_, _| {
-            navigate_chunk(&ch.borrow(), &cur, 1, &ltv, &lb, &ls, &rtv, &rb, &rs);
+            navigate_chunk(
+                &ch.borrow(),
+                &cur,
+                1,
+                &ltv,
+                &lb,
+                &ls,
+                &rtv,
+                &rb,
+                &rs,
+                &av.borrow(),
+            );
             update_chunk_label(&lbl, &ch.borrow(), cur.get());
             lf.queue_draw();
             rf.queue_draw();
@@ -1064,6 +1163,34 @@ pub(super) fn build_diff_view(
         }
     }
 
+    // Intercept Alt+Up/Down in the capture phase so sourceview5 doesn't
+    // consume them for its move-lines action.
+    for tv in [&left_pane.text_view, &right_pane.text_view] {
+        let key_ctl = EventControllerKey::new();
+        key_ctl.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        let ag = action_group.clone();
+        key_ctl.connect_key_pressed(move |_, key, _, mods| {
+            if mods.contains(gtk4::gdk::ModifierType::ALT_MASK)
+                && (key == gtk4::gdk::Key::Up || key == gtk4::gdk::Key::Down)
+            {
+                let name = if key == gtk4::gdk::Key::Up {
+                    "prev-chunk"
+                } else {
+                    "next-chunk"
+                };
+                if let Some(action) = ag.lookup_action(name) {
+                    action
+                        .downcast_ref::<gio::SimpleAction>()
+                        .unwrap()
+                        .activate(None);
+                }
+                return gtk4::glib::Propagation::Stop;
+            }
+            gtk4::glib::Propagation::Proceed
+        });
+        tv.add_controller(key_ctl);
+    }
+
     DiffViewResult {
         widget,
         left_buf,
@@ -1071,6 +1198,7 @@ pub(super) fn build_diff_view(
         left_save: left_pane.save_btn,
         right_save: right_pane.save_btn,
         action_group,
+        swap_callback,
     }
 }
 
@@ -1093,12 +1221,14 @@ pub(super) fn open_file_diff(
 
     // Track tab
     let tab_id = NEXT_TAB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tab_left_path = Rc::new(RefCell::new(left_path.display().to_string()));
+    let tab_right_path = Rc::new(RefCell::new(right_path.display().to_string()));
     open_tabs.borrow_mut().push(FileTab {
         id: tab_id,
         rel_path: rel_path.to_string(),
         widget: dv.widget.clone(),
-        left_path: left_path.display().to_string(),
-        right_path: right_path.display().to_string(),
+        left_path: tab_left_path.clone(),
+        right_path: tab_right_path.clone(),
         left_buf: dv.left_buf,
         right_buf: dv.right_buf,
         left_save: dv.left_save,
@@ -1127,16 +1257,46 @@ pub(super) fn open_file_diff(
     tab_label_box.append(&label);
     tab_label_box.append(&close_btn);
 
+    // Update tab label and FileTab paths when panes are swapped
+    {
+        let lbl = label.clone();
+        let ln = left_dir_name;
+        let rn = right_dir_name;
+        let fn_ = file_name;
+        let swapped = Rc::new(Cell::new(false));
+        let tlp = tab_left_path;
+        let trp = tab_right_path;
+        *dv.swap_callback.borrow_mut() = Some(Box::new(move || {
+            let s = !swapped.get();
+            swapped.set(s);
+            if s {
+                lbl.set_text(&format!("[{rn}] {fn_} — [{ln}] {fn_}"));
+            } else {
+                lbl.set_text(&format!("[{ln}] {fn_} — [{rn}] {fn_}"));
+            }
+            std::mem::swap(&mut *tlp.borrow_mut(), &mut *trp.borrow_mut());
+        }));
+    }
+
     let page_num = notebook.append_page(&dv.widget, Some(&tab_label_box));
     notebook.set_current_page(Some(page_num));
 
-    let nb = notebook.clone();
-    let w = dv.widget.clone();
-    let tabs = open_tabs.clone();
-    close_btn.connect_clicked(move |_| {
-        if let Some(n) = nb.page_num(&w) {
-            nb.remove_page(Some(n));
-        }
-        tabs.borrow_mut().retain(|t| t.id != tab_id);
-    });
+    {
+        let nb = notebook.clone();
+        let w = dv.widget.clone();
+        let tabs = open_tabs.clone();
+        close_btn.connect_clicked(move |_| {
+            if let Some(n) = nb.page_num(&w) {
+                let win = nb
+                    .root()
+                    .and_then(|r| r.downcast::<ApplicationWindow>().ok());
+                if let Some(win) = win {
+                    close_notebook_tab(&win, &nb, &tabs, n);
+                } else {
+                    nb.remove_page(Some(n));
+                    tabs.borrow_mut().retain(|t| t.id != tab_id);
+                }
+            }
+        });
+    }
 }

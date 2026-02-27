@@ -128,6 +128,23 @@ pub(super) fn build_file_window(
         .build();
     window.insert_action_group("diff", Some(&dv.action_group));
 
+    // Update window title when panes are swapped
+    {
+        let w = window.clone();
+        let ln = left_name;
+        let rn = right_name;
+        let swapped = Rc::new(Cell::new(false));
+        *dv.swap_callback.borrow_mut() = Some(Box::new(move || {
+            let s = !swapped.get();
+            swapped.set(s);
+            if s {
+                w.set_title(Some(&format!("{rn} — {ln}")));
+            } else {
+                w.set_title(Some(&format!("{ln} — {rn}")));
+            }
+        }));
+    }
+
     // Preferences action
     let win_actions = gio::SimpleActionGroup::new();
     {
