@@ -1098,6 +1098,34 @@ pub(super) fn build_diff_view(
         }
     }
 
+    // Intercept Alt+Up/Down in the capture phase so sourceview5 doesn't
+    // consume them for its move-lines action.
+    for tv in [&left_pane.text_view, &right_pane.text_view] {
+        let key_ctl = EventControllerKey::new();
+        key_ctl.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        let ag = action_group.clone();
+        key_ctl.connect_key_pressed(move |_, key, _, mods| {
+            if mods.contains(gtk4::gdk::ModifierType::ALT_MASK)
+                && (key == gtk4::gdk::Key::Up || key == gtk4::gdk::Key::Down)
+            {
+                let name = if key == gtk4::gdk::Key::Up {
+                    "prev-chunk"
+                } else {
+                    "next-chunk"
+                };
+                if let Some(action) = ag.lookup_action(name) {
+                    action
+                        .downcast_ref::<gio::SimpleAction>()
+                        .unwrap()
+                        .activate(None);
+                }
+                return gtk4::glib::Propagation::Stop;
+            }
+            gtk4::glib::Propagation::Proceed
+        });
+        tv.add_controller(key_ctl);
+    }
+
     DiffViewResult {
         widget,
         left_buf,
