@@ -818,9 +818,7 @@ fn build_merge_view(
                 .map(|(i, _)| i)
                 .collect();
             let next = if direction > 0 {
-                ne.iter()
-                    .find(|&&i| lch[i].start_a > cl)
-                    .or(ne.first())
+                ne.iter().find(|&&i| lch[i].start_a > cl).or(ne.first())
             } else {
                 ne.iter()
                     .rev()
@@ -836,9 +834,7 @@ fn build_merge_view(
                 .map(|(i, _)| i)
                 .collect();
             let next = if direction > 0 {
-                ne.iter()
-                    .find(|&&i| rch[i].start_b > cl)
-                    .or(ne.first())
+                ne.iter().find(|&&i| rch[i].start_b > cl).or(ne.first())
             } else {
                 ne.iter()
                     .rev()
