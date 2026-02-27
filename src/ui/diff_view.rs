@@ -242,16 +242,6 @@ pub(super) fn build_diff_view(
     // ── Toolbar with chunk navigation ───────────────────────────
     let current_chunk: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
 
-    // Reset tracked chunk on focus change so navigation seeks from cursor
-    for tv in [&left_pane.text_view, &right_pane.text_view] {
-        let cc = current_chunk.clone();
-        let fc = EventControllerFocus::new();
-        fc.connect_enter(move |_| {
-            cc.set(None);
-        });
-        tv.add_controller(fc);
-    }
-
     // ── Filler overlay drawing ──────────────────────────────────
     {
         let ltv = left_pane.text_view.clone();
@@ -458,11 +448,23 @@ pub(super) fn build_diff_view(
         let rf = right_pane.filler_overlay.clone();
         let av = active_view.clone();
         prev_btn.connect_clicked(move |_| {
-            let cl = cursor_line_from_view(&av.borrow());
-            navigate_chunk(&ch.borrow(), &cur, -1, &ltv, &lb, &ls, &rtv, &rb, &rs, cl);
+            navigate_chunk(
+                &ch.borrow(),
+                &cur,
+                -1,
+                &ltv,
+                &lb,
+                &ls,
+                &rtv,
+                &rb,
+                &rs,
+                &av.borrow(),
+            );
             update_chunk_label(&lbl, &ch.borrow(), cur.get());
             lf.queue_draw();
             rf.queue_draw();
+            let focused_tv = av.borrow().clone();
+            focused_tv.grab_focus();
         });
     }
 
@@ -481,11 +483,23 @@ pub(super) fn build_diff_view(
         let rf = right_pane.filler_overlay.clone();
         let av = active_view.clone();
         next_btn.connect_clicked(move |_| {
-            let cl = cursor_line_from_view(&av.borrow());
-            navigate_chunk(&ch.borrow(), &cur, 1, &ltv, &lb, &ls, &rtv, &rb, &rs, cl);
+            navigate_chunk(
+                &ch.borrow(),
+                &cur,
+                1,
+                &ltv,
+                &lb,
+                &ls,
+                &rtv,
+                &rb,
+                &rs,
+                &av.borrow(),
+            );
             update_chunk_label(&lbl, &ch.borrow(), cur.get());
             lf.queue_draw();
             rf.queue_draw();
+            let focused_tv = av.borrow().clone();
+            focused_tv.grab_focus();
         });
     }
 
@@ -947,8 +961,18 @@ pub(super) fn build_diff_view(
         let rf = right_pane.filler_overlay.clone();
         let av = active_view.clone();
         action.connect_activate(move |_, _| {
-            let cl = cursor_line_from_view(&av.borrow());
-            navigate_chunk(&ch.borrow(), &cur, -1, &ltv, &lb, &ls, &rtv, &rb, &rs, cl);
+            navigate_chunk(
+                &ch.borrow(),
+                &cur,
+                -1,
+                &ltv,
+                &lb,
+                &ls,
+                &rtv,
+                &rb,
+                &rs,
+                &av.borrow(),
+            );
             update_chunk_label(&lbl, &ch.borrow(), cur.get());
             lf.queue_draw();
             rf.queue_draw();
@@ -970,8 +994,18 @@ pub(super) fn build_diff_view(
         let rf = right_pane.filler_overlay.clone();
         let av = active_view.clone();
         action.connect_activate(move |_, _| {
-            let cl = cursor_line_from_view(&av.borrow());
-            navigate_chunk(&ch.borrow(), &cur, 1, &ltv, &lb, &ls, &rtv, &rb, &rs, cl);
+            navigate_chunk(
+                &ch.borrow(),
+                &cur,
+                1,
+                &ltv,
+                &lb,
+                &ls,
+                &rtv,
+                &rb,
+                &rs,
+                &av.borrow(),
+            );
             update_chunk_label(&lbl, &ch.borrow(), cur.get());
             lf.queue_draw();
             rf.queue_draw();

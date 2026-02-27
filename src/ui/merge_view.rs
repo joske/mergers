@@ -694,22 +694,6 @@ fn build_merge_view(
 
     let current_conflict: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
 
-    // Reset tracked chunk/conflict on focus change so navigation seeks from cursor
-    for tv in [
-        &left_pane.text_view,
-        &middle_pane.text_view,
-        &right_pane.text_view,
-    ] {
-        let cc = current_chunk.clone();
-        let ccf = current_conflict.clone();
-        let fc = EventControllerFocus::new();
-        fc.connect_enter(move |_| {
-            cc.set(None);
-            ccf.set(None);
-        });
-        tv.add_controller(fc);
-    }
-
     // Undo/Redo buttons
     let undo_btn = Button::from_icon_name("edit-undo-symbolic");
     undo_btn.set_tooltip_text(Some("Undo (Ctrl+Z)"));
@@ -823,33 +807,47 @@ fn build_merge_view(
                                 lf: &DrawingArea,
                                 mf: &DrawingArea,
                                 rf: &DrawingArea,
-                                cursor_line: usize| {
-        let all = merge_change_indices(lch, rch);
-        if all.is_empty() {
-            return;
-        }
-        let next = if let Some(cur_val) = cur.get() {
-            let pos = all.iter().position(|v| *v == cur_val);
-            match pos {
-                Some(p) => {
-                    if direction > 0 {
-                        all.get(p + 1).or(all.first())
-                    } else if p > 0 {
-                        all.get(p - 1)
-                    } else {
-                        all.last()
-                    }
-                }
-                None => {
-                    if direction > 0 {
-                        all.first()
-                    } else {
-                        all.last()
-                    }
-                }
-            }
+                                active: &TextView| {
+        // Search the active pane's own chunks in its own coordinates.
+        let cl = cursor_line_from_view(active);
+        let found: Option<(usize, bool)> = if active == ltv {
+            let ne: Vec<usize> = lch
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| c.tag != DiffTag::Equal)
+                .map(|(i, _)| i)
+                .collect();
+            let next = if direction > 0 {
+                ne.iter()
+                    .find(|&&i| lch[i].start_a > cl)
+                    .or(ne.first())
+            } else {
+                ne.iter()
+                    .rev()
+                    .find(|&&i| lch[i].start_a < cl)
+                    .or(ne.last())
+            };
+            next.map(|&idx| (idx, false))
+        } else if active == rtv {
+            let ne: Vec<usize> = rch
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| c.tag != DiffTag::Equal)
+                .map(|(i, _)| i)
+                .collect();
+            let next = if direction > 0 {
+                ne.iter()
+                    .find(|&&i| rch[i].start_b > cl)
+                    .or(ne.first())
+            } else {
+                ne.iter()
+                    .rev()
+                    .find(|&&i| rch[i].start_b < cl)
+                    .or(ne.last())
+            };
+            next.map(|&idx| (idx, true))
         } else {
-            // Middle-file line for each entry
+            let all = merge_change_indices(lch, rch);
             let middle_line = |&(idx, is_right): &(usize, bool)| -> usize {
                 if is_right {
                     rch[idx].start_a
@@ -857,28 +855,21 @@ fn build_merge_view(
                     lch[idx].start_b
                 }
             };
-            // Middle-file end line for each entry (exclusive)
-            let middle_end = |&(idx, is_right): &(usize, bool)| -> usize {
-                if is_right {
-                    rch[idx].end_a
-                } else {
-                    lch[idx].end_b
-                }
-            };
             if direction > 0 {
                 all.iter()
-                    .find(|e| middle_line(e) > cursor_line)
+                    .find(|e| middle_line(e) > cl)
                     .or(all.first())
+                    .copied()
             } else {
                 all.iter()
                     .rev()
-                    .find(|e| middle_end(e) <= cursor_line)
+                    .find(|e| middle_line(e) < cl)
                     .or(all.last())
+                    .copied()
             }
         };
-        if let Some(&(idx, is_right)) = next {
+        if let Some((idx, is_right)) = found {
             cur.set(Some((idx, is_right)));
-            // Scroll all three panes to the chunk and place cursors
             if is_right {
                 let chunk = &rch[idx];
                 scroll_to_line(mtv, mb, chunk.start_a, ms);
@@ -940,11 +931,10 @@ fn build_merge_view(
         let lf = left_pane.filler_overlay.clone();
         let mf = middle_pane.filler_overlay.clone();
         let rf = right_pane.filler_overlay.clone();
-        let av = active_view.clone();
         let nav = navigate_merge_chunk;
         let upd = update_merge_label;
+        let av = active_view.clone();
         prev_btn.connect_clicked(move |_| {
-            let cl = cursor_line_from_view(&av.borrow());
             nav(
                 &lch.borrow(),
                 &rch.borrow(),
@@ -962,9 +952,11 @@ fn build_merge_view(
                 &lf,
                 &mf,
                 &rf,
-                cl,
+                &av.borrow(),
             );
             upd(&lbl, &lch.borrow(), &rch.borrow(), cur.get());
+            let focused_tv = av.borrow().clone();
+            focused_tv.grab_focus();
         });
     }
 
@@ -986,11 +978,10 @@ fn build_merge_view(
         let lf = left_pane.filler_overlay.clone();
         let mf = middle_pane.filler_overlay.clone();
         let rf = right_pane.filler_overlay.clone();
-        let av = active_view.clone();
         let nav = navigate_merge_chunk;
         let upd = update_merge_label;
+        let av = active_view.clone();
         next_btn.connect_clicked(move |_| {
-            let cl = cursor_line_from_view(&av.borrow());
             nav(
                 &lch.borrow(),
                 &rch.borrow(),
@@ -1008,9 +999,11 @@ fn build_merge_view(
                 &lf,
                 &mf,
                 &rf,
-                cl,
+                &av.borrow(),
             );
             upd(&lbl, &lch.borrow(), &rch.borrow(), cur.get());
+            let focused_tv = av.borrow().clone();
+            focused_tv.grab_focus();
         });
     }
 
@@ -1029,48 +1022,23 @@ fn build_merge_view(
                              rb: &TextBuffer,
                              rs: &ScrolledWindow,
                              lch: &Rc<RefCell<Vec<DiffChunk>>>,
-                             rch: &Rc<RefCell<Vec<DiffChunk>>>,
-                             cursor_line: usize| {
+                             rch: &Rc<RefCell<Vec<DiffChunk>>>| {
+        let cursor_line = cursor_line_from_view(mtv);
         let markers = find_conflict_markers(mb);
         if markers.is_empty() {
             return;
         }
-        let next = match cur.get() {
-            Some(cur_line) => {
-                let pos = markers.iter().position(|&l| l == cur_line);
-                match pos {
-                    Some(p) => {
-                        if direction > 0 {
-                            markers.get(p + 1).or(markers.first())
-                        } else if p > 0 {
-                            markers.get(p - 1)
-                        } else {
-                            markers.last()
-                        }
-                    }
-                    None => {
-                        if direction > 0 {
-                            markers.first()
-                        } else {
-                            markers.last()
-                        }
-                    }
-                }
-            }
-            None => {
-                if direction > 0 {
-                    markers
-                        .iter()
-                        .find(|&&l| l > cursor_line)
-                        .or(markers.first())
-                } else {
-                    markers
-                        .iter()
-                        .rev()
-                        .find(|&&l| l < cursor_line)
-                        .or(markers.last())
-                }
-            }
+        let next = if direction > 0 {
+            markers
+                .iter()
+                .find(|&&l| l > cursor_line)
+                .or(markers.first())
+        } else {
+            markers
+                .iter()
+                .rev()
+                .find(|&&l| l < cursor_line)
+                .or(markers.last())
         };
         if let Some(&line) = next {
             cur.set(Some(line));
@@ -1129,15 +1097,16 @@ fn build_merge_view(
         let lch = left_chunks.clone();
         let rch = right_chunks.clone();
         let lbl = conflict_label.clone();
-        let av = active_view.clone();
         let nav = navigate_conflict;
         let upd = update_conflict_label;
+        let av = active_view.clone();
         prev_conflict_btn.connect_clicked(move |_| {
-            let cl = cursor_line_from_view(&av.borrow());
             nav(
-                &cur, -1, &mtv, &mb, &ms, &ltv, &lb, &ls, &rtv, &rb, &rs, &lch, &rch, cl,
+                &cur, -1, &mtv, &mb, &ms, &ltv, &lb, &ls, &rtv, &rb, &rs, &lch, &rch,
             );
             upd(&lbl, &mb, cur.get());
+            let focused_tv = av.borrow().clone();
+            focused_tv.grab_focus();
         });
     }
 
@@ -1156,15 +1125,16 @@ fn build_merge_view(
         let lch = left_chunks.clone();
         let rch = right_chunks.clone();
         let lbl = conflict_label.clone();
-        let av = active_view.clone();
         let nav = navigate_conflict;
         let upd = update_conflict_label;
+        let av = active_view.clone();
         next_conflict_btn.connect_clicked(move |_| {
-            let cl = cursor_line_from_view(&av.borrow());
             nav(
-                &cur, 1, &mtv, &mb, &ms, &ltv, &lb, &ls, &rtv, &rb, &rs, &lch, &rch, cl,
+                &cur, 1, &mtv, &mb, &ms, &ltv, &lb, &ls, &rtv, &rb, &rs, &lch, &rch,
             );
             upd(&lbl, &mb, cur.get());
+            let focused_tv = av.borrow().clone();
+            focused_tv.grab_focus();
         });
     }
 
@@ -1679,7 +1649,6 @@ fn build_merge_view(
         let rf = right_pane.filler_overlay.clone();
         let av = active_view.clone();
         action.connect_activate(move |_, _| {
-            let cl = cursor_line_from_view(&av.borrow());
             navigate_merge_chunk(
                 &lch.borrow(),
                 &rch.borrow(),
@@ -1697,7 +1666,7 @@ fn build_merge_view(
                 &lf,
                 &mf,
                 &rf,
-                cl,
+                &av.borrow(),
             );
             update_merge_label(&lbl, &lch.borrow(), &rch.borrow(), cur.get());
         });
@@ -1723,7 +1692,6 @@ fn build_merge_view(
         let rf = right_pane.filler_overlay.clone();
         let av = active_view.clone();
         action.connect_activate(move |_, _| {
-            let cl = cursor_line_from_view(&av.borrow());
             navigate_merge_chunk(
                 &lch.borrow(),
                 &rch.borrow(),
@@ -1741,7 +1709,7 @@ fn build_merge_view(
                 &lf,
                 &mf,
                 &rf,
-                cl,
+                &av.borrow(),
             );
             update_merge_label(&lbl, &lch.borrow(), &rch.borrow(), cur.get());
         });
@@ -1762,11 +1730,9 @@ fn build_merge_view(
         let lch = left_chunks.clone();
         let rch = right_chunks.clone();
         let lbl = conflict_label.clone();
-        let av = active_view.clone();
         action.connect_activate(move |_, _| {
-            let cl = cursor_line_from_view(&av.borrow());
             navigate_conflict(
-                &cur, -1, &mtv, &mb, &ms, &ltv, &lb, &ls, &rtv, &rb, &rs, &lch, &rch, cl,
+                &cur, -1, &mtv, &mb, &ms, &ltv, &lb, &ls, &rtv, &rb, &rs, &lch, &rch,
             );
             update_conflict_label(&lbl, &mb, cur.get());
         });
@@ -1787,11 +1753,9 @@ fn build_merge_view(
         let lch = left_chunks.clone();
         let rch = right_chunks.clone();
         let lbl = conflict_label.clone();
-        let av = active_view.clone();
         action.connect_activate(move |_, _| {
-            let cl = cursor_line_from_view(&av.borrow());
             navigate_conflict(
-                &cur, 1, &mtv, &mb, &ms, &ltv, &lb, &ls, &rtv, &rb, &rs, &lch, &rch, cl,
+                &cur, 1, &mtv, &mb, &ms, &ltv, &lb, &ls, &rtv, &rb, &rs, &lch, &rch,
             );
             update_conflict_label(&lbl, &mb, cur.get());
         });

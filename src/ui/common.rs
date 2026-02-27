@@ -1463,27 +1463,32 @@ pub(super) fn count_changes(chunks: &[DiffChunk]) -> usize {
     chunks.iter().filter(|c| c.tag != DiffTag::Equal).count()
 }
 
-#[allow(clippy::too_many_arguments)]
-/// Find the chunk index at or after/before `cursor_line` in side A of the chunks.
-/// Used to seed navigation from the cursor position when no chunk is tracked.
+/// Find the next/previous chunk relative to `cursor_line`.
+/// `side` selects whether to compare against side-A or side-B line numbers.
 fn chunk_near_cursor<'a>(
     non_equal: &'a [usize],
     chunks: &[DiffChunk],
     cursor_line: usize,
     direction: i32,
+    side: Side,
 ) -> Option<&'a usize> {
+    let start_line = |i: usize| -> usize {
+        if side == Side::A {
+            chunks[i].start_a
+        } else {
+            chunks[i].start_b
+        }
+    };
     if direction > 0 {
-        // First chunk that starts strictly after cursor, else wrap to first
         non_equal
             .iter()
-            .find(|&&i| chunks[i].start_a > cursor_line)
+            .find(|&&i| start_line(i) > cursor_line)
             .or(non_equal.first())
     } else {
-        // Last chunk that ends at or before cursor, else wrap to last
         non_equal
             .iter()
             .rev()
-            .find(|&&i| chunks[i].end_a <= cursor_line)
+            .find(|&&i| start_line(i) < cursor_line)
             .or(non_equal.last())
     }
 }
@@ -1499,7 +1504,7 @@ pub(super) fn navigate_chunk(
     right_tv: &TextView,
     right_buf: &TextBuffer,
     right_scroll: &ScrolledWindow,
-    cursor_line: usize,
+    active_tv: &TextView,
 ) {
     let non_equal: Vec<usize> = chunks
         .iter()
@@ -1512,30 +1517,13 @@ pub(super) fn navigate_chunk(
         return;
     }
 
-    let next_idx = match current_chunk.get() {
-        Some(cur) => {
-            let pos = non_equal.iter().position(|&i| i == cur);
-            match pos {
-                Some(p) => {
-                    if direction > 0 {
-                        non_equal.get(p + 1).or(non_equal.first())
-                    } else if p > 0 {
-                        non_equal.get(p - 1)
-                    } else {
-                        non_equal.last()
-                    }
-                }
-                None => {
-                    if direction > 0 {
-                        non_equal.first()
-                    } else {
-                        non_equal.last()
-                    }
-                }
-            }
-        }
-        None => chunk_near_cursor(&non_equal, chunks, cursor_line, direction),
+    let cursor_line = cursor_line_from_view(active_tv);
+    let side = if active_tv == right_tv {
+        Side::B
+    } else {
+        Side::A
     };
+    let next_idx = chunk_near_cursor(&non_equal, chunks, cursor_line, direction, side);
 
     if let Some(&idx) = next_idx {
         current_chunk.set(Some(idx));
