@@ -890,6 +890,49 @@ pub(super) fn apply_inline_tags(left_buf: &TextBuffer, right_buf: &TextBuffer, c
     }
 }
 
+/// Compute the row index at a given y-coordinate in a `ColumnView`.
+/// Returns `None` if the y position is outside the row area.
+pub(super) fn column_view_row_at_y(view: &ColumnView, y: f64, n_items: u32) -> Option<u32> {
+    if n_items == 0 {
+        return None;
+    }
+    // The header is the first child of the ColumnView
+    let header_height = view.first_child().map_or(0.0, |h| h.height() as f64);
+    if y < header_height {
+        return None;
+    }
+    // Find ancestor ScrolledWindow (ColumnView → Viewport → ScrolledWindow)
+    let sw = {
+        let mut w: Option<gtk4::Widget> = view.parent();
+        loop {
+            match w {
+                Some(widget) => {
+                    if let Ok(sw) = widget.clone().downcast::<ScrolledWindow>() {
+                        break Some(sw);
+                    }
+                    w = widget.parent();
+                }
+                None => break None,
+            }
+        }
+    };
+    let row_height = if let Some(sw) = sw {
+        let upper = sw.vadjustment().upper();
+        if upper > 0.0 && n_items > 0 {
+            (upper - header_height) / n_items as f64
+        } else {
+            return None;
+        }
+    } else {
+        return None;
+    };
+    if row_height <= 0.0 {
+        return None;
+    }
+    let pos = ((y - header_height) / row_height) as u32;
+    if pos < n_items { Some(pos) } else { None }
+}
+
 pub(super) fn make_info_bar(message: &str) -> GtkBox {
     let bar = GtkBox::new(Orientation::Horizontal, 8);
     bar.add_css_class("info-bar");
@@ -923,6 +966,7 @@ pub(super) struct DiffPane {
     pub(super) filler_overlay: DrawingArea,
     pub(super) save_btn: Button,
     pub(super) path_label: Label,
+    pub(super) save_path: Rc<RefCell<PathBuf>>,
 }
 
 pub(super) fn make_diff_pane(
@@ -979,11 +1023,12 @@ pub(super) fn make_diff_pane(
     }
 
     let buf_clone = buf.clone();
-    let path_owned = file_path.to_path_buf();
+    let save_path = Rc::new(RefCell::new(file_path.to_path_buf()));
+    let save_path_clone = save_path.clone();
     let save_btn_ref = save_btn.clone();
     save_btn.connect_clicked(move |_| {
         let text = buf_clone.text(&buf_clone.start_iter(), &buf_clone.end_iter(), false);
-        save_file(&path_owned, text.as_str(), &save_btn_ref);
+        save_file(&save_path_clone.borrow(), text.as_str(), &save_btn_ref);
     });
 
     let filler_overlay = DrawingArea::new();
@@ -1007,6 +1052,7 @@ pub(super) fn make_diff_pane(
         filler_overlay,
         save_btn,
         path_label,
+        save_path,
     }
 }
 
@@ -1418,6 +1464,31 @@ pub(super) fn count_changes(chunks: &[DiffChunk]) -> usize {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Find the chunk index at or after/before `cursor_line` in side A of the chunks.
+/// Used to seed navigation from the cursor position when no chunk is tracked.
+fn chunk_near_cursor<'a>(
+    non_equal: &'a [usize],
+    chunks: &[DiffChunk],
+    cursor_line: usize,
+    direction: i32,
+) -> Option<&'a usize> {
+    if direction > 0 {
+        // First chunk whose start_a >= cursor_line, else wrap to first
+        non_equal
+            .iter()
+            .find(|&&i| chunks[i].start_a >= cursor_line)
+            .or(non_equal.first())
+    } else {
+        // Last chunk whose start_a <= cursor_line, else wrap to last
+        non_equal
+            .iter()
+            .rev()
+            .find(|&&i| chunks[i].start_a <= cursor_line)
+            .or(non_equal.last())
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) fn navigate_chunk(
     chunks: &[DiffChunk],
     current_chunk: &Rc<Cell<Option<usize>>>,
@@ -1428,6 +1499,7 @@ pub(super) fn navigate_chunk(
     right_tv: &TextView,
     right_buf: &TextBuffer,
     right_scroll: &ScrolledWindow,
+    cursor_line: usize,
 ) {
     let non_equal: Vec<usize> = chunks
         .iter()
@@ -1462,13 +1534,7 @@ pub(super) fn navigate_chunk(
                 }
             }
         }
-        None => {
-            if direction > 0 {
-                non_equal.first()
-            } else {
-                non_equal.last()
-            }
-        }
+        None => chunk_near_cursor(&non_equal, chunks, cursor_line, direction),
     };
 
     if let Some(&idx) = next_idx {
@@ -1476,6 +1542,8 @@ pub(super) fn navigate_chunk(
         let chunk = &chunks[idx];
         scroll_to_line(left_tv, left_buf, chunk.start_a, left_scroll);
         scroll_to_line(right_tv, right_buf, chunk.start_b, right_scroll);
+        place_cursor_at_line(left_buf, chunk.start_a);
+        place_cursor_at_line(right_buf, chunk.start_b);
     }
 }
 
@@ -1484,6 +1552,21 @@ pub(super) fn scroll_for_view(tv: &TextView, fallback: &ScrolledWindow) -> Scrol
     tv.ancestor(ScrolledWindow::static_type())
         .and_then(|w| w.downcast::<ScrolledWindow>().ok())
         .unwrap_or_else(|| fallback.clone())
+}
+
+/// Get the cursor line number from a `TextView`.
+pub(super) fn cursor_line_from_view(tv: &TextView) -> usize {
+    let buf = tv.buffer();
+    let mark = buf.get_insert();
+    let iter = buf.iter_at_mark(&mark);
+    iter.line() as usize
+}
+
+/// Place the cursor at the beginning of `line` in the given buffer.
+pub(super) fn place_cursor_at_line(buf: &TextBuffer, line: usize) {
+    if let Some(iter) = buf.iter_at_line(line as i32) {
+        buf.place_cursor(&iter);
+    }
 }
 
 pub(super) fn scroll_to_line(

@@ -558,7 +558,12 @@ pub(super) fn build_vcs_window(
             .and_downcast::<gio::SimpleAction>()
             .unwrap();
         let pop = vcs_popover.clone();
+        let v = view.clone();
+        let st = store.clone();
         gesture.connect_pressed(move |_, _, x, y| {
+            if let Some(pos) = column_view_row_at_y(&v, y, st.n_items()) {
+                s.set_selected(pos);
+            }
             if let Some(item) = s.selected_item() {
                 let obj = item.downcast::<StringObject>().unwrap();
                 let raw = obj.string();

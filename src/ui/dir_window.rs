@@ -1111,7 +1111,13 @@ pub(super) fn build_dir_window(
             let al = act_left.clone();
             let ar = act_right.clone();
             let pop = popover;
+            let sel = dir_sel.clone();
+            let tm = tree_model.clone();
+            let v = view.clone();
             gesture.connect_pressed(move |_, _, x, y| {
+                if let Some(pos) = column_view_row_at_y(&v, y, tm.n_items()) {
+                    sel.set_selected(pos);
+                }
                 if let Some(raw) = get_row() {
                     let is_dir = decode_is_dir(&raw);
                     let status = decode_status(&raw);

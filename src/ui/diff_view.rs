@@ -33,19 +33,33 @@ pub(super) fn build_diff_view(
     let identical = !any_binary && left_content == right_content;
     let chunks = Rc::new(RefCell::new(Vec::new()));
 
-    let info_msg = if any_binary {
+    let binary_msg = if any_binary {
         Some("Binary file — cannot display diff")
-    } else if identical {
-        Some("Files are identical")
     } else {
         None
     };
 
     let left_label = labels.first().map(String::as_str);
     let right_label = labels.get(1).map(String::as_str);
-    let left_pane = make_diff_pane(&left_buf, left_path, info_msg, left_label, &s);
-    let right_pane = make_diff_pane(&right_buf, right_path, info_msg, right_label, &s);
+    let left_pane = make_diff_pane(&left_buf, left_path, binary_msg, left_label, &s);
+    let right_pane = make_diff_pane(&right_buf, right_path, binary_msg, right_label, &s);
     drop(s);
+
+    // "Files are identical" info bar — dynamically shown/hidden on re-diff
+    let identical_bars: Vec<GtkBox> = if any_binary {
+        Vec::new()
+    } else {
+        [&left_pane, &right_pane]
+            .iter()
+            .map(|pane| {
+                let bar = make_info_bar("Files are identical");
+                bar.set_visible(identical);
+                pane.container
+                    .insert_child_after(&bar, pane.container.first_child().as_ref());
+                bar
+            })
+            .collect()
+    };
 
     if any_binary {
         left_pane.text_view.set_editable(false);
@@ -383,6 +397,9 @@ pub(super) fn build_diff_view(
 
     let patch_btn = Button::from_icon_name("document-save-as-symbolic");
     patch_btn.set_tooltip_text(Some("Export patch (Ctrl+Shift+P)"));
+    if any_binary {
+        patch_btn.set_sensitive(false);
+    }
 
     toolbar.append(&nav_box);
     toolbar.append(&chunk_label);
@@ -395,12 +412,14 @@ pub(super) fn build_diff_view(
     prefs_btn.set_action_name(Some("win.prefs"));
     toolbar.append(&prefs_btn);
 
-    // Swap panes: swap buffer text + labels, re-diff happens via connect_changed
+    // Swap panes: swap buffer text + labels + save paths, re-diff happens via connect_changed
     {
         let lb = left_buf.clone();
         let rb = right_buf.clone();
         let ll = left_pane.path_label.clone();
         let rl = right_pane.path_label.clone();
+        let lsp = left_pane.save_path.clone();
+        let rsp = right_pane.save_path.clone();
         swap_btn.connect_clicked(move |_| {
             let lt = lb.text(&lb.start_iter(), &lb.end_iter(), false).to_string();
             let rt = rb.text(&rb.start_iter(), &rb.end_iter(), false).to_string();
@@ -410,6 +429,7 @@ pub(super) fn build_diff_view(
             let rl_text = rl.text().to_string();
             ll.set_text(&rl_text);
             rl.set_text(&ll_text);
+            std::mem::swap(&mut *lsp.borrow_mut(), &mut *rsp.borrow_mut());
         });
     }
 
@@ -426,8 +446,10 @@ pub(super) fn build_diff_view(
         let lbl = chunk_label.clone();
         let lf = left_pane.filler_overlay.clone();
         let rf = right_pane.filler_overlay.clone();
+        let av = active_view.clone();
         prev_btn.connect_clicked(move |_| {
-            navigate_chunk(&ch.borrow(), &cur, -1, &ltv, &lb, &ls, &rtv, &rb, &rs);
+            let cl = cursor_line_from_view(&av.borrow());
+            navigate_chunk(&ch.borrow(), &cur, -1, &ltv, &lb, &ls, &rtv, &rb, &rs, cl);
             update_chunk_label(&lbl, &ch.borrow(), cur.get());
             lf.queue_draw();
             rf.queue_draw();
@@ -447,8 +469,10 @@ pub(super) fn build_diff_view(
         let lbl = chunk_label.clone();
         let lf = left_pane.filler_overlay.clone();
         let rf = right_pane.filler_overlay.clone();
+        let av = active_view.clone();
         next_btn.connect_clicked(move |_| {
-            navigate_chunk(&ch.borrow(), &cur, 1, &ltv, &lb, &ls, &rtv, &rb, &rs);
+            let cl = cursor_line_from_view(&av.borrow());
+            navigate_chunk(&ch.borrow(), &cur, 1, &ltv, &lb, &ls, &rtv, &rb, &rs, cl);
             update_chunk_label(&lbl, &ch.borrow(), cur.get());
             lf.queue_draw();
             rf.queue_draw();
@@ -544,6 +568,7 @@ pub(super) fn build_diff_view(
             let cur = current_chunk.clone();
             let lf = left_pane.filler_overlay.clone();
             let rf = right_pane.filler_overlay.clone();
+            let ibars = identical_bars.clone();
             move || {
                 let g = g.clone();
                 let lcm = lcm.clone();
@@ -553,6 +578,7 @@ pub(super) fn build_diff_view(
                 let cur = cur.clone();
                 let lf = lf.clone();
                 let rf = rf.clone();
+                let ibars = ibars.clone();
                 move || {
                     g.queue_draw();
                     lcm.queue_draw();
@@ -561,6 +587,10 @@ pub(super) fn build_diff_view(
                     rf.queue_draw();
                     cur.set(None);
                     update_chunk_label(&lbl, &ch.borrow(), None);
+                    let is_identical = ch.borrow().is_empty();
+                    for bar in &ibars {
+                        bar.set_visible(is_identical);
+                    }
                 }
             }
         };
@@ -905,8 +935,10 @@ pub(super) fn build_diff_view(
         let lbl = chunk_label.clone();
         let lf = left_pane.filler_overlay.clone();
         let rf = right_pane.filler_overlay.clone();
+        let av = active_view.clone();
         action.connect_activate(move |_, _| {
-            navigate_chunk(&ch.borrow(), &cur, -1, &ltv, &lb, &ls, &rtv, &rb, &rs);
+            let cl = cursor_line_from_view(&av.borrow());
+            navigate_chunk(&ch.borrow(), &cur, -1, &ltv, &lb, &ls, &rtv, &rb, &rs, cl);
             update_chunk_label(&lbl, &ch.borrow(), cur.get());
             lf.queue_draw();
             rf.queue_draw();
@@ -926,8 +958,10 @@ pub(super) fn build_diff_view(
         let lbl = chunk_label.clone();
         let lf = left_pane.filler_overlay.clone();
         let rf = right_pane.filler_overlay.clone();
+        let av = active_view.clone();
         action.connect_activate(move |_, _| {
-            navigate_chunk(&ch.borrow(), &cur, 1, &ltv, &lb, &ls, &rtv, &rb, &rs);
+            let cl = cursor_line_from_view(&av.borrow());
+            navigate_chunk(&ch.borrow(), &cur, 1, &ltv, &lb, &ls, &rtv, &rb, &rs, cl);
             update_chunk_label(&lbl, &ch.borrow(), cur.get());
             lf.queue_draw();
             rf.queue_draw();
