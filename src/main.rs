@@ -47,6 +47,18 @@ pub enum CompareMode {
 }
 
 fn main() -> glib::ExitCode {
+    #[cfg(target_os = "macos")]
+    {
+        // Workaround for flickering issues on macOS with GTK 4.14+ (the new 'ngl' renderer)
+        // especially on external 4K monitors. Forcing the legacy 'gl' renderer or 'cairo'
+        // usually resolves it.
+        if std::env::var_os("GSK_RENDERER").is_none() {
+            unsafe {
+                std::env::set_var("GSK_RENDERER", "gl");
+            }
+        }
+    }
+
     let cli = Cli::parse();
 
     let mode = if cli.paths.len() == 3 {
