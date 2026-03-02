@@ -101,6 +101,37 @@ fn update_font_css(settings: &Settings) {
     });
 }
 
+/// Detect whether the system prefers dark mode.
+///
+/// Checks GTK settings first (works on GNOME/freedesktop).  On macOS, falls
+/// back to querying `defaults read -g AppleInterfaceStyle`.
+fn detect_dark_mode(gtk_settings: &gtk4::Settings) -> bool {
+    if gtk_settings.is_gtk_application_prefer_dark_theme() {
+        return true;
+    }
+    if gtk_settings
+        .gtk_theme_name()
+        .is_some_and(|n| n.to_lowercase().contains("dark"))
+    {
+        return true;
+    }
+    // macOS: GTK's quartz backend may not reflect the system appearance,
+    // so check directly.
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(output) = std::process::Command::new("defaults")
+            .args(["read", "-g", "AppleInterfaceStyle"])
+            .output()
+        {
+            if output.status.success() {
+                let s = String::from_utf8_lossy(&output.stdout);
+                return s.trim().eq_ignore_ascii_case("dark");
+            }
+        }
+    }
+    false
+}
+
 // ─── Main UI ───────────────────────────────────────────────────────────────
 
 pub(crate) fn build_ui(application: &Application, mode: CompareMode) {
@@ -132,6 +163,20 @@ pub(crate) fn build_ui(application: &Application, mode: CompareMode) {
         );
 
         let settings = Rc::new(RefCell::new(Settings::load()));
+
+        // Auto-switch to dark mode when the system prefers it.
+        if let Some(gtk_settings) = gtk4::Settings::default() {
+            let is_dark = detect_dark_mode(&gtk_settings);
+            if is_dark {
+                gtk_settings.set_gtk_application_prefer_dark_theme(true);
+            }
+            let mut s = settings.borrow_mut();
+            if is_dark && s.style_scheme == "Adwaita" {
+                s.style_scheme = "Adwaita-dark".to_string();
+            } else if !is_dark && s.style_scheme == "Adwaita-dark" {
+                s.style_scheme = "Adwaita".to_string();
+            }
+        }
 
         match mode {
             CompareMode::Dirs {
