@@ -1,4 +1,4 @@
-name: Publish to crates.io
+name: Release
 on:
   workflow_dispatch:
 jobs:
@@ -250,12 +250,8 @@ jobs:
           mkdir -p ~/.ssh
           echo "$AUR_SSH_KEY" > ~/.ssh/aur
           chmod 600 ~/.ssh/aur
-          cat >> ~/.ssh/config <<EOC
-          Host aur.archlinux.org
-            IdentityFile ~/.ssh/aur
-            User aur
-            StrictHostKeyChecking accept-new
-          EOC
+          ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
+          printf 'Host aur.archlinux.org\n  IdentityFile ~/.ssh/aur\n  User aur\n' >> ~/.ssh/config
       - name: Clone AUR repo
         run: git clone ssh://aur@aur.archlinux.org/mergers.git aur-repo
       - name: Update PKGBUILD
