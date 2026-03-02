@@ -1,4 +1,4 @@
-name: Publish to crates.io
+name: Release
 on:
   workflow_dispatch:
 jobs:
