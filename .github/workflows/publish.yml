@@ -319,6 +319,7 @@ jobs:
             sha256 "${SHA}"
 
             depends_on :macos
+            depends_on "adwaita-icon-theme"
             depends_on "gtk4"
             depends_on "gtksourceview5"
 
