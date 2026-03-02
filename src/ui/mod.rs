@@ -134,7 +134,7 @@ fn detect_dark_mode(gtk_settings: &gtk4::Settings) -> bool {
 
 // ─── Main UI ───────────────────────────────────────────────────────────────
 
-pub(crate) fn build_ui(application: &Application, mode: CompareMode) {
+pub fn build_ui(application: &Application, mode: CompareMode) {
     // Ctrl+Q: quit application
     {
         let quit = gio::SimpleAction::new("quit", None);

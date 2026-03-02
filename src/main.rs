@@ -6,10 +6,7 @@ use clap::Parser;
 use gio::prelude::ApplicationExtManual;
 use gtk4::{Application, glib};
 
-mod myers;
-mod settings;
-mod ui;
-mod vcs;
+use mergers::{ui, vcs, CompareMode};
 
 #[derive(Parser)]
 #[command(name = "mergers", version, about = "Visual diff and merge tool")]
@@ -20,30 +17,6 @@ struct Cli {
     /// Custom labels for panes (one per pane)
     #[arg(short = 'L', long = "label")]
     labels: Vec<String>,
-}
-
-#[derive(Clone)]
-pub enum CompareMode {
-    Files {
-        left: PathBuf,
-        right: PathBuf,
-        labels: Vec<String>,
-    },
-    Dirs {
-        left: PathBuf,
-        right: PathBuf,
-        labels: Vec<String>,
-    },
-    Merge {
-        left: PathBuf,
-        middle: PathBuf,
-        right: PathBuf,
-        labels: Vec<String>,
-    },
-    Vcs {
-        dir: PathBuf,
-    },
-    Welcome,
 }
 
 fn main() -> glib::ExitCode {
