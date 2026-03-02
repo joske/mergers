@@ -61,8 +61,21 @@ jobs:
         run: cargo publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-  appimage:
+  create-release:
     needs: [checks, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ needs.checks.outputs.tag }}"
+          gh release create "$TAG" --title "$TAG" --generate-notes
+  appimage:
+    needs: [checks, create-release]
     strategy:
       matrix:
         include:
@@ -100,10 +113,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ needs.checks.outputs.tag }}"
-          gh release create "$TAG" --title "$TAG" --generate-notes 2>/dev/null || true
           gh release upload "$TAG" mergers-${{ matrix.arch }}.AppImage --clobber
   macos:
-    needs: [checks, publish]
+    needs: [checks, create-release]
     strategy:
       matrix:
         include:
@@ -129,10 +141,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ needs.checks.outputs.tag }}"
-          gh release create "$TAG" --title "$TAG" --generate-notes 2>/dev/null || true
           gh release upload "$TAG" mergers-darwin-${{ matrix.arch }}.tar.gz --clobber
   windows:
-    needs: [checks, publish]
+    needs: [checks, create-release]
     strategy:
       fail-fast: false
       matrix:
@@ -224,8 +235,51 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ needs.checks.outputs.tag }}"
-          gh release create "$TAG" --title "$TAG" --generate-notes 2>/dev/null || true
           gh release upload "$TAG" mergers-windows-${{ matrix.arch }}.zip --clobber
+  aur:
+    needs: [checks, appimage]
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Install dependencies
+        run: pacman -Sy --noconfirm git openssh
+      - name: Setup SSH
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$AUR_SSH_KEY" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          cat >> ~/.ssh/config <<EOC
+          Host aur.archlinux.org
+            IdentityFile ~/.ssh/aur
+            User aur
+            StrictHostKeyChecking accept-new
+          EOC
+      - name: Clone AUR repo
+        run: git clone ssh://aur@aur.archlinux.org/mergers.git aur-repo
+      - name: Update PKGBUILD
+        run: |
+          TAG="${{ needs.checks.outputs.tag }}"
+          VERSION="${TAG#v}"
+          SHA=$(curl -sL "https://github.com/joske/mergers/archive/refs/tags/${TAG}.tar.gz" | sha256sum | cut -d' ' -f1)
+          cd aur-repo
+          sed -i "s/^pkgver=.*/pkgver=${VERSION}/" PKGBUILD
+          sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+          sed -i "s/^sha256sums=.*/sha256sums=('${SHA}')/" PKGBUILD
+      - name: Generate .SRCINFO
+        run: |
+          cd aur-repo
+          useradd -m builder
+          chown -R builder:builder .
+          su builder -c "makepkg --printsrcinfo > .SRCINFO"
+      - name: Commit and push
+        run: |
+          cd aur-repo
+          git config user.name "Jos Dehaes"
+          git config user.email "jos.dehaes@gmail.com"
+          git add PKGBUILD .SRCINFO
+          git diff-index --quiet HEAD || { git commit -m "Update to ${{ needs.checks.outputs.tag }}" && git push; }
   homebrew:
     needs: [checks, macos]
     runs-on: ubuntu-latest
