@@ -247,13 +247,12 @@ jobs:
         env:
           AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
         run: |
-          mkdir -p ~/.ssh
-          echo "$AUR_SSH_KEY" > ~/.ssh/aur
-          chmod 600 ~/.ssh/aur
-          ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
-          printf 'Host aur.archlinux.org\n  IdentityFile ~/.ssh/aur\n  User aur\n' >> ~/.ssh/config
+          mkdir -p -m 700 /root/.ssh
+          echo "$AUR_SSH_KEY" > /root/.ssh/aur
+          chmod 600 /root/.ssh/aur
+          ssh-keyscan aur.archlinux.org >> /root/.ssh/known_hosts
       - name: Clone AUR repo
-        run: git clone ssh://aur@aur.archlinux.org/mergers.git aur-repo
+        run: GIT_SSH_COMMAND="ssh -i /root/.ssh/aur" git clone ssh://aur@aur.archlinux.org/mergers.git aur-repo
       - name: Update PKGBUILD
         run: |
           TAG="${{ needs.checks.outputs.tag }}"
@@ -275,7 +274,10 @@ jobs:
           git config user.name "Jos Dehaes"
           git config user.email "jos.dehaes@gmail.com"
           git add PKGBUILD .SRCINFO
-          git diff-index --quiet HEAD || { git commit -m "Update to ${{ needs.checks.outputs.tag }}" && git push; }
+          git diff-index --quiet HEAD || { git commit -m "Update to ${{ needs.checks.outputs.tag }}" && GIT_SSH_COMMAND="ssh -i /root/.ssh/aur" git push; }
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f /root/.ssh/aur
   homebrew:
     needs: [checks, macos]
     runs-on: ubuntu-latest
