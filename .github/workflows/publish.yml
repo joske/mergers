@@ -271,6 +271,7 @@ jobs:
       - name: Commit and push
         run: |
           cd aur-repo
+          chown -R root:root .
           git config user.name "Jos Dehaes"
           git config user.email "jos.dehaes@gmail.com"
           git add PKGBUILD .SRCINFO
