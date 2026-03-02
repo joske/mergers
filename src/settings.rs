@@ -17,7 +17,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             font: "Monospace 11".to_string(),
-            style_scheme: "Adwaita".to_string(),
+            style_scheme: "adwaita".to_string(),
             show_line_numbers: true,
             wrap_mode: "none".to_string(),
             tab_width: 4,
@@ -38,6 +38,7 @@ impl Default for Settings {
 }
 
 impl Settings {
+    #[must_use]
     pub fn config_path() -> PathBuf {
         let mut p = if let Some(config) = std::env::var_os("XDG_CONFIG_HOME") {
             PathBuf::from(config)
@@ -53,6 +54,7 @@ impl Settings {
         p
     }
 
+    #[must_use]
     pub fn load() -> Self {
         let path = Self::config_path();
         match std::fs::read_to_string(&path) {
@@ -71,6 +73,7 @@ impl Settings {
         }
     }
 
+    #[must_use]
     pub fn wrap_mode_gtk(&self) -> gtk4::WrapMode {
         match self.wrap_mode.as_str() {
             "word" => gtk4::WrapMode::Word,

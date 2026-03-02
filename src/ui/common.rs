@@ -9,7 +9,7 @@ pub(super) enum Side {
     B,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) enum FileStatus {
     Same,
     Different,

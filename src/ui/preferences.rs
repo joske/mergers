@@ -88,7 +88,10 @@ pub(super) fn show_preferences(parent: &ApplicationWindow, settings: &Rc<RefCell
     let scheme_strs: Vec<&str> = scheme_strings.iter().map(String::as_str).collect();
     let scheme_list = gtk4::StringList::new(&scheme_strs);
     let scheme_dropdown = gtk4::DropDown::new(Some(scheme_list), gtk4::Expression::NONE);
-    if let Some(pos) = scheme_strings.iter().position(|id| id == &s.style_scheme) {
+    if let Some(pos) = scheme_strings
+        .iter()
+        .position(|id| id.eq_ignore_ascii_case(&s.style_scheme))
+    {
         scheme_dropdown.set_selected(pos as u32);
     }
     content.append(&make_pref_row("Color scheme", &scheme_dropdown));

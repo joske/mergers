@@ -81,6 +81,7 @@ pub fn diff<T: Eq + Hash>(a: &[T], b: &[T]) -> Vec<DiffChunk> {
 }
 
 /// Convenience: diff two strings line by line.
+#[must_use]
 pub fn diff_lines(a: &str, b: &str) -> Vec<DiffChunk> {
     let a_lines: Vec<&str> = a.lines().collect();
     let b_lines: Vec<&str> = b.lines().collect();
@@ -99,6 +100,11 @@ pub struct Token<'a> {
 /// - Word: run of `char::is_alphanumeric() || '_'`
 /// - Whitespace: run of `char::is_whitespace()`
 /// - Punctuation: each remaining char is its own token
+///
+/// # Panics
+///
+/// Panics if the string contains invalid UTF-8 (not possible for valid `&str`).
+#[must_use]
 pub fn tokenize(s: &str) -> Vec<Token<'_>> {
     let mut tokens = Vec::new();
     let mut i = 0;
@@ -146,6 +152,7 @@ pub fn tokenize(s: &str) -> Vec<Token<'_>> {
 
 /// Word-level diff: tokenize both strings, diff the token texts,
 /// return (tokens a, tokens b, chunks) where chunk indices reference token positions.
+#[must_use]
 pub fn diff_words<'a>(a: &'a str, b: &'a str) -> (Vec<Token<'a>>, Vec<Token<'a>>, Vec<DiffChunk>) {
     let toks_a = tokenize(a);
     let toks_b = tokenize(b);

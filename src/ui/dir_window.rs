@@ -1,44 +1,68 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
-// ─── Row encoding ──────────────────────────────────────────────────────────
-// Fields: STATUS \x1f NAME \x1f IS_DIR \x1f REL_PATH \x1f L_SIZE \x1f L_MTIME \x1f R_SIZE \x1f R_MTIME
+// ─── Directory Logic (Pure Functions) ──────────────────────────────────────
 
-#[allow(clippy::too_many_arguments)]
-fn encode_row(
-    status: FileStatus,
-    name: &str,
-    is_dir: bool,
-    rel_path: &str,
-    left_size: Option<u64>,
-    left_mtime: Option<SystemTime>,
-    right_size: Option<u64>,
-    right_mtime: Option<SystemTime>,
-) -> String {
-    let s = status.code();
-    let d = if is_dir { "1" } else { "0" };
-    let ls = left_size.map(format_size).unwrap_or_default();
-    let lm = left_mtime.map(format_mtime).unwrap_or_default();
-    let rs = right_size.map(format_size).unwrap_or_default();
-    let rm = right_mtime.map(format_mtime).unwrap_or_default();
-    format!("{s}{SEP}{name}{SEP}{d}{SEP}{rel_path}{SEP}{ls}{SEP}{lm}{SEP}{rs}{SEP}{rm}")
+#[derive(Debug, Clone, PartialEq)]
+pub struct DirRowInfo {
+    pub status: FileStatus,
+    pub name: String,
+    pub is_dir: bool,
+    pub rel_path: String,
+    pub left_size: Option<u64>,
+    pub left_mtime: Option<SystemTime>,
+    pub right_size: Option<u64>,
+    pub right_mtime: Option<SystemTime>,
 }
 
-fn decode_field(raw: &str, index: usize) -> &str {
-    raw.splitn(8, SEP).nth(index).unwrap_or("")
-}
+impl DirRowInfo {
+    pub fn encode(&self) -> String {
+        let s = self.status.code();
+        let d = if self.is_dir { "1" } else { "0" };
+        let ls = self.left_size.map(format_size).unwrap_or_default();
+        let lm = self.left_mtime.map(format_mtime).unwrap_or_default();
+        let rs = self.right_size.map(format_size).unwrap_or_default();
+        let rm = self.right_mtime.map(format_mtime).unwrap_or_default();
+        format!(
+            "{s}{SEP}{name}{SEP}{d}{SEP}{rel}{SEP}{ls}{SEP}{lm}{SEP}{rs}{SEP}{rm}",
+            name = self.name,
+            rel = self.rel_path
+        )
+    }
 
-fn decode_status(raw: &str) -> &str {
-    decode_field(raw, 0)
-}
-fn decode_name(raw: &str) -> &str {
-    decode_field(raw, 1)
-}
-fn decode_is_dir(raw: &str) -> bool {
-    decode_field(raw, 2) == "1"
-}
-fn decode_rel_path(raw: &str) -> &str {
-    decode_field(raw, 3)
+    pub fn decode(raw: &str) -> Self {
+        let mut parts = raw.splitn(8, SEP);
+        let status_code = parts.next().unwrap_or("S");
+        let name = parts.next().unwrap_or("").to_string();
+        let is_dir = parts.next().unwrap_or("0") == "1";
+        let rel_path = parts.next().unwrap_or("").to_string();
+        // Skip metadata decoding for now as it's string-formatted;
+        // in a real app we might want to store raw values or just use strings for display.
+        // For this refactor, we primarily need the identity fields.
+
+        let status = match status_code {
+            "D" => FileStatus::Different,
+            "L" => FileStatus::LeftOnly,
+            "R" => FileStatus::RightOnly,
+            _ => FileStatus::Same,
+        };
+
+        DirRowInfo {
+            status,
+            name,
+            is_dir,
+            rel_path,
+            left_size: None, // Decoding metadata from formatted string is lossy/complex
+            left_mtime: None,
+            right_size: None,
+            right_mtime: None,
+        }
+    }
+
+    // Helper to get just the field text for display
+    pub fn get_field_text(raw: &str, index: usize) -> &str {
+        raw.splitn(8, SEP).nth(index).unwrap_or("")
+    }
 }
 
 // ─── Directory copy helper ──────────────────────────────────────────────────
@@ -230,17 +254,17 @@ fn build_stores(entries: &[ScanEntry], children_map: &mut HashMap<String, ListSt
             let child_store = build_stores(&entry.children, children_map);
             children_map.insert(entry.rel_path.clone(), child_store);
         }
-        let row = encode_row(
-            entry.status,
-            &entry.name,
-            entry.is_dir,
-            &entry.rel_path,
-            entry.left_size,
-            entry.left_mtime,
-            entry.right_size,
-            entry.right_mtime,
-        );
-        store.append(&StringObject::new(&row));
+        let info = DirRowInfo {
+            status: entry.status,
+            name: entry.name.clone(),
+            is_dir: entry.is_dir,
+            rel_path: entry.rel_path.clone(),
+            left_size: entry.left_size,
+            left_mtime: entry.left_mtime,
+            right_size: entry.right_size,
+            right_mtime: entry.right_mtime,
+        };
+        store.append(&StringObject::new(&info.encode()));
     }
     store
 }
@@ -306,17 +330,15 @@ fn make_name_factory(is_left: bool) -> SignalListItemFactory {
         let icon = hbox.first_child().and_downcast::<Image>().unwrap();
         let label = icon.next_sibling().and_downcast::<Label>().unwrap();
 
-        let status = decode_status(&raw);
-        let name = decode_name(&raw);
-        let is_dir = decode_is_dir(&raw);
+        let info = DirRowInfo::decode(&raw);
 
-        icon.set_icon_name(Some(if is_dir {
+        icon.set_icon_name(Some(if info.is_dir {
             "folder-symbolic"
         } else {
             "text-x-generic-symbolic"
         }));
-        label.set_label(name);
-        apply_status_class(&label, status, is_left);
+        label.set_label(&info.name);
+        apply_status_class(&label, info.status.code(), is_left);
     });
 
     factory
@@ -340,15 +362,16 @@ fn make_field_factory(is_left: bool, field_idx: usize) -> SignalListItemFactory 
         let raw = obj.string();
 
         let label = item.child().and_downcast::<Label>().unwrap();
-        let status = decode_status(&raw);
-        let missing = (is_left && status == "R") || (!is_left && status == "L");
+        let info = DirRowInfo::decode(&raw);
+        let missing = (is_left && info.status == FileStatus::RightOnly)
+            || (!is_left && info.status == FileStatus::LeftOnly);
 
         label.set_label(if missing {
             ""
         } else {
-            decode_field(&raw, field_idx)
+            DirRowInfo::get_field_text(&raw, field_idx)
         });
-        apply_status_class(&label, status, is_left);
+        apply_status_class(&label, info.status.code(), is_left);
     });
 
     factory
@@ -395,10 +418,10 @@ pub(super) fn build_dir_window(
     let tree_model = TreeListModel::new(root_store.clone(), false, false, move |item| {
         let obj = item.downcast_ref::<StringObject>()?;
         let raw = obj.string();
-        if decode_is_dir(&raw) {
-            let rel = decode_rel_path(&raw);
+        let info = DirRowInfo::decode(&raw);
+        if info.is_dir {
             cm.borrow()
-                .get(rel)
+                .get(&info.rel_path)
                 .cloned()
                 .map(gio::prelude::Cast::upcast::<gio::ListModel>)
         } else {
@@ -648,7 +671,7 @@ pub(super) fn build_dir_window(
             let saved_rel = (|| -> Option<String> {
                 let row = tm.item(saved_pos)?.downcast::<TreeListRow>().ok()?;
                 let obj = row.item().and_downcast::<StringObject>()?;
-                Some(decode_rel_path(&obj.string()).to_string())
+                Some(DirRowInfo::decode(&obj.string()).rel_path)
             })();
 
             // Save expanded rel_paths
@@ -658,7 +681,7 @@ pub(super) fn build_dir_window(
                     && row.is_expanded()
                     && let Some(obj) = row.item().and_downcast::<StringObject>()
                 {
-                    expanded.push(decode_rel_path(&obj.string()).to_string());
+                    expanded.push(DirRowInfo::decode(&obj.string()).rel_path);
                 }
             }
 
@@ -716,7 +739,7 @@ pub(super) fn build_dir_window(
                     for i in 0..tm.n_items() {
                         if let Some(row) = tm.item(i).and_then(|o| o.downcast::<TreeListRow>().ok())
                             && let Some(obj) = row.item().and_downcast::<StringObject>()
-                            && decode_rel_path(&obj.string()) == rel.as_str()
+                            && DirRowInfo::decode(&obj.string()).rel_path == rel.as_str()
                         {
                             row.set_expanded(true);
                             break;
@@ -731,7 +754,7 @@ pub(super) fn build_dir_window(
                     for i in 0..n {
                         if let Some(row) = tm.item(i).and_then(|o| o.downcast::<TreeListRow>().ok())
                             && let Some(obj) = row.item().and_downcast::<StringObject>()
-                            && decode_rel_path(&obj.string()) == rel.as_str()
+                            && DirRowInfo::decode(&obj.string()).rel_path == rel.as_str()
                         {
                             final_pos = i;
                             break;
@@ -810,9 +833,9 @@ pub(super) fn build_dir_window(
         let lv = left_view.clone();
         copy_left_btn.connect_clicked(move |_| {
             if let Some(raw) = get_row() {
-                let rel = decode_rel_path(&raw).to_string();
-                let status = decode_status(&raw);
-                if status == "R" || status == "D" {
+                let info = DirRowInfo::decode(&raw);
+                if info.status == FileStatus::RightOnly || info.status == FileStatus::Different {
+                    let rel = info.rel_path;
                     let src = Path::new(rd.borrow().as_str()).join(&rel);
                     let dst = Path::new(ld.borrow().as_str()).join(&rel);
                     let reload = reload.clone();
@@ -827,7 +850,7 @@ pub(super) fn build_dir_window(
                         }
                         reload();
                     };
-                    if status == "D" {
+                    if info.status == FileStatus::Different {
                         if let Some(win) = lv
                             .root()
                             .and_then(|r| r.downcast::<ApplicationWindow>().ok())
@@ -857,9 +880,9 @@ pub(super) fn build_dir_window(
         let lv = left_view.clone();
         copy_right_btn.connect_clicked(move |_| {
             if let Some(raw) = get_row() {
-                let rel = decode_rel_path(&raw).to_string();
-                let status = decode_status(&raw);
-                if status == "L" || status == "D" {
+                let info = DirRowInfo::decode(&raw);
+                if info.status == FileStatus::LeftOnly || info.status == FileStatus::Different {
+                    let rel = info.rel_path;
                     let src = Path::new(ld.borrow().as_str()).join(&rel);
                     let dst = Path::new(rd.borrow().as_str()).join(&rel);
                     let reload = reload.clone();
@@ -874,7 +897,7 @@ pub(super) fn build_dir_window(
                         }
                         reload();
                     };
-                    if status == "D" {
+                    if info.status == FileStatus::Different {
                         if let Some(win) = lv
                             .root()
                             .and_then(|r| r.downcast::<ApplicationWindow>().ok())
@@ -905,15 +928,17 @@ pub(super) fn build_dir_window(
         let lv = left_view.clone();
         delete_btn.connect_clicked(move |_| {
             if let Some(raw) = get_row() {
-                let rel = decode_rel_path(&raw).to_string();
-                let status = decode_status(&raw).to_string();
+                let info = DirRowInfo::decode(&raw);
+                let rel = info.rel_path;
+                let status = info.status;
                 let lp = Path::new(ld.borrow().as_str()).join(&rel);
                 let rp = Path::new(rd.borrow().as_str()).join(&rel);
-                let path = match status.as_str() {
-                    "L" => Some(lp),
-                    "R" => Some(rp),
-                    "D" | "S" => Some(if fl.get() { lp } else { rp }),
-                    _ => None,
+                let path = match status {
+                    FileStatus::LeftOnly => Some(lp),
+                    FileStatus::RightOnly => Some(rp),
+                    FileStatus::Different | FileStatus::Same => {
+                        Some(if fl.get() { lp } else { rp })
+                    }
                 };
                 if let Some(p) = path
                     && let Some(win) = lv
@@ -949,9 +974,9 @@ pub(super) fn build_dir_window(
         let lv = left_view.clone();
         action.connect_activate(move |_, _| {
             if let Some(raw) = get_row() {
-                let rel = decode_rel_path(&raw).to_string();
-                let status = decode_status(&raw);
-                if status == "R" || status == "D" {
+                let info = DirRowInfo::decode(&raw);
+                if info.status == FileStatus::RightOnly || info.status == FileStatus::Different {
+                    let rel = info.rel_path;
                     let src = Path::new(rd.borrow().as_str()).join(&rel);
                     let dst = Path::new(ld.borrow().as_str()).join(&rel);
                     let reload = reload.clone();
@@ -966,7 +991,7 @@ pub(super) fn build_dir_window(
                         }
                         reload();
                     };
-                    if status == "D" {
+                    if info.status == FileStatus::Different {
                         if let Some(win) = lv
                             .root()
                             .and_then(|r| r.downcast::<ApplicationWindow>().ok())
@@ -996,9 +1021,9 @@ pub(super) fn build_dir_window(
         let lv = left_view.clone();
         action.connect_activate(move |_, _| {
             if let Some(raw) = get_row() {
-                let rel = decode_rel_path(&raw).to_string();
-                let status = decode_status(&raw);
-                if status == "L" || status == "D" {
+                let info = DirRowInfo::decode(&raw);
+                if info.status == FileStatus::LeftOnly || info.status == FileStatus::Different {
+                    let rel = info.rel_path;
                     let src = Path::new(ld.borrow().as_str()).join(&rel);
                     let dst = Path::new(rd.borrow().as_str()).join(&rel);
                     let reload = reload.clone();
@@ -1013,7 +1038,7 @@ pub(super) fn build_dir_window(
                         }
                         reload();
                     };
-                    if status == "D" {
+                    if info.status == FileStatus::Different {
                         if let Some(win) = lv
                             .root()
                             .and_then(|r| r.downcast::<ApplicationWindow>().ok())
@@ -1044,15 +1069,17 @@ pub(super) fn build_dir_window(
         let lv = left_view.clone();
         action.connect_activate(move |_, _| {
             if let Some(raw) = get_row() {
-                let rel = decode_rel_path(&raw).to_string();
-                let status = decode_status(&raw).to_string();
+                let info = DirRowInfo::decode(&raw);
+                let rel = info.rel_path;
+                let status = info.status;
                 let lp = Path::new(ld.borrow().as_str()).join(&rel);
                 let rp = Path::new(rd.borrow().as_str()).join(&rel);
-                let path = match status.as_str() {
-                    "L" => Some(lp),
-                    "R" => Some(rp),
-                    "D" | "S" => Some(if fl.get() { lp } else { rp }),
-                    _ => None,
+                let path = match status {
+                    FileStatus::LeftOnly => Some(lp),
+                    FileStatus::RightOnly => Some(rp),
+                    FileStatus::Different | FileStatus::Same => {
+                        Some(if fl.get() { lp } else { rp })
+                    }
                 };
                 if let Some(p) = path
                     && let Some(win) = lv
@@ -1105,17 +1132,11 @@ pub(super) fn build_dir_window(
         let rd = right_dir.clone();
         let st = settings.clone();
         action.connect_activate(move |_, _| {
-            if let Some(raw) = get_row()
-                && !decode_is_dir(&raw)
-            {
-                open_file_diff(
-                    &nb,
-                    decode_rel_path(&raw),
-                    &tabs,
-                    &ld.borrow(),
-                    &rd.borrow(),
-                    &st,
-                );
+            if let Some(raw) = get_row() {
+                let info = DirRowInfo::decode(&raw);
+                if !info.is_dir {
+                    open_file_diff(&nb, &info.rel_path, &tabs, &ld.borrow(), &rd.borrow(), &st);
+                }
             }
         });
         dir_action_group.add_action(&action);
@@ -1165,11 +1186,18 @@ pub(super) fn build_dir_window(
                     sel.set_selected(pos);
                 }
                 if let Some(raw) = get_row() {
-                    let is_dir = decode_is_dir(&raw);
-                    let status = decode_status(&raw);
-                    ao.set_enabled(!is_dir && (status == "D" || status == "S"));
-                    al.set_enabled(status == "R" || status == "D");
-                    ar.set_enabled(status == "L" || status == "D");
+                    let info = DirRowInfo::decode(&raw);
+                    let is_dir = info.is_dir;
+                    let status = info.status;
+                    ao.set_enabled(
+                        !is_dir && (status == FileStatus::Different || status == FileStatus::Same),
+                    );
+                    al.set_enabled(
+                        status == FileStatus::RightOnly || status == FileStatus::Different,
+                    );
+                    ar.set_enabled(
+                        status == FileStatus::LeftOnly || status == FileStatus::Different,
+                    );
                     pop.set_pointing_to(Some(&gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
                     pop.popup();
                 }
@@ -1193,15 +1221,9 @@ pub(super) fn build_dir_window(
                 let row = item.downcast::<TreeListRow>().unwrap();
                 let obj = row.item().and_downcast::<StringObject>().unwrap();
                 let raw = obj.string();
-                if !decode_is_dir(&raw) {
-                    open_file_diff(
-                        &nb,
-                        decode_rel_path(&raw),
-                        &tabs,
-                        &ld.borrow(),
-                        &rd.borrow(),
-                        &st,
-                    );
+                let info = DirRowInfo::decode(&raw);
+                if !info.is_dir {
+                    open_file_diff(&nb, &info.rel_path, &tabs, &ld.borrow(), &rd.borrow(), &st);
                 }
             }
         });
@@ -1218,15 +1240,9 @@ pub(super) fn build_dir_window(
                 let row = item.downcast::<TreeListRow>().unwrap();
                 let obj = row.item().and_downcast::<StringObject>().unwrap();
                 let raw = obj.string();
-                if !decode_is_dir(&raw) {
-                    open_file_diff(
-                        &nb,
-                        decode_rel_path(&raw),
-                        &tabs,
-                        &ld.borrow(),
-                        &rd.borrow(),
-                        &st,
-                    );
+                let info = DirRowInfo::decode(&raw);
+                if !info.is_dir {
+                    open_file_diff(&nb, &info.rel_path, &tabs, &ld.borrow(), &rd.borrow(), &st);
                 }
             }
         });
@@ -1377,7 +1393,6 @@ pub(super) fn build_dir_window(
     window.connect_destroy(move |_| {
         dir_watcher_alive.set(false);
     });
-
     window.present();
     left_view.grab_focus();
 }
@@ -1390,93 +1405,108 @@ mod tests {
 
     #[test]
     fn encode_decode_roundtrip() {
-        let encoded = encode_row(
-            FileStatus::Different,
-            "test.txt",
-            false,
-            "subdir/test.txt",
-            Some(1024),
-            None,
-            Some(2048),
-            None,
-        );
-        assert_eq!(decode_status(&encoded), "D");
-        assert_eq!(decode_name(&encoded), "test.txt");
-        assert!(!decode_is_dir(&encoded));
-        assert_eq!(decode_rel_path(&encoded), "subdir/test.txt");
+        let original = DirRowInfo {
+            status: FileStatus::Different,
+            name: "test.txt".to_string(),
+            is_dir: false,
+            rel_path: "subdir/test.txt".to_string(),
+            left_size: Some(1024),
+            left_mtime: None,
+            right_size: Some(2048),
+            right_mtime: None,
+        };
+        let encoded = original.encode();
+        let decoded = DirRowInfo::decode(&encoded);
+
+        assert_eq!(decoded.status, FileStatus::Different);
+        assert_eq!(decoded.name, "test.txt");
+        assert!(!decoded.is_dir);
+        assert_eq!(decoded.rel_path, "subdir/test.txt");
     }
 
     #[test]
     fn encode_decode_directory() {
-        let encoded = encode_row(
-            FileStatus::Same,
-            "mydir",
-            true,
-            "parent/mydir",
-            None,
-            None,
-            None,
-            None,
-        );
-        assert_eq!(decode_status(&encoded), "S");
-        assert_eq!(decode_name(&encoded), "mydir");
-        assert!(decode_is_dir(&encoded));
-        assert_eq!(decode_rel_path(&encoded), "parent/mydir");
+        let original = DirRowInfo {
+            status: FileStatus::Same,
+            name: "mydir".to_string(),
+            is_dir: true,
+            rel_path: "parent/mydir".to_string(),
+            left_size: None,
+            left_mtime: None,
+            right_size: None,
+            right_mtime: None,
+        };
+        let encoded = original.encode();
+        let decoded = DirRowInfo::decode(&encoded);
+
+        assert_eq!(decoded.status, FileStatus::Same);
+        assert_eq!(decoded.name, "mydir");
+        assert!(decoded.is_dir);
+        assert_eq!(decoded.rel_path, "parent/mydir");
     }
 
     #[test]
     fn encode_decode_left_only() {
-        let encoded = encode_row(
-            FileStatus::LeftOnly,
-            "orphan.rs",
-            false,
-            "orphan.rs",
-            Some(512),
-            None,
-            None,
-            None,
-        );
-        assert_eq!(decode_status(&encoded), "L");
-        assert_eq!(decode_name(&encoded), "orphan.rs");
+        let original = DirRowInfo {
+            status: FileStatus::LeftOnly,
+            name: "orphan.rs".to_string(),
+            is_dir: false,
+            rel_path: "orphan.rs".to_string(),
+            left_size: Some(512),
+            left_mtime: None,
+            right_size: None,
+            right_mtime: None,
+        };
+        let encoded = original.encode();
+        let decoded = DirRowInfo::decode(&encoded);
+
+        assert_eq!(decoded.status, FileStatus::LeftOnly);
+        assert_eq!(decoded.name, "orphan.rs");
     }
 
     #[test]
     fn encode_decode_right_only() {
-        let encoded = encode_row(
-            FileStatus::RightOnly,
-            "new_file.rs",
-            false,
-            "new_file.rs",
-            None,
-            None,
-            Some(256),
-            None,
-        );
-        assert_eq!(decode_status(&encoded), "R");
-        assert_eq!(decode_name(&encoded), "new_file.rs");
+        let original = DirRowInfo {
+            status: FileStatus::RightOnly,
+            name: "new_file.rs".to_string(),
+            is_dir: false,
+            rel_path: "new_file.rs".to_string(),
+            left_size: None,
+            left_mtime: None,
+            right_size: Some(256),
+            right_mtime: None,
+        };
+        let encoded = original.encode();
+        let decoded = DirRowInfo::decode(&encoded);
+
+        assert_eq!(decoded.status, FileStatus::RightOnly);
+        assert_eq!(decoded.name, "new_file.rs");
     }
 
     #[test]
     fn decode_field_out_of_bounds() {
-        // Should return empty string for missing fields
-        assert_eq!(decode_field("a\x1fb", 5), "");
-        assert_eq!(decode_field("", 0), "");
+        // Should return empty string for missing fields via helper
+        assert_eq!(DirRowInfo::get_field_text("a\x1fb", 5), "");
+        assert_eq!(DirRowInfo::get_field_text("", 0), "");
     }
 
     #[test]
     fn decode_name_with_special_chars() {
-        let encoded = encode_row(
-            FileStatus::Same,
-            "file with spaces.txt",
-            false,
-            "path/file with spaces.txt",
-            None,
-            None,
-            None,
-            None,
-        );
-        assert_eq!(decode_name(&encoded), "file with spaces.txt");
-        assert_eq!(decode_rel_path(&encoded), "path/file with spaces.txt");
+        let original = DirRowInfo {
+            status: FileStatus::Same,
+            name: "file with spaces.txt".to_string(),
+            is_dir: false,
+            rel_path: "path/file with spaces.txt".to_string(),
+            left_size: None,
+            left_mtime: None,
+            right_size: None,
+            right_mtime: None,
+        };
+        let encoded = original.encode();
+        let decoded = DirRowInfo::decode(&encoded);
+
+        assert_eq!(decoded.name, "file with spaces.txt");
+        assert_eq!(decoded.rel_path, "path/file with spaces.txt");
     }
 
     // ── FileStatus ────────────────────────────────────────────────

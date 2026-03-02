@@ -122,11 +122,10 @@ fn detect_dark_mode(gtk_settings: &gtk4::Settings) -> bool {
         if let Ok(output) = std::process::Command::new("defaults")
             .args(["read", "-g", "AppleInterfaceStyle"])
             .output()
+            && output.status.success()
         {
-            if output.status.success() {
-                let s = String::from_utf8_lossy(&output.stdout);
-                return s.trim().eq_ignore_ascii_case("dark");
-            }
+            let s = String::from_utf8_lossy(&output.stdout);
+            return s.trim().eq_ignore_ascii_case("dark");
         }
     }
     false
@@ -134,14 +133,20 @@ fn detect_dark_mode(gtk_settings: &gtk4::Settings) -> bool {
 
 // ─── Main UI ───────────────────────────────────────────────────────────────
 
+/// Initialize the application UI based on the comparison mode.
+///
+/// # Panics
+///
+/// Panics if the default GTK display cannot be obtained during startup.
 pub fn build_ui(application: &Application, mode: CompareMode) {
+    // Shared settings for the whole application instance
+    let settings = Rc::new(RefCell::new(Settings::load()));
+
     // Ctrl+Q: quit application
     {
         let quit = gio::SimpleAction::new("quit", None);
         let app = application.clone();
         quit.connect_activate(move |_, _| {
-            // Close all windows; each window's close-request handler
-            // will prompt for unsaved changes if needed.
             for w in app.windows() {
                 w.close();
             }
@@ -150,33 +155,32 @@ pub fn build_ui(application: &Application, mode: CompareMode) {
         application.set_accels_for_action("app.quit", &["<Ctrl>q"]);
     }
 
+    {
+        let settings = settings.clone();
+        application.connect_startup(move |_| {
+            // Load application CSS
+            let provider = CssProvider::new();
+            provider.load_from_string(CSS);
+            gtk4::style_context_add_provider_for_display(
+                &Display::default().expect("GTK display must be available"),
+                &provider,
+                gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+
+            // Auto-switch to dark mode when the system prefers it.
+            if let Some(gtk_settings) = gtk4::Settings::default() {
+                let is_dark = detect_dark_mode(&gtk_settings);
+                gtk_settings.set_gtk_application_prefer_dark_theme(is_dark);
+            }
+
+            // Initial font CSS update
+            update_font_css(&settings.borrow());
+        });
+    }
+
     application.connect_activate(move |app| {
         let mode = mode.clone();
-
-        // Load CSS
-        let provider = CssProvider::new();
-        provider.load_from_string(CSS);
-        gtk4::style_context_add_provider_for_display(
-            &Display::default().expect("GTK display must be available"),
-            &provider,
-            gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
-        );
-
-        let settings = Rc::new(RefCell::new(Settings::load()));
-
-        // Auto-switch to dark mode when the system prefers it.
-        if let Some(gtk_settings) = gtk4::Settings::default() {
-            let is_dark = detect_dark_mode(&gtk_settings);
-            if is_dark {
-                gtk_settings.set_gtk_application_prefer_dark_theme(true);
-            }
-            let mut s = settings.borrow_mut();
-            if is_dark && s.style_scheme == "Adwaita" {
-                s.style_scheme = "Adwaita-dark".to_string();
-            } else if !is_dark && s.style_scheme == "Adwaita-dark" {
-                s.style_scheme = "Adwaita".to_string();
-            }
-        }
+        let settings = settings.clone();
 
         match mode {
             CompareMode::Dirs {

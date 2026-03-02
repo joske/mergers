@@ -6,7 +6,7 @@ use clap::Parser;
 use gio::prelude::ApplicationExtManual;
 use gtk4::{Application, glib};
 
-use mergers::{ui, vcs, CompareMode};
+use mergers::{CompareMode, ui, vcs};
 
 #[derive(Parser)]
 #[command(name = "mergers", version, about = "Visual diff and merge tool")]

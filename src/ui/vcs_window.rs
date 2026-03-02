@@ -1,9 +1,9 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
-// ─── VCS window ─────────────────────────────────────────────────────────────
+// ─── VCS Logic (Pure Functions & Helpers) ───────────────────────────────────
 
-fn encode_vcs_row(status: &crate::vcs::VcsStatus, rel_path: &str) -> String {
+pub fn encode_vcs_row(status: &crate::vcs::VcsStatus, rel_path: &str) -> String {
     let code = match status {
         crate::vcs::VcsStatus::Modified => "M",
         crate::vcs::VcsStatus::Added => "A",
@@ -14,31 +14,81 @@ fn encode_vcs_row(status: &crate::vcs::VcsStatus, rel_path: &str) -> String {
     format!("{code}{SEP}{rel_path}")
 }
 
-fn decode_vcs_code(raw: &str) -> &str {
-    raw.split(SEP).next().unwrap_or("")
+pub fn decode_vcs_row(raw: &str) -> (&str, &str) {
+    raw.split_once(SEP).unwrap_or(("", ""))
 }
 
-fn decode_vcs_path(raw: &str) -> &str {
-    raw.split_once(SEP).map_or("", |x| x.1)
-}
-
-fn vcs_status_label(code: &str) -> &str {
+pub fn vcs_status_info(code: &str) -> (&'static str, &'static str) {
     match code {
-        "M" => "Modified",
-        "A" => "Added",
-        "D" => "Deleted",
-        "R" => "Renamed",
-        "U" => "Untracked",
-        _ => "",
+        "M" => ("Modified", "diff-changed"),
+        "A" => ("Added", "diff-inserted"),
+        "D" => ("Deleted", "diff-deleted"),
+        "R" => ("Renamed", "diff-changed"),
+        "U" => ("Untracked", "diff-inserted"),
+        _ => ("", ""),
     }
 }
 
-fn vcs_status_css(code: &str) -> &str {
-    match code {
-        "M" | "R" => "diff-changed",
-        "A" | "U" => "diff-inserted",
-        "D" => "diff-deleted",
-        _ => "",
+#[derive(Debug, PartialEq, Eq)]
+pub enum VcsDiffPlan {
+    /// Show diff between a HEAD version (saved to temp) and the working file.
+    WithWorking {
+        temp_head: PathBuf,
+        working: PathBuf,
+        content: String,
+    },
+    /// Show diff between an empty temp file and the working file.
+    EmptyWithWorking {
+        temp_empty: PathBuf,
+        working: PathBuf,
+    },
+    /// Show diff between a HEAD version (saved to temp) and a "deleted" temp file.
+    WithDeleted {
+        temp_head: PathBuf,
+        temp_deleted: PathBuf,
+        content: String,
+    },
+}
+
+pub fn plan_vcs_diff(
+    repo_root: &Path,
+    temp_dir: &Path,
+    rel_path: &str,
+    status_code: &str,
+) -> Option<VcsDiffPlan> {
+    // Security: Validate rel_path doesn't escape via '..' components
+    if Path::new(rel_path)
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        eprintln!("Refusing to open path with '..' component: {rel_path}");
+        return None;
+    }
+
+    let working_path = repo_root.join(rel_path);
+
+    match status_code {
+        "M" | "R" => {
+            let content = crate::vcs::head_content(repo_root, rel_path).unwrap_or_default();
+            Some(VcsDiffPlan::WithWorking {
+                temp_head: temp_dir.join(rel_path),
+                working: working_path,
+                content,
+            })
+        }
+        "A" | "U" => Some(VcsDiffPlan::EmptyWithWorking {
+            temp_empty: temp_dir.join(format!("__empty__{rel_path}")),
+            working: working_path,
+        }),
+        "D" => {
+            let content = crate::vcs::head_content(repo_root, rel_path).unwrap_or_default();
+            Some(VcsDiffPlan::WithDeleted {
+                temp_head: temp_dir.join(rel_path),
+                temp_deleted: temp_dir.join(format!("__deleted__{rel_path}")),
+                content,
+            })
+        }
+        _ => None,
     }
 }
 
@@ -55,12 +105,13 @@ fn make_vcs_status_factory() -> SignalListItemFactory {
         let obj = item.item().and_downcast::<StringObject>().unwrap();
         let raw = obj.string();
         let label = item.child().and_downcast::<Label>().unwrap();
-        let code = decode_vcs_code(&raw);
-        label.set_label(vcs_status_label(code));
+        let (code, _) = decode_vcs_row(&raw);
+        let (text, css) = vcs_status_info(code);
+
+        label.set_label(text);
         for cls in &["diff-changed", "diff-deleted", "diff-inserted"] {
             label.remove_css_class(cls);
         }
-        let css = vcs_status_css(code);
         if !css.is_empty() {
             label.add_css_class(css);
         }
@@ -88,14 +139,15 @@ fn make_vcs_path_factory() -> SignalListItemFactory {
         let hbox = item.child().and_downcast::<GtkBox>().unwrap();
         let icon = hbox.first_child().and_downcast::<Image>().unwrap();
         let label = icon.next_sibling().and_downcast::<Label>().unwrap();
-        let code = decode_vcs_code(&raw);
-        let path = decode_vcs_path(&raw);
+
+        let (code, path) = decode_vcs_row(&raw);
+        let (_, css) = vcs_status_info(code);
+
         icon.set_icon_name(Some("text-x-generic-symbolic"));
         label.set_label(path);
         for cls in &["diff-changed", "diff-deleted", "diff-inserted"] {
             label.remove_css_class(cls);
         }
-        let css = vcs_status_css(code);
         if !css.is_empty() {
             label.add_css_class(css);
         }
@@ -112,14 +164,6 @@ fn open_vcs_diff(
     temp_dir: &Path,
     settings: &Rc<RefCell<Settings>>,
 ) {
-    // Validate rel_path doesn't escape temp_dir via '..' components
-    for component in Path::new(rel_path).components() {
-        if matches!(component, std::path::Component::ParentDir) {
-            eprintln!("Refusing to open path with '..' component: {rel_path}");
-            return;
-        }
-    }
-
     // If already open, switch to it
     if let Some(idx) = open_tabs
         .borrow()
@@ -131,52 +175,46 @@ fn open_vcs_diff(
         return;
     }
 
-    let working_path = repo_root.join(rel_path);
+    let Some(plan) = plan_vcs_diff(repo_root, temp_dir, rel_path, status_code) else {
+        return;
+    };
 
-    let (left_path, right_path) = match status_code {
-        "M" | "R" => {
-            let head = crate::vcs::head_content(repo_root, rel_path).unwrap_or_default();
-            let temp_file = temp_dir.join(rel_path);
-            if !temp_file.starts_with(temp_dir) {
-                eprintln!("Path escapes temp directory: {rel_path}");
-                return;
-            }
-            if let Some(parent) = temp_file.parent() {
+    let (left_path, right_path) = match plan {
+        VcsDiffPlan::WithWorking {
+            temp_head,
+            working,
+            content,
+        } => {
+            if let Some(parent) = temp_head.parent() {
                 let _ = fs::create_dir_all(parent);
             }
-            let _ = fs::write(&temp_file, &head);
-            (temp_file, working_path)
+            let _ = fs::write(&temp_head, content);
+            (temp_head, working)
         }
-        "A" | "U" => {
-            let temp_file = temp_dir.join(format!("__empty__{rel_path}"));
-            if !temp_file.starts_with(temp_dir) {
-                eprintln!("Path escapes temp directory: {rel_path}");
-                return;
-            }
-            if let Some(parent) = temp_file.parent() {
+        VcsDiffPlan::EmptyWithWorking {
+            temp_empty,
+            working,
+        } => {
+            if let Some(parent) = temp_empty.parent() {
                 let _ = fs::create_dir_all(parent);
             }
-            let _ = fs::write(&temp_file, "");
-            (temp_file, working_path)
+            let _ = fs::write(&temp_empty, "");
+            (temp_empty, working)
         }
-        "D" => {
-            let head = crate::vcs::head_content(repo_root, rel_path).unwrap_or_default();
-            let temp_left = temp_dir.join(rel_path);
-            let temp_right = temp_dir.join(format!("__deleted__{rel_path}"));
-            if !temp_left.starts_with(temp_dir) || !temp_right.starts_with(temp_dir) {
-                eprintln!("Path escapes temp directory: {rel_path}");
-                return;
-            }
-            for p in [&temp_left, &temp_right] {
+        VcsDiffPlan::WithDeleted {
+            temp_head,
+            temp_deleted,
+            content,
+        } => {
+            for p in [&temp_head, &temp_deleted] {
                 if let Some(parent) = p.parent() {
                     let _ = fs::create_dir_all(parent);
                 }
             }
-            let _ = fs::write(&temp_left, &head);
-            let _ = fs::write(&temp_right, "");
-            (temp_left, temp_right)
+            let _ = fs::write(&temp_head, content);
+            let _ = fs::write(&temp_deleted, "");
+            (temp_head, temp_deleted)
         }
-        _ => return,
     };
 
     let labels = vec![format!("HEAD: {rel_path}"), format!("Working: {rel_path}")];
@@ -197,7 +235,7 @@ fn open_vcs_diff(
         right_save: dv.right_save,
     });
 
-    let status_text = vcs_status_label(status_code);
+    let (status_text, _) = vcs_status_info(status_code);
     let file_name = Path::new(rel_path).file_name().map_or_else(
         || rel_path.to_string(),
         |n| n.to_string_lossy().into_owned(),
@@ -335,15 +373,8 @@ pub(super) fn build_vcs_window(
             if let Some(item) = item {
                 let obj = item.downcast::<StringObject>().unwrap();
                 let raw = obj.string();
-                open_vcs_diff(
-                    &nb,
-                    decode_vcs_path(&raw),
-                    decode_vcs_code(&raw),
-                    &tabs,
-                    &rr,
-                    &td,
-                    &st,
-                );
+                let (code, path) = decode_vcs_row(&raw);
+                open_vcs_diff(&nb, path, code, &tabs, &rr, &td, &st);
             }
         })
     };
@@ -465,7 +496,8 @@ pub(super) fn build_vcs_window(
             if let Some(item) = s.selected_item() {
                 let obj = item.downcast::<StringObject>().unwrap();
                 let raw = obj.string();
-                let rel = decode_vcs_path(&raw).to_string();
+                let (_, rel) = decode_vcs_row(&raw);
+                let rel = rel.to_string();
                 if let Some(win) = v
                     .root()
                     .and_then(|root| root.downcast::<ApplicationWindow>().ok())
@@ -478,7 +510,7 @@ pub(super) fn build_vcs_window(
                         "This cannot be undone.",
                         "Discard",
                         move || {
-                            crate::vcs::discard_changes(&rr, &rel);
+                            let _ = crate::vcs::discard_changes(&rr, &rel);
                             r();
                         },
                     );
@@ -496,7 +528,8 @@ pub(super) fn build_vcs_window(
             if let Some(item) = s.selected_item() {
                 let obj = item.downcast::<StringObject>().unwrap();
                 let raw = obj.string();
-                crate::vcs::stage_file(&rr, decode_vcs_path(&raw));
+                let (_, path) = decode_vcs_row(&raw);
+                let _ = crate::vcs::stage_file(&rr, path);
                 r();
             }
         });
@@ -512,7 +545,8 @@ pub(super) fn build_vcs_window(
             if let Some(item) = s.selected_item() {
                 let obj = item.downcast::<StringObject>().unwrap();
                 let raw = obj.string();
-                let rel = decode_vcs_path(&raw).to_string();
+                let (_, rel) = decode_vcs_row(&raw);
+                let rel = rel.to_string();
                 if let Some(win) = v
                     .root()
                     .and_then(|root| root.downcast::<ApplicationWindow>().ok())
@@ -576,7 +610,7 @@ pub(super) fn build_vcs_window(
             if let Some(item) = s.selected_item() {
                 let obj = item.downcast::<StringObject>().unwrap();
                 let raw = obj.string();
-                let code = decode_vcs_code(&raw);
+                let (code, _) = decode_vcs_row(&raw);
                 let untracked = code == "U";
                 act_open.set_enabled(!untracked);
                 act_discard.set_enabled(!untracked);
@@ -652,27 +686,35 @@ pub(super) fn build_vcs_window(
 mod tests {
     use super::*;
 
-    // ── vcs_status_label ─────────────────────────────────────────
-
     #[test]
-    fn vcs_status_labels() {
-        assert_eq!(vcs_status_label("M"), "Modified");
-        assert_eq!(vcs_status_label("A"), "Added");
-        assert_eq!(vcs_status_label("D"), "Deleted");
-        assert_eq!(vcs_status_label("R"), "Renamed");
-        assert_eq!(vcs_status_label("U"), "Untracked");
-        assert_eq!(vcs_status_label("X"), "");
+    fn test_vcs_row_encoding() {
+        let status = crate::vcs::VcsStatus::Modified;
+        let encoded = encode_vcs_row(&status, "src/main.rs");
+        let (code, path) = decode_vcs_row(&encoded);
+        assert_eq!(code, "M");
+        assert_eq!(path, "src/main.rs");
     }
 
-    // ── vcs_status_css ───────────────────────────────────────────
+    #[test]
+    fn test_vcs_status_info() {
+        let (label, css) = vcs_status_info("M");
+        assert_eq!(label, "Modified");
+        assert_eq!(css, "diff-changed");
+
+        let (label, css) = vcs_status_info("U");
+        assert_eq!(label, "Untracked");
+        assert_eq!(css, "diff-inserted");
+
+        let (label, css) = vcs_status_info("X");
+        assert_eq!(label, "");
+        assert_eq!(css, "");
+    }
 
     #[test]
-    fn vcs_status_css_classes() {
-        assert_eq!(vcs_status_css("M"), "diff-changed");
-        assert_eq!(vcs_status_css("R"), "diff-changed");
-        assert_eq!(vcs_status_css("A"), "diff-inserted");
-        assert_eq!(vcs_status_css("U"), "diff-inserted");
-        assert_eq!(vcs_status_css("D"), "diff-deleted");
-        assert_eq!(vcs_status_css("?"), "");
+    fn test_plan_vcs_diff_security() {
+        let repo = Path::new("/repo");
+        let temp = Path::new("/temp");
+        // Should refuse paths with ..
+        assert_eq!(plan_vcs_diff(repo, temp, "../outside.rs", "M"), None);
     }
 }
