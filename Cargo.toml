@@ -1,6 +1,6 @@
 [package]
 name = "mergers"
-version = "0.4.5"
+version = "0.4.6"
 edition = "2024"
 description = "A visual diff and merge tool for files and directories"
 license = "GPL-2.0"
