@@ -10,6 +10,7 @@ pub struct Settings {
     pub wrap_mode: String,
     pub tab_width: u32,
     pub highlight_current_line: bool,
+    pub hide_hidden_files: bool,
     pub dir_filters: Vec<String>,
 }
 
@@ -22,6 +23,7 @@ impl Default for Settings {
             wrap_mode: "none".to_string(),
             tab_width: 4,
             highlight_current_line: true,
+            hide_hidden_files: true,
             dir_filters: vec![
                 ".git".into(),
                 ".svn".into(),

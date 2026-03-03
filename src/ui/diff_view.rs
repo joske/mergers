@@ -7,10 +7,13 @@ type SwapCallback = Rc<RefCell<Option<Box<dyn Fn()>>>>;
 
 pub(super) struct DiffViewResult {
     pub(super) widget: GtkBox,
+    pub(super) left_text_view: TextView,
     pub(super) left_buf: TextBuffer,
     pub(super) right_buf: TextBuffer,
     pub(super) left_save: Button,
     pub(super) right_save: Button,
+    pub(super) left_save_path: Rc<RefCell<PathBuf>>,
+    pub(super) right_save_path: Rc<RefCell<PathBuf>>,
     pub(super) action_group: gio::SimpleActionGroup,
     pub(super) swap_callback: SwapCallback,
 }
@@ -32,6 +35,8 @@ pub(super) fn build_diff_view(
     let right_buf = create_source_buffer(right_path, &s);
     left_buf.set_text(&left_content);
     right_buf.set_text(&right_content);
+    left_buf.place_cursor(&left_buf.start_iter());
+    right_buf.place_cursor(&right_buf.start_iter());
 
     let identical = !any_binary && left_content == right_content;
     let chunks = Rc::new(RefCell::new(Vec::new()));
@@ -360,6 +365,7 @@ pub(super) fn build_diff_view(
                 if let Some(iter) = buf.iter_at_line(target as i32) {
                     buf.place_cursor(&iter);
                 }
+                tv.grab_focus();
             }
             e.set_visible(false);
             entry.set_text("");
@@ -931,21 +937,32 @@ pub(super) fn build_diff_view(
     }
 
     // Escape in find entry closes find bar
-    {
+    // Escape on find/replace entries closes the find bar
+    for entry in [&find_entry, &replace_entry] {
         let fr = find_revealer.clone();
         let lb = left_buf.clone();
         let rb = right_buf.clone();
+        let fnb = find_next_btn.clone();
+        let fpb = find_prev_btn.clone();
         let key_ctl = EventControllerKey::new();
-        key_ctl.connect_key_pressed(move |_, key, _, _| {
+        key_ctl.connect_key_pressed(move |_, key, _, mods| {
             if key == gtk4::gdk::Key::Escape {
                 fr.set_reveal_child(false);
                 clear_search_tags(&lb);
                 clear_search_tags(&rb);
                 return gtk4::glib::Propagation::Stop;
             }
+            if key == gtk4::gdk::Key::F3 {
+                if mods.contains(gtk4::gdk::ModifierType::SHIFT_MASK) {
+                    fpb.emit_clicked();
+                } else {
+                    fnb.emit_clicked();
+                }
+                return gtk4::glib::Propagation::Stop;
+            }
             gtk4::glib::Propagation::Proceed
         });
-        find_entry.add_controller(key_ctl);
+        entry.add_controller(key_ctl);
     }
 
     // Layout: toolbar + separator + [chunk_map | left pane | gutter | right pane | chunk_map] + find bar
@@ -1163,21 +1180,122 @@ pub(super) fn build_diff_view(
         }
     }
 
-    // Intercept Alt+Up/Down in the capture phase so sourceview5 doesn't
-    // consume them for its move-lines action.
+    // Alt+Left: copy right chunk to left (current chunk)
+    {
+        let action = gio::SimpleAction::new("copy-chunk-right-left", None);
+        let ch = chunks.clone();
+        let cur = current_chunk.clone();
+        let lb = left_buf.clone();
+        let rb = right_buf.clone();
+        action.connect_activate(move |_, _| {
+            if let Some(idx) = cur.get() {
+                let snapshot = ch.borrow();
+                if let Some(c) = snapshot.get(idx) {
+                    copy_chunk(&rb, c.start_b, c.end_b, &lb, c.start_a, c.end_a);
+                }
+            }
+        });
+        action_group.add_action(&action);
+    }
+    // Alt+Right: copy left chunk to right (current chunk)
+    {
+        let action = gio::SimpleAction::new("copy-chunk-left-right", None);
+        let ch = chunks.clone();
+        let cur = current_chunk.clone();
+        let lb = left_buf.clone();
+        let rb = right_buf.clone();
+        action.connect_activate(move |_, _| {
+            if let Some(idx) = cur.get() {
+                let snapshot = ch.borrow();
+                if let Some(c) = snapshot.get(idx) {
+                    copy_chunk(&lb, c.start_a, c.end_a, &rb, c.start_b, c.end_b);
+                }
+            }
+        });
+        action_group.add_action(&action);
+    }
+
+    // Ctrl+S: save the focused pane
+    {
+        let action = gio::SimpleAction::new("save", None);
+        let av = active_view.clone();
+        let ltv = left_pane.text_view.clone();
+        let lb = left_buf.clone();
+        let rb = right_buf.clone();
+        let lsp = left_pane.save_path.clone();
+        let rsp = right_pane.save_path.clone();
+        let ls = left_pane.save_btn.clone();
+        let rs = right_pane.save_btn.clone();
+        action.connect_activate(move |_, _| {
+            let active = av.borrow().clone();
+            let (buf, path, btn) = if active == ltv {
+                (&lb, &lsp, &ls)
+            } else {
+                (&rb, &rsp, &rs)
+            };
+            if btn.is_sensitive() {
+                let text = buf.text(&buf.start_iter(), &buf.end_iter(), false);
+                save_file(&path.borrow(), text.as_str(), btn);
+            }
+        });
+        action_group.add_action(&action);
+    }
+
+    // Intercept Alt+Up/Down/Left/Right in the capture phase so sourceview5
+    // doesn't consume them for its move-lines action.
     for tv in [&left_pane.text_view, &right_pane.text_view] {
         let key_ctl = EventControllerKey::new();
         key_ctl.set_propagation_phase(gtk4::PropagationPhase::Capture);
         let ag = action_group.clone();
+        let fr = find_revealer.clone();
+        let lb = left_buf.clone();
+        let rb = right_buf.clone();
         key_ctl.connect_key_pressed(move |_, key, _, mods| {
-            if mods.contains(gtk4::gdk::ModifierType::ALT_MASK)
-                && (key == gtk4::gdk::Key::Up || key == gtk4::gdk::Key::Down)
-            {
-                let name = if key == gtk4::gdk::Key::Up {
-                    "prev-chunk"
+            // Escape closes the find bar if visible
+            if key == gtk4::gdk::Key::Escape && fr.is_child_revealed() {
+                fr.set_reveal_child(false);
+                clear_search_tags(&lb);
+                clear_search_tags(&rb);
+                return gtk4::glib::Propagation::Stop;
+            }
+            let action_name = if mods.contains(gtk4::gdk::ModifierType::ALT_MASK) {
+                match key {
+                    k if k == gtk4::gdk::Key::Up => Some("prev-chunk"),
+                    k if k == gtk4::gdk::Key::Down => Some("next-chunk"),
+                    k if k == gtk4::gdk::Key::Left => Some("copy-chunk-right-left"),
+                    k if k == gtk4::gdk::Key::Right => Some("copy-chunk-left-right"),
+                    _ => None,
+                }
+            } else if mods.contains(gtk4::gdk::ModifierType::CONTROL_MASK) {
+                if mods.contains(gtk4::gdk::ModifierType::SHIFT_MASK)
+                    && (key == gtk4::gdk::Key::p || key == gtk4::gdk::Key::P)
+                {
+                    Some("export-patch")
+                } else if key == gtk4::gdk::Key::s || key == gtk4::gdk::Key::S {
+                    Some("save")
+                } else if key == gtk4::gdk::Key::e || key == gtk4::gdk::Key::E {
+                    Some("prev-chunk")
+                } else if key == gtk4::gdk::Key::d || key == gtk4::gdk::Key::D {
+                    Some("next-chunk")
+                } else if key == gtk4::gdk::Key::f || key == gtk4::gdk::Key::F {
+                    Some("find")
+                } else if key == gtk4::gdk::Key::h || key == gtk4::gdk::Key::H {
+                    Some("find-replace")
+                } else if key == gtk4::gdk::Key::l || key == gtk4::gdk::Key::L {
+                    Some("go-to-line")
                 } else {
-                    "next-chunk"
-                };
+                    None
+                }
+            } else if key == gtk4::gdk::Key::F3 {
+                if mods.contains(gtk4::gdk::ModifierType::SHIFT_MASK) {
+                    Some("find-prev")
+                } else {
+                    Some("find-next")
+                }
+            } else {
+                None
+            };
+            if let Some(name) = action_name {
                 if let Some(action) = ag.lookup_action(name) {
                     action
                         .downcast_ref::<gio::SimpleAction>()
@@ -1193,10 +1311,13 @@ pub(super) fn build_diff_view(
 
     DiffViewResult {
         widget,
+        left_text_view: left_pane.text_view,
         left_buf,
         right_buf,
         left_save: left_pane.save_btn,
         right_save: right_pane.save_btn,
+        left_save_path: left_pane.save_path,
+        right_save_path: right_pane.save_path,
         action_group,
         swap_callback,
     }
@@ -1280,6 +1401,12 @@ pub(super) fn open_file_diff(
 
     let page_num = notebook.append_page(&dv.widget, Some(&tab_label_box));
     notebook.set_current_page(Some(page_num));
+
+    // Focus the left text view so keyboard shortcuts work immediately
+    let ltv = dv.left_text_view.clone();
+    gtk4::glib::idle_add_local_once(move || {
+        ltv.grab_focus();
+    });
 
     {
         let nb = notebook.clone();

@@ -40,7 +40,7 @@
 - [ ] Previous change (Alt+Up / Ctrl+E): navigates to previous diff chunk
 - [ ] Next change (Alt+Down / Ctrl+D): navigates to next diff chunk
 - [ ] Chunk label: shows "N changes" or "Change X of N"
-- [ ] Go to line (Ctrl+L): entry appears; type number + Enter to jump; Escape to dismiss
+- [ ] Go to line (Ctrl+L): entry appears; type number + Enter to jump; Escape to dismiss; focus returns to active pane
 - [ ] Blanks toggle: re-diffs ignoring blank lines
 - [ ] Spaces toggle: re-diffs ignoring whitespace
 - [ ] Export patch (Ctrl+Shift+P): save dialog; generates unified diff
@@ -61,6 +61,8 @@
 - [ ] Ctrl+F: opens find bar; Ctrl+H: opens find + replace
 - [ ] Typing highlights all matches in both buffers; shows match count
 - [ ] Find next (F3 / Enter) / Find prev (Shift+F3): wraps around
+- [ ] F3/Shift+F3 works from find entry, replace entry, and source pane
+- [ ] Escape closes find bar from source pane (not just from find entry)
 - [ ] Replace: replaces current selection if it matches
 - [ ] Replace All: replaces in both buffers
 - [ ] Close (X / Escape): hides bar, clears highlights
@@ -69,17 +71,27 @@
 - [ ] Save button insensitive until buffer changes
 - [ ] Save writes correct file; button goes insensitive; error dialog on failure
 - [ ] Save path tracks swaps: after swap, save writes to correct original file
+- [ ] Save after swap: pane contents and labels remain consistent (no un-swap)
+- [ ] Save after swap in dir file tab: watcher reload preserves swapped state
 
 ### File Watcher
 - [ ] External file change: auto-reloads if no unsaved changes
 - [ ] External change while unsaved: reload skipped
 - [ ] Save suppresses reload for 600ms (no reload loop)
 
-### Close
+### Close / Dialogs
 - [ ] Ctrl+W: closes window
 - [ ] Close with no unsaved changes: closes immediately
 - [ ] Close with unsaved changes: dialog with per-file checkboxes, Save/Close without Saving/Cancel
 - [ ] Save failure in dialog: window does NOT close
+- [ ] Overwrite confirm dialog: Escape key closes it
+- [ ] Ctrl+Shift+P: export patch dialog opens (sourceview doesn't consume it)
+
+### Chunk Copy (Alt+Left / Alt+Right)
+- [ ] Alt+Right on a diff chunk: copies left chunk content to right (no file copy dialog)
+- [ ] Alt+Left on a diff chunk: copies right chunk content to left (no file copy dialog)
+- [ ] Alt+Left/Right with no current chunk: nothing happens
+- [ ] In dir window file tab: Alt+Left/Right copies chunks, does NOT trigger dir file copy
 
 ### Edge Cases
 - [ ] Identical files: "Files are identical" info bar; edit one side -> bar disappears; undo -> reappears
@@ -109,6 +121,9 @@
 
 ### Navigation
 - [ ] Double-click file row: opens diff in new notebook tab
+- [ ] Enter on file row: opens diff in new notebook tab
+- [ ] Enter on directory row: expands/collapses folder
+- [ ] Enter after closing a file tab: still works (no broken activation state)
 - [ ] Left/Right arrow keys: switch focus between panes
 - [ ] Selection syncs between panes
 
@@ -128,6 +143,7 @@
 ### Notebook Tabs
 - [ ] Directory tab labeled "Directory"
 - [ ] File tabs labeled with dir-relative names
+- [ ] Opening file diff tab: left pane has focus, cursor at line 1
 - [ ] Tab close (X): prompts for unsaved changes
 - [ ] Ctrl+W on Directory tab: closes entire window
 - [ ] Ctrl+W on file tab: closes that tab
@@ -141,6 +157,8 @@
 ### Filters
 - [ ] Filtered names (.git, node_modules, etc.) excluded from tree
 - [ ] Custom filters from preferences applied
+- [ ] Hide hidden files on (default): dotfiles excluded from tree
+- [ ] Hide hidden files off: dotfiles shown in tree
 
 ### Edge Cases
 - [ ] Deeply nested directory trees
@@ -233,9 +251,12 @@
 - [ ] Highlight current line: toggle; live-apply
 - [ ] Word wrap (None/Word/Character): dropdown; live-apply
 - [ ] Tab width (1-16): spin button; live-apply
+- [ ] Hide hidden files: toggle; default on; saved to settings
 - [ ] File filters: add/remove entries; saved on dialog close
 - [ ] Settings persisted to `~/.config/mergers/settings.toml`
 - [ ] Changes applied to all views in the parent window
+- [ ] Escape closes preferences dialog
+- [ ] Close button at bottom closes preferences dialog
 
 ## Dark Mode
 
@@ -262,8 +283,9 @@
 | Shift+F3 | Find previous |
 | Ctrl+L | Go to line |
 | Ctrl+Shift+P | Export patch (file diff only) |
-| Alt+Left | Copy to left (dir only) |
-| Alt+Right | Copy to right (dir only) |
+| Alt+Left | Copy chunk right→left (file diff) / Copy file to left (dir) |
+| Alt+Right | Copy chunk left→right (file diff) / Copy file to right (dir) |
+| Ctrl+S | Save active pane |
 | Delete | Delete selected (dir only) |
-| Enter | Open selected (VCS) |
-| Escape | Close find bar / go-to-line |
+| Enter | Open selected file / expand-collapse dir (dir/VCS) |
+| Escape | Close find bar / go-to-line / preferences dialog |

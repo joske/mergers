@@ -95,7 +95,11 @@ fn copy_path_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 
 // ─── Directory scanning ────────────────────────────────────────────────────
 
-fn read_dir_entries(dir: &Path, dir_filters: &[String]) -> BTreeMap<String, DirMeta> {
+fn read_dir_entries(
+    dir: &Path,
+    dir_filters: &[String],
+    hide_hidden: bool,
+) -> BTreeMap<String, DirMeta> {
     let mut map = BTreeMap::new();
     if let Ok(rd) = fs::read_dir(dir) {
         for entry in rd.filter_map(Result::ok) {
@@ -103,6 +107,9 @@ fn read_dir_entries(dir: &Path, dir_filters: &[String]) -> BTreeMap<String, DirM
                 continue;
             };
             if dir_filters.iter().any(|f| f == &name) {
+                continue;
+            }
+            if hide_hidden && name.starts_with('.') {
                 continue;
             }
             let meta = entry.metadata().ok();
@@ -143,6 +150,7 @@ fn scan_tree(
     right_root: &Path,
     rel: &str,
     dir_filters: &[String],
+    hide_hidden: bool,
 ) -> (Vec<ScanEntry>, FileStatus) {
     let left_dir = if rel.is_empty() {
         left_root.to_path_buf()
@@ -155,8 +163,8 @@ fn scan_tree(
         right_root.join(rel)
     };
 
-    let left_entries = read_dir_entries(&left_dir, dir_filters);
-    let right_entries = read_dir_entries(&right_dir, dir_filters);
+    let left_entries = read_dir_entries(&left_dir, dir_filters, hide_hidden);
+    let right_entries = read_dir_entries(&right_dir, dir_filters, hide_hidden);
     let all: BTreeSet<&String> = left_entries.keys().chain(right_entries.keys()).collect();
 
     // Sort: directories first, then files, alphabetically within each group
@@ -185,7 +193,7 @@ fn scan_tree(
         let (status, children);
         if *is_dir {
             let (child_entries, child_agg) =
-                scan_tree(left_root, right_root, &child_rel, dir_filters);
+                scan_tree(left_root, right_root, &child_rel, dir_filters, hide_hidden);
             status = if !in_left {
                 FileStatus::RightOnly
             } else if !in_right {
@@ -396,11 +404,12 @@ pub(super) fn build_dir_window(
         let ld = left_dir.borrow().clone();
         let rd = right_dir.borrow().clone();
         let filters = settings.borrow().dir_filters.clone();
+        let hide_hidden = settings.borrow().hide_hidden_files;
         let cm = children_map.clone();
         let rs = root_store.clone();
         gtk4::glib::spawn_future_local(async move {
             let (entries, _) = gio::spawn_blocking(move || {
-                scan_tree(Path::new(&ld), Path::new(&rd), "", &filters)
+                scan_tree(Path::new(&ld), Path::new(&rd), "", &filters, hide_hidden)
             })
             .await
             .unwrap();
@@ -689,6 +698,7 @@ pub(super) fn build_dir_window(
             let ld_str = ld.borrow().clone();
             let rd_str = rd.borrow().clone();
             let filters = st.borrow().dir_filters.clone();
+            let hide_hidden = st.borrow().hide_hidden_files;
             let cm = cm.clone();
             let rs = rs.clone();
             let tm = tm.clone();
@@ -699,7 +709,13 @@ pub(super) fn build_dir_window(
             let loading = loading.clone();
             gtk4::glib::spawn_future_local(async move {
                 let (entries, _) = gio::spawn_blocking(move || {
-                    scan_tree(Path::new(&ld_str), Path::new(&rd_str), "", &filters)
+                    scan_tree(
+                        Path::new(&ld_str),
+                        Path::new(&rd_str),
+                        "",
+                        &filters,
+                        hide_hidden,
+                    )
                 })
                 .await
                 .unwrap();
@@ -1114,6 +1130,38 @@ pub(super) fn build_dir_window(
     dir_paned.set_vexpand(true);
     dir_tab.insert_action_group("dir", Some(&dir_action_group));
 
+    // Capture-phase key handler for dir-only shortcuts (Alt+Left/Right, Delete)
+    // so they don't fire when a file-diff tab is focused.
+    {
+        let key_ctl = EventControllerKey::new();
+        key_ctl.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        let dag = dir_action_group.clone();
+        key_ctl.connect_key_pressed(move |_, key, _, mods| {
+            let action_name = if mods.contains(gtk4::gdk::ModifierType::ALT_MASK) {
+                match key {
+                    k if k == gtk4::gdk::Key::Left => Some("folder-copy-left"),
+                    k if k == gtk4::gdk::Key::Right => Some("folder-copy-right"),
+                    _ => None,
+                }
+            } else if mods.is_empty() && key == gtk4::gdk::Key::Delete {
+                Some("folder-delete")
+            } else {
+                None
+            };
+            if let Some(name) = action_name {
+                if let Some(action) = dag.lookup_action(name) {
+                    action
+                        .downcast_ref::<gio::SimpleAction>()
+                        .unwrap()
+                        .activate(None);
+                }
+                return gtk4::glib::Propagation::Stop;
+            }
+            gtk4::glib::Propagation::Proceed
+        });
+        dir_tab.add_controller(key_ctl);
+    }
+
     // ── Notebook (tabs) ────────────────────────────────────────────
     let notebook = Notebook::new();
     notebook.set_scrollable(true);
@@ -1208,44 +1256,69 @@ pub(super) fn build_dir_window(
         setup_dir_ctx(&right_view, dir_popover_r);
     }
 
-    // Activate handlers — double-click a file row to open diff in new tab
-    {
+    // Shared activate logic — used by both Enter key and double-click
+    let activate_row: Rc<dyn Fn()> = {
         let nb = notebook.clone();
         let tm = tree_model.clone();
         let tabs = open_tabs.clone();
         let ld = left_dir.clone();
         let rd = right_dir.clone();
+        let sel = dir_sel.clone();
         let st = settings.clone();
-        left_view.connect_activate(move |_, pos| {
+        Rc::new(move || {
+            let pos = sel.selected();
             if let Some(item) = tm.item(pos) {
                 let row = item.downcast::<TreeListRow>().unwrap();
                 let obj = row.item().and_downcast::<StringObject>().unwrap();
                 let raw = obj.string();
                 let info = DirRowInfo::decode(&raw);
-                if !info.is_dir {
+                if info.is_dir {
+                    row.set_expanded(!row.is_expanded());
+                } else {
                     open_file_diff(&nb, &info.rel_path, &tabs, &ld.borrow(), &rd.borrow(), &st);
                 }
             }
-        });
+        })
+    };
+
+    // Double-click activates via connect_activate
+    {
+        let ar = activate_row.clone();
+        left_view.connect_activate(move |_, _| ar());
     }
     {
-        let nb = notebook.clone();
-        let tm = tree_model.clone();
-        let tabs = open_tabs.clone();
-        let ld = left_dir.clone();
-        let rd = right_dir.clone();
-        let st = settings.clone();
-        right_view.connect_activate(move |_, pos| {
-            if let Some(item) = tm.item(pos) {
-                let row = item.downcast::<TreeListRow>().unwrap();
-                let obj = row.item().and_downcast::<StringObject>().unwrap();
-                let raw = obj.string();
-                let info = DirRowInfo::decode(&raw);
-                if !info.is_dir {
-                    open_file_diff(&nb, &info.rel_path, &tabs, &ld.borrow(), &rd.borrow(), &st);
-                }
+        let ar = activate_row.clone();
+        right_view.connect_activate(move |_, _| ar());
+    }
+
+    // Capture Enter on ColumnViews so it works reliably after tab close
+    {
+        let ar = activate_row.clone();
+        let kc = EventControllerKey::new();
+        kc.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        kc.connect_key_pressed(move |_, key, _, _| {
+            if key == gtk4::gdk::Key::Return || key == gtk4::gdk::Key::KP_Enter {
+                ar();
+                gtk4::glib::Propagation::Stop
+            } else {
+                gtk4::glib::Propagation::Proceed
             }
         });
+        left_view.add_controller(kc);
+    }
+    {
+        let ar = activate_row.clone();
+        let kc = EventControllerKey::new();
+        kc.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        kc.connect_key_pressed(move |_, key, _, _| {
+            if key == gtk4::gdk::Key::Return || key == gtk4::gdk::Key::KP_Enter {
+                ar();
+                gtk4::glib::Propagation::Stop
+            } else {
+                gtk4::glib::Propagation::Proceed
+            }
+        });
+        right_view.add_controller(kc);
     }
 
     // ── File watcher ───────────────────────────────────────────────
@@ -1274,8 +1347,11 @@ pub(super) fn build_dir_window(
     {
         let reload = reload_dir.clone();
         let alive = dir_watcher_alive.clone();
+        let st = settings.clone();
         let mut dirty = false;
         let mut retry_count: u32 = 0;
+        let mut prev_hide_hidden = st.borrow().hide_hidden_files;
+        let mut prev_filters = st.borrow().dir_filters.clone();
         gtk4::glib::timeout_add_local(Duration::from_millis(500), move || {
             let _ = &dir_watcher; // prevent drop; watcher lives until closure is dropped
             if !alive.get() {
@@ -1284,6 +1360,15 @@ pub(super) fn build_dir_window(
             while fs_rx.try_recv().is_ok() {
                 dirty = true;
                 retry_count = 0; // new FS event resets the retry counter
+            }
+            // Also rescan when filter settings change (e.g. via live preferences)
+            {
+                let s = st.borrow();
+                if s.hide_hidden_files != prev_hide_hidden || s.dir_filters != prev_filters {
+                    prev_hide_hidden = s.hide_hidden_files;
+                    prev_filters = s.dir_filters.clone();
+                    dirty = true;
+                }
             }
             if dirty
                 && !is_saving_under(&[
@@ -1296,7 +1381,7 @@ pub(super) fn build_dir_window(
                 // Reload open file tabs; keep dirty if any tab read fails
                 let mut any_tab_failed = false;
                 for tab in tabs_reload.borrow().iter() {
-                    if !reload_file_tab(tab, &ld_reload.borrow(), &rd_reload.borrow()) {
+                    if !reload_file_tab(tab) {
                         any_tab_failed = true;
                     }
                 }
@@ -1363,7 +1448,6 @@ pub(super) fn build_dir_window(
         win_actions.add_action(&action);
     }
     window.insert_action_group("win", Some(&win_actions));
-    window.insert_action_group("dir", Some(&dir_action_group));
 
     // Unsaved-changes guard on window close button
     {
@@ -1382,12 +1466,12 @@ pub(super) fn build_dir_window(
         gtk_app.set_accels_for_action("diff.find-prev", &["<Shift>F3"]);
         gtk_app.set_accels_for_action("diff.go-to-line", &["<Ctrl>l"]);
         gtk_app.set_accels_for_action("diff.export-patch", &["<Ctrl><Shift>p"]);
+        gtk_app.set_accels_for_action("diff.save", &["<Ctrl>s"]);
         gtk_app.set_accels_for_action("win.prefs", &["<Ctrl>comma"]);
         gtk_app.set_accels_for_action("win.close-tab", &["<Ctrl>w"]);
-        // Directory copy actions
-        gtk_app.set_accels_for_action("dir.folder-copy-left", &["<Alt>Left"]);
-        gtk_app.set_accels_for_action("dir.folder-copy-right", &["<Alt>Right"]);
-        gtk_app.set_accels_for_action("dir.folder-delete", &["Delete"]);
+        // Note: dir.folder-copy-left/right/delete are NOT registered as app accels
+        // because they would fire even on file-diff tabs. Instead, a capture-phase
+        // key handler on dir_tab dispatches them (see below dir_tab setup).
     }
 
     window.connect_destroy(move |_| {

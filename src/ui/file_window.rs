@@ -37,8 +37,8 @@ pub(super) fn build_file_window(
     {
         let lb = dv.left_buf.clone();
         let rb = dv.right_buf.clone();
-        let lp = left_path.clone();
-        let rp = right_path.clone();
+        let lp = dv.left_save_path.clone();
+        let rp = dv.right_save_path.clone();
         let l_save = dv.left_save.clone();
         let r_save = dv.right_save.clone();
         let alive = diff_watcher_alive.clone();
@@ -54,16 +54,16 @@ pub(super) fn build_file_window(
                 dirty.set(true);
                 retry_count.set(0); // new FS event resets the retry counter
             }
+            let lp_path = lp.borrow().clone();
+            let rp_path = rp.borrow().clone();
             if dirty.get()
                 && !loading.get()
-                && !is_saving(&[&lp, &rp])
+                && !is_saving(&[&lp_path, &rp_path])
                 && !l_save.is_sensitive()
                 && !r_save.is_sensitive()
             {
                 dirty.set(false);
                 loading.set(true);
-                let lp2 = lp.clone();
-                let rp2 = rp.clone();
                 let lb2 = lb.clone();
                 let rb2 = rb.clone();
                 let l_save2 = l_save.clone();
@@ -73,7 +73,10 @@ pub(super) fn build_file_window(
                 let retry2 = retry_count.clone();
                 gtk4::glib::spawn_future_local(async move {
                     let (left_content, right_content) = gio::spawn_blocking(move || {
-                        (read_file_for_reload(&lp2), read_file_for_reload(&rp2))
+                        (
+                            read_file_for_reload(&lp_path),
+                            read_file_for_reload(&rp_path),
+                        )
                     })
                     .await
                     .unwrap();
@@ -186,6 +189,7 @@ pub(super) fn build_file_window(
         gtk_app.set_accels_for_action("diff.find-prev", &["<Shift>F3"]);
         gtk_app.set_accels_for_action("diff.go-to-line", &["<Ctrl>l"]);
         gtk_app.set_accels_for_action("diff.export-patch", &["<Ctrl><Shift>p"]);
+        gtk_app.set_accels_for_action("diff.save", &["<Ctrl>s"]);
         gtk_app.set_accels_for_action("win.prefs", &["<Ctrl>comma"]);
         gtk_app.set_accels_for_action("win.close-tab", &["<Ctrl>w"]);
     }

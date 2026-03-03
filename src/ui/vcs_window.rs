@@ -667,6 +667,7 @@ pub(super) fn build_vcs_window(
     }
 
     if let Some(gtk_app) = window.application() {
+        gtk_app.set_accels_for_action("diff.save", &["<Ctrl>s"]);
         gtk_app.set_accels_for_action("win.prefs", &["<Ctrl>comma"]);
         gtk_app.set_accels_for_action("win.close-tab", &["<Ctrl>w"]);
     }

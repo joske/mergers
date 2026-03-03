@@ -111,14 +111,16 @@ pub(super) fn apply_merge_tags(
 
 /// Reload a file tab from disk. Returns `false` if a read failed (binary or
 /// I/O error) so the caller can keep dirty and retry on the next tick.
-pub(super) fn reload_file_tab(tab: &FileTab, left_dir: &str, right_dir: &str) -> bool {
+pub(super) fn reload_file_tab(tab: &FileTab) -> bool {
     // Don't overwrite unsaved user edits
     if tab.left_save.is_sensitive() || tab.right_save.is_sensitive() {
         return true; // not a read failure — just skip
     }
 
-    let left_content = read_file_for_reload(&Path::new(left_dir).join(&tab.rel_path));
-    let right_content = read_file_for_reload(&Path::new(right_dir).join(&tab.rel_path));
+    // Use tab.left_path / right_path (which track swaps) instead of
+    // reconstructing from left_dir + rel_path, so reloads respect swapped panes.
+    let left_content = read_file_for_reload(Path::new(&*tab.left_path.borrow()));
+    let right_content = read_file_for_reload(Path::new(&*tab.right_path.borrow()));
 
     // Skip panes where read failed or file became binary
     let Some(left_content) = left_content else {
@@ -290,6 +292,20 @@ pub(super) fn show_confirm_dialog(
             on_confirm();
             d.close();
         });
+    }
+
+    // Allow Escape to close the dialog
+    {
+        let d = dialog.clone();
+        let key_ctl = EventControllerKey::new();
+        key_ctl.connect_key_pressed(move |_, key, _, _| {
+            if key == gtk4::gdk::Key::Escape {
+                d.close();
+                return gtk4::glib::Propagation::Stop;
+            }
+            gtk4::glib::Propagation::Proceed
+        });
+        dialog.add_controller(key_ctl);
     }
 
     dialog.present();
@@ -481,6 +497,47 @@ pub(super) fn setup_diff_tags(buffer: &TextBuffer) {
             .background(INLINE_INSERTED)
             .build(),
     );
+}
+
+thread_local! {
+    static SCHEME_PROVIDER: CssProvider = CssProvider::new();
+    static SCHEME_REGISTERED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Apply the sourceview scheme's text background/foreground via a global CSS
+/// provider targeting `.meld-editor`, overriding any GTK dark theme interference.
+pub(super) fn apply_scheme_css(settings: &Settings) {
+    let scheme_mgr = sourceview5::StyleSchemeManager::default();
+    let Some(scheme) = scheme_mgr.scheme(&settings.style_scheme) else {
+        return;
+    };
+    let style = scheme.style("text");
+    let bg = style.as_ref().and_then(sourceview5::Style::background);
+    let fg = style.as_ref().and_then(sourceview5::Style::foreground);
+    let mut rules = Vec::new();
+    if let Some(ref bg) = bg {
+        rules.push(format!("background-color: {bg};"));
+    }
+    if let Some(ref fg) = fg {
+        rules.push(format!("color: {fg};"));
+    }
+    if rules.is_empty() {
+        return;
+    }
+    let css = format!(".meld-editor text {{ {} }}", rules.join(" "));
+    SCHEME_PROVIDER.with(|provider| {
+        provider.load_from_string(&css);
+        SCHEME_REGISTERED.with(|reg| {
+            if !reg.get() {
+                gtk4::style_context_add_provider_for_display(
+                    &Display::default().expect("GTK display must be available"),
+                    provider,
+                    gtk4::STYLE_PROVIDER_PRIORITY_USER,
+                );
+                reg.set(true);
+            }
+        });
+    });
 }
 
 pub(super) fn create_source_buffer(file_path: &Path, settings: &Settings) -> TextBuffer {
@@ -980,6 +1037,7 @@ pub(super) fn make_diff_pane(
     sv.set_tab_width(settings.tab_width);
     sv.set_hexpand(true);
     update_font_css(settings);
+    apply_scheme_css(settings);
     sv.add_css_class("meld-editor");
 
     let scroll = ScrolledWindow::builder()
@@ -1391,7 +1449,10 @@ pub(super) fn find_next_match(
         return None;
     }
     if forward {
-        let result = from.forward_search(needle, TextSearchFlags::CASE_INSENSITIVE, None);
+        // Start one character ahead so we don't re-find the current match
+        let mut start = *from;
+        start.forward_char();
+        let result = start.forward_search(needle, TextSearchFlags::CASE_INSENSITIVE, None);
         if result.is_some() {
             return result;
         }

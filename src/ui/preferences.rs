@@ -31,6 +31,7 @@ fn apply_settings_to_views(window: &gtk4::Window, settings: &Settings) {
     walk(&w, settings);
 
     update_font_css(settings);
+    apply_scheme_css(settings);
 }
 
 fn make_pref_row(label_text: &str, widget: &impl IsA<gtk4::Widget>) -> GtkBox {
@@ -55,6 +56,17 @@ pub(super) fn show_preferences(parent: &ApplicationWindow, settings: &Rc<RefCell
         .default_width(500)
         .default_height(450)
         .build();
+
+    let w = win.clone();
+    let key_ctl = EventControllerKey::new();
+    key_ctl.connect_key_pressed(move |_, key, _, _| {
+        if key == gtk4::gdk::Key::Escape {
+            w.close();
+            return gtk4::glib::Propagation::Stop;
+        }
+        gtk4::glib::Propagation::Proceed
+    });
+    win.add_controller(key_ctl);
 
     let content = GtkBox::new(Orientation::Vertical, 0);
     content.set_margin_top(8);
@@ -122,6 +134,21 @@ pub(super) fn show_preferences(parent: &ApplicationWindow, settings: &Rc<RefCell
     let tab_adj = Adjustment::new(f64::from(s.tab_width), 1.0, 16.0, 1.0, 4.0, 0.0);
     let tab_spin = gtk4::SpinButton::new(Some(&tab_adj), 1.0, 0);
     content.append(&make_pref_row("Tab width", &tab_spin));
+
+    // ── Directory section ──
+    let dir_header = Label::new(Some("Directory"));
+    dir_header.set_halign(gtk4::Align::Start);
+    dir_header.set_margin_start(12);
+    dir_header.set_margin_top(16);
+    dir_header.set_margin_bottom(4);
+    dir_header.add_css_class("heading");
+    content.append(&dir_header);
+
+    // Hide hidden files
+    let hidden_switch = gtk4::Switch::new();
+    hidden_switch.set_active(s.hide_hidden_files);
+    hidden_switch.set_valign(gtk4::Align::Center);
+    content.append(&make_pref_row("Hide hidden files", &hidden_switch));
 
     // ── File Filters section ──
     let filter_header = Label::new(Some("File Filters"));
@@ -210,6 +237,7 @@ pub(super) fn show_preferences(parent: &ApplicationWindow, settings: &Rc<RefCell
         let wd = wrap_dropdown.clone();
         let ts = tab_spin.clone();
         let fe = filter_entries.clone();
+        let hs = hidden_switch.clone();
         Rc::new(move || {
             let mut s = st.borrow_mut();
             if let Some(fd) = fb.font_desc() {
@@ -227,6 +255,7 @@ pub(super) fn show_preferences(parent: &ApplicationWindow, settings: &Rc<RefCell
                 _ => "none".into(),
             };
             s.tab_width = ts.value() as u32;
+            s.hide_hidden_files = hs.is_active();
             s.dir_filters = fe
                 .borrow()
                 .iter()
@@ -263,6 +292,10 @@ pub(super) fn show_preferences(parent: &ApplicationWindow, settings: &Rc<RefCell
         let a = apply.clone();
         tab_spin.connect_value_changed(move |_| a());
     }
+    {
+        let a = apply.clone();
+        hidden_switch.connect_active_notify(move |_| a());
+    }
 
     // Also save filters on close (they don't need live-apply)
     {
@@ -272,6 +305,18 @@ pub(super) fn show_preferences(parent: &ApplicationWindow, settings: &Rc<RefCell
             gtk4::glib::Propagation::Proceed
         });
     }
+
+    // Close button
+    let close_btn = Button::with_label("Close");
+    close_btn.set_halign(gtk4::Align::End);
+    close_btn.set_margin_top(12);
+    close_btn.set_margin_end(12);
+    close_btn.set_margin_bottom(8);
+    {
+        let w = win.clone();
+        close_btn.connect_clicked(move |_| w.close());
+    }
+    content.append(&close_btn);
 
     let scroll = ScrolledWindow::builder()
         .hscrollbar_policy(PolicyType::Never)
