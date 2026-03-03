@@ -95,7 +95,7 @@
 
 ### Edge Cases
 - [ ] Identical files: "Files are identical" info bar; edit one side -> bar disappears; undo -> reappears
-- [ ] Binary files: info bar, panes read-only, patch button disabled
+- [ ] Binary files: info bar, panes read-only, patch button disabled, swap/nav/blanks/spaces/undo/redo buttons disabled
 - [ ] Empty files: no chunks, label shows "No changes"
 - [ ] Empty file vs non-empty file: all-insert chunks on one side
 - [ ] Very large files (10K+ lines): background diff, UI stays responsive
@@ -125,7 +125,9 @@
 - [ ] Enter on directory row: expands/collapses folder
 - [ ] Enter after closing a file tab: still works (no broken activation state)
 - [ ] Left/Right arrow keys: switch focus between panes
-- [ ] Selection syncs between panes
+- [ ] Selection syncs between panes (highlighted on both sides)
+- [ ] Active pane: accent-color border; inactive pane: dim border + reduced opacity
+- [ ] Switching panes: no scroll jump, keyboard cursor syncs to selected row
 
 ### Toolbar
 - [ ] Copy to left (Alt+Left): copies right to left; confirms if overwriting
@@ -178,7 +180,8 @@
 
 ### Toolbar
 - [ ] Undo/Redo (Ctrl+Z / Ctrl+Shift+Z): acts on active pane
-- [ ] Previous/Next change (Alt+Up/Down): per-pane navigation
+- [ ] Previous/Next change (Alt+Up/Down): per-pane cursor-based navigation
+- [ ] Navigation only places cursor on involved panes (not the third uninvolved pane)
 - [ ] Previous/Next conflict (Ctrl+J / Ctrl+K): navigates `<<<<<<<` markers in middle
 - [ ] Conflict label: "N conflicts" / "Conflict X of N" / "No conflicts"
 - [ ] Go to line (Ctrl+L)
