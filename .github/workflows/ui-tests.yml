@@ -1,0 +1,49 @@
+name: UI Integration Tests
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ui-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtksourceview-5-dev \
+            xvfb \
+            fonts-dejavu-core \
+            at-spi2-core \
+            python3-pip \
+            python3-gi \
+            gir1.2-atspi-2.0
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Install Python dependencies
+        run: pip3 install -r tests/ui_integration/requirements.txt
+
+      - name: Run Rust tests under Xvfb
+        env:
+          GDK_BACKEND: x11
+          GTK_A11Y: none
+        run: xvfb-run -a cargo test --all-targets --locked
+
+      - name: Run dogtail integration tests
+        env:
+          GDK_BACKEND: x11
+        run: |
+          eval $(dbus-launch --sh-syntax)
+          /usr/libexec/at-spi2-registryd &
+          sleep 1
+          xvfb-run -a python3 -m pytest tests/ui_integration/ -v --tb=long
