@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct Settings {
     pub font: String,
     pub style_scheme: String,
@@ -11,6 +12,7 @@ pub struct Settings {
     pub tab_width: u32,
     pub highlight_current_line: bool,
     pub hide_hidden_files: bool,
+    pub wrap_around_navigation: bool,
     pub dir_filters: Vec<String>,
 }
 
@@ -24,6 +26,7 @@ impl Default for Settings {
             tab_width: 4,
             highlight_current_line: true,
             hide_hidden_files: true,
+            wrap_around_navigation: false,
             dir_filters: vec![
                 ".git".into(),
                 ".svn".into(),
@@ -96,6 +99,7 @@ mod tests {
         assert!(s.show_line_numbers);
         assert_eq!(s.tab_width, 4);
         assert!(s.dir_filters.contains(&".git".to_string()));
+        assert!(!s.wrap_around_navigation);
     }
 
     #[test]
@@ -108,6 +112,10 @@ mod tests {
         assert_eq!(original.tab_width, parsed.tab_width);
         assert_eq!(original.show_line_numbers, parsed.show_line_numbers);
         assert_eq!(original.wrap_mode, parsed.wrap_mode);
+        assert_eq!(
+            original.wrap_around_navigation,
+            parsed.wrap_around_navigation
+        );
         assert_eq!(original.dir_filters, parsed.dir_filters);
     }
 

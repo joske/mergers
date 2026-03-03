@@ -44,6 +44,27 @@ pub fn find_conflict_markers_in_text(text: &str) -> Vec<usize> {
         .collect()
 }
 
+/// Find the `<<<<<<<` marker line for the conflict block enclosing `cursor_line`, if any.
+///
+/// A conflict block spans from a `<<<<<<<` line to a `>>>>>>>` line (inclusive).
+/// Returns the line number of the opening `<<<<<<<` marker, which is the value
+/// stored in `current_conflict`.
+pub fn conflict_at_cursor(text: &str, cursor_line: usize) -> Option<usize> {
+    let mut open: Option<usize> = None;
+    for (i, line) in text.lines().enumerate() {
+        if line.starts_with("<<<<<<<") {
+            open = Some(i);
+        }
+        if i == cursor_line {
+            return open;
+        }
+        if line.starts_with(">>>>>>>") {
+            open = None;
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,5 +235,55 @@ mod tests {
         let text = "hello\n<<<<<<<\nworld\n";
         let result = find_conflict_markers_in_text(text);
         assert_eq!(result, vec![1]);
+    }
+
+    // ── conflict_at_cursor ───────────────────────────────────────
+
+    #[test]
+    fn conflict_at_cursor_outside() {
+        let text = "before\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> b\nafter\n";
+        assert_eq!(conflict_at_cursor(text, 0), None); // "before"
+        assert_eq!(conflict_at_cursor(text, 6), None); // "after"
+    }
+
+    #[test]
+    fn conflict_at_cursor_on_open_marker() {
+        let text = "before\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> b\nafter\n";
+        assert_eq!(conflict_at_cursor(text, 1), Some(1));
+    }
+
+    #[test]
+    fn conflict_at_cursor_inside() {
+        let text = "before\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> b\nafter\n";
+        assert_eq!(conflict_at_cursor(text, 2), Some(1)); // "ours"
+        assert_eq!(conflict_at_cursor(text, 3), Some(1)); // "======="
+        assert_eq!(conflict_at_cursor(text, 4), Some(1)); // "theirs"
+    }
+
+    #[test]
+    fn conflict_at_cursor_on_close_marker() {
+        let text = "before\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> b\nafter\n";
+        assert_eq!(conflict_at_cursor(text, 5), Some(1)); // ">>>>>>> b"
+    }
+
+    #[test]
+    fn conflict_at_cursor_multiple_blocks() {
+        let text = "<<<<<<< HEAD\na\n>>>>>>> b\nmiddle\n<<<<<<< HEAD\nb\n>>>>>>> b\n";
+        assert_eq!(conflict_at_cursor(text, 0), Some(0)); // first block open
+        assert_eq!(conflict_at_cursor(text, 1), Some(0)); // first block body
+        assert_eq!(conflict_at_cursor(text, 3), None); // between blocks
+        assert_eq!(conflict_at_cursor(text, 4), Some(4)); // second block open
+        assert_eq!(conflict_at_cursor(text, 5), Some(4)); // second block body
+    }
+
+    #[test]
+    fn conflict_at_cursor_past_end() {
+        let text = "hello\nworld\n";
+        assert_eq!(conflict_at_cursor(text, 99), None);
+    }
+
+    #[test]
+    fn conflict_at_cursor_empty() {
+        assert_eq!(conflict_at_cursor("", 0), None);
     }
 }

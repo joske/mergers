@@ -120,6 +120,12 @@ pub(super) fn show_preferences(parent: &ApplicationWindow, settings: &Rc<RefCell
     highlight_switch.set_valign(gtk4::Align::Center);
     content.append(&make_pref_row("Highlight current line", &highlight_switch));
 
+    // Wrap around navigation
+    let wrap_nav_switch = gtk4::Switch::new();
+    wrap_nav_switch.set_active(s.wrap_around_navigation);
+    wrap_nav_switch.set_valign(gtk4::Align::Center);
+    content.append(&make_pref_row("Wrap around navigation", &wrap_nav_switch));
+
     // Word wrap
     let wrap_modes = gtk4::StringList::new(&["None", "Word", "Character"]);
     let wrap_dropdown = gtk4::DropDown::new(Some(wrap_modes), gtk4::Expression::NONE);
@@ -238,6 +244,7 @@ pub(super) fn show_preferences(parent: &ApplicationWindow, settings: &Rc<RefCell
         let ts = tab_spin.clone();
         let fe = filter_entries.clone();
         let hs = hidden_switch.clone();
+        let wns = wrap_nav_switch.clone();
         Rc::new(move || {
             let mut s = st.borrow_mut();
             if let Some(fd) = fb.font_desc() {
@@ -256,6 +263,7 @@ pub(super) fn show_preferences(parent: &ApplicationWindow, settings: &Rc<RefCell
             };
             s.tab_width = ts.value() as u32;
             s.hide_hidden_files = hs.is_active();
+            s.wrap_around_navigation = wns.is_active();
             s.dir_filters = fe
                 .borrow()
                 .iter()
@@ -295,6 +303,10 @@ pub(super) fn show_preferences(parent: &ApplicationWindow, settings: &Rc<RefCell
     {
         let a = apply.clone();
         hidden_switch.connect_active_notify(move |_| a());
+    }
+    {
+        let a = apply.clone();
+        wrap_nav_switch.connect_active_notify(move |_| a());
     }
 
     // Also save filters on close (they don't need live-apply)

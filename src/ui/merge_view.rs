@@ -166,6 +166,12 @@ fn find_conflict_markers(buf: &TextBuffer) -> Vec<usize> {
     super::merge_state::find_conflict_markers_in_text(&text)
 }
 
+/// Find the opening `<<<<<<<` marker line for the conflict block at `cursor_line`.
+fn conflict_at_cursor(buf: &TextBuffer, cursor_line: usize) -> Option<usize> {
+    let text = buf.text(&buf.start_iter(), &buf.end_iter(), false);
+    super::merge_state::conflict_at_cursor(&text, cursor_line)
+}
+
 fn build_merge_view(
     left_path: &Path,
     middle_path: &Path,
@@ -185,6 +191,9 @@ fn build_merge_view(
     left_buf.set_text(&left_content);
     middle_buf.set_text(&middle_content);
     right_buf.set_text(&right_content);
+    left_buf.place_cursor(&left_buf.start_iter());
+    middle_buf.place_cursor(&middle_buf.start_iter());
+    right_buf.place_cursor(&right_buf.start_iter());
 
     let left_identical = !any_binary && left_content == middle_content;
     let right_identical = !any_binary && middle_content == right_content;
@@ -609,8 +618,10 @@ fn build_merge_view(
 
     let prev_btn = Button::from_icon_name("go-up-symbolic");
     prev_btn.set_tooltip_text(Some("Previous change (Alt+Up / Ctrl+E)"));
+    prev_btn.set_sensitive(false);
     let next_btn = Button::from_icon_name("go-down-symbolic");
     next_btn.set_tooltip_text(Some("Next change (Alt+Down / Ctrl+D)"));
+    next_btn.set_sensitive(false);
 
     let nav_box = GtkBox::new(Orientation::Horizontal, 0);
     nav_box.add_css_class("linked");
@@ -620,8 +631,10 @@ fn build_merge_view(
     // Conflict navigation buttons
     let prev_conflict_btn = Button::from_icon_name("go-up-symbolic");
     prev_conflict_btn.set_tooltip_text(Some("Previous conflict (Ctrl+J)"));
+    prev_conflict_btn.set_sensitive(false);
     let next_conflict_btn = Button::from_icon_name("go-down-symbolic");
     next_conflict_btn.set_tooltip_text(Some("Next conflict (Ctrl+K)"));
+    next_conflict_btn.set_sensitive(false);
     let conflict_nav_box = GtkBox::new(Orientation::Horizontal, 0);
     conflict_nav_box.add_css_class("linked");
     conflict_nav_box.append(&prev_conflict_btn);
@@ -754,7 +767,8 @@ fn build_merge_view(
                                 lf: &DrawingArea,
                                 mf: &DrawingArea,
                                 rf: &DrawingArea,
-                                active: &TextView| {
+                                active: &TextView,
+                                wrap: bool| {
         // Search the active pane's own chunks in its own coordinates.
         let cl = cursor_line_from_view(active);
         let found: Option<(usize, bool)> = if active == ltv {
@@ -765,12 +779,15 @@ fn build_merge_view(
                 .map(|(i, _)| i)
                 .collect();
             let next = if direction > 0 {
-                ne.iter().find(|&&i| lch[i].start_a > cl).or(ne.first())
-            } else {
                 ne.iter()
-                    .rev()
-                    .find(|&&i| lch[i].start_a < cl)
-                    .or(ne.last())
+                    .find(|&&i| lch[i].start_a > cl)
+                    .or(if wrap { ne.first() } else { None })
+            } else {
+                ne.iter().rev().find(|&&i| lch[i].start_a < cl).or(if wrap {
+                    ne.last()
+                } else {
+                    None
+                })
             };
             next.map(|&idx| (idx, false))
         } else if active == rtv {
@@ -781,12 +798,15 @@ fn build_merge_view(
                 .map(|(i, _)| i)
                 .collect();
             let next = if direction > 0 {
-                ne.iter().find(|&&i| rch[i].start_b > cl).or(ne.first())
-            } else {
                 ne.iter()
-                    .rev()
-                    .find(|&&i| rch[i].start_b < cl)
-                    .or(ne.last())
+                    .find(|&&i| rch[i].start_b > cl)
+                    .or(if wrap { ne.first() } else { None })
+            } else {
+                ne.iter().rev().find(|&&i| rch[i].start_b < cl).or(if wrap {
+                    ne.last()
+                } else {
+                    None
+                })
             };
             next.map(|&idx| (idx, true))
         } else {
@@ -801,13 +821,13 @@ fn build_merge_view(
             if direction > 0 {
                 all.iter()
                     .find(|e| middle_line(e) > cl)
-                    .or(all.first())
+                    .or(if wrap { all.first() } else { None })
                     .copied()
             } else {
                 all.iter()
                     .rev()
                     .find(|e| middle_line(e) < cl)
-                    .or(all.last())
+                    .or(if wrap { all.last() } else { None })
                     .copied()
             }
         };
@@ -858,6 +878,56 @@ fn build_merge_view(
             }
         };
 
+    // Sensitivity helper for merge chunk nav buttons.
+    // Determines whether prev/next have a valid target given the active pane.
+    #[allow(clippy::too_many_arguments)]
+    let merge_nav_sensitivity = |pb: &Button,
+                                 nb: &Button,
+                                 lch: &[DiffChunk],
+                                 rch: &[DiffChunk],
+                                 active: &TextView,
+                                 ltv: &TextView,
+                                 rtv: &TextView,
+                                 wrap: bool| {
+        let cl = cursor_line_from_view(active);
+        let has_any = lch.iter().any(|c| c.tag != DiffTag::Equal)
+            || rch.iter().any(|c| c.tag != DiffTag::Equal);
+        if !has_any {
+            pb.set_sensitive(false);
+            nb.set_sensitive(false);
+            return;
+        }
+        if wrap {
+            pb.set_sensitive(true);
+            nb.set_sensitive(true);
+            return;
+        }
+        // Probe forward / backward in the same way navigate_merge_chunk does.
+        if active == ltv {
+            let (p, n) = diff_state::chunk_nav_sensitivity(lch, cl, Side::A, false);
+            pb.set_sensitive(p);
+            nb.set_sensitive(n);
+        } else if active == rtv {
+            let (p, n) = diff_state::chunk_nav_sensitivity(rch, cl, Side::B, false);
+            pb.set_sensitive(p);
+            nb.set_sensitive(n);
+        } else {
+            // Middle pane — uses merge_change_indices
+            let all = merge_change_indices(lch, rch);
+            let middle_line = |&(idx, is_right): &(usize, bool)| -> usize {
+                if is_right {
+                    rch[idx].start_a
+                } else {
+                    lch[idx].start_b
+                }
+            };
+            let has_prev = all.iter().rev().any(|e| middle_line(e) < cl);
+            let has_next = all.iter().any(|e| middle_line(e) > cl);
+            pb.set_sensitive(has_prev);
+            nb.set_sensitive(has_next);
+        }
+    };
+
     // Prev chunk
     {
         let lch = left_chunks.clone();
@@ -878,7 +948,11 @@ fn build_merge_view(
         let rf = right_pane.filler_overlay.clone();
         let nav = navigate_merge_chunk;
         let upd = update_merge_label;
+        let sens = merge_nav_sensitivity;
         let av = active_view.clone();
+        let st = settings.clone();
+        let pb = prev_btn.clone();
+        let nb = next_btn.clone();
         prev_btn.connect_clicked(move |_| {
             nav(
                 &lch.borrow(),
@@ -898,8 +972,19 @@ fn build_merge_view(
                 &mf,
                 &rf,
                 &av.borrow(),
+                st.borrow().wrap_around_navigation,
             );
             upd(&lbl, &lch.borrow(), &rch.borrow(), cur.get());
+            sens(
+                &pb,
+                &nb,
+                &lch.borrow(),
+                &rch.borrow(),
+                &av.borrow(),
+                &ltv,
+                &rtv,
+                st.borrow().wrap_around_navigation,
+            );
             let focused_tv = av.borrow().clone();
             focused_tv.grab_focus();
         });
@@ -925,7 +1010,11 @@ fn build_merge_view(
         let rf = right_pane.filler_overlay.clone();
         let nav = navigate_merge_chunk;
         let upd = update_merge_label;
+        let sens = merge_nav_sensitivity;
         let av = active_view.clone();
+        let st = settings.clone();
+        let pb = prev_btn.clone();
+        let nb = next_btn.clone();
         next_btn.connect_clicked(move |_| {
             nav(
                 &lch.borrow(),
@@ -945,8 +1034,19 @@ fn build_merge_view(
                 &mf,
                 &rf,
                 &av.borrow(),
+                st.borrow().wrap_around_navigation,
             );
             upd(&lbl, &lch.borrow(), &rch.borrow(), cur.get());
+            sens(
+                &pb,
+                &nb,
+                &lch.borrow(),
+                &rch.borrow(),
+                &av.borrow(),
+                &ltv,
+                &rtv,
+                st.borrow().wrap_around_navigation,
+            );
             let focused_tv = av.borrow().clone();
             focused_tv.grab_focus();
         });
@@ -967,7 +1067,8 @@ fn build_merge_view(
                              rb: &TextBuffer,
                              rs: &ScrolledWindow,
                              lch: &Rc<RefCell<Vec<DiffChunk>>>,
-                             rch: &Rc<RefCell<Vec<DiffChunk>>>| {
+                             rch: &Rc<RefCell<Vec<DiffChunk>>>,
+                             wrap: bool| {
         let cursor_line = cursor_line_from_view(mtv);
         let markers = find_conflict_markers(mb);
         if markers.is_empty() {
@@ -977,13 +1078,13 @@ fn build_merge_view(
             markers
                 .iter()
                 .find(|&&l| l > cursor_line)
-                .or(markers.first())
+                .or(if wrap { markers.first() } else { None })
         } else {
             markers
                 .iter()
                 .rev()
                 .find(|&&l| l < cursor_line)
-                .or(markers.last())
+                .or(if wrap { markers.last() } else { None })
         };
         if let Some(&line) = next {
             cur.set(Some(line));
@@ -1027,6 +1128,27 @@ fn build_merge_view(
         }
     };
 
+    // Sensitivity helper for conflict nav buttons.
+    let conflict_nav_sensitivity =
+        |pb: &Button, nb: &Button, mb: &TextBuffer, mtv: &TextView, wrap: bool| {
+            let markers = find_conflict_markers(mb);
+            if markers.is_empty() {
+                pb.set_sensitive(false);
+                nb.set_sensitive(false);
+                return;
+            }
+            if wrap {
+                pb.set_sensitive(true);
+                nb.set_sensitive(true);
+                return;
+            }
+            let cl = cursor_line_from_view(mtv);
+            let has_prev = markers.iter().rev().any(|&l| l < cl);
+            let has_next = markers.iter().any(|&l| l > cl);
+            pb.set_sensitive(has_prev);
+            nb.set_sensitive(has_next);
+        };
+
     // Prev conflict
     {
         let cur = current_conflict.clone();
@@ -1044,12 +1166,30 @@ fn build_merge_view(
         let lbl = conflict_label.clone();
         let nav = navigate_conflict;
         let upd = update_conflict_label;
+        let csens = conflict_nav_sensitivity;
         let av = active_view.clone();
+        let st = settings.clone();
+        let pcb = prev_conflict_btn.clone();
+        let ncb = next_conflict_btn.clone();
         prev_conflict_btn.connect_clicked(move |_| {
             nav(
-                &cur, -1, &mtv, &mb, &ms, &ltv, &lb, &ls, &rtv, &rb, &rs, &lch, &rch,
+                &cur,
+                -1,
+                &mtv,
+                &mb,
+                &ms,
+                &ltv,
+                &lb,
+                &ls,
+                &rtv,
+                &rb,
+                &rs,
+                &lch,
+                &rch,
+                st.borrow().wrap_around_navigation,
             );
             upd(&lbl, &mb, cur.get());
+            csens(&pcb, &ncb, &mb, &mtv, st.borrow().wrap_around_navigation);
             let focused_tv = av.borrow().clone();
             focused_tv.grab_focus();
         });
@@ -1072,12 +1212,30 @@ fn build_merge_view(
         let lbl = conflict_label.clone();
         let nav = navigate_conflict;
         let upd = update_conflict_label;
+        let csens = conflict_nav_sensitivity;
         let av = active_view.clone();
+        let st = settings.clone();
+        let pcb = prev_conflict_btn.clone();
+        let ncb = next_conflict_btn.clone();
         next_conflict_btn.connect_clicked(move |_| {
             nav(
-                &cur, 1, &mtv, &mb, &ms, &ltv, &lb, &ls, &rtv, &rb, &rs, &lch, &rch,
+                &cur,
+                1,
+                &mtv,
+                &mb,
+                &ms,
+                &ltv,
+                &lb,
+                &ls,
+                &rtv,
+                &rb,
+                &rs,
+                &lch,
+                &rch,
+                st.borrow().wrap_around_navigation,
             );
             upd(&lbl, &mb, cur.get());
+            csens(&pcb, &ncb, &mb, &mtv, st.borrow().wrap_around_navigation);
             let focused_tv = av.borrow().clone();
             focused_tv.grab_focus();
         });
@@ -1166,6 +1324,15 @@ fn build_merge_view(
             let lf = left_pane.filler_overlay.clone();
             let mf = middle_pane.filler_overlay.clone();
             let rf = right_pane.filler_overlay.clone();
+            let pb = prev_btn.clone();
+            let nb = next_btn.clone();
+            let pcb = prev_conflict_btn.clone();
+            let ncb = next_conflict_btn.clone();
+            let av = active_view.clone();
+            let ltv = left_pane.text_view.clone();
+            let rtv = right_pane.text_view.clone();
+            let mtv = middle_pane.text_view.clone();
+            let st = settings.clone();
             move || {
                 let lg = lg.clone();
                 let rg = rg.clone();
@@ -1181,6 +1348,15 @@ fn build_merge_view(
                 let lf = lf.clone();
                 let mf = mf.clone();
                 let rf = rf.clone();
+                let pb = pb.clone();
+                let nb = nb.clone();
+                let pcb = pcb.clone();
+                let ncb = ncb.clone();
+                let av = av.clone();
+                let ltv = ltv.clone();
+                let rtv = rtv.clone();
+                let mtv = mtv.clone();
+                let st = st.clone();
                 move || {
                     lg.queue_draw();
                     rg.queue_draw();
@@ -1191,6 +1367,16 @@ fn build_merge_view(
                     rf.queue_draw();
                     cur.set(None);
                     update_merge_label(&lbl, &lch.borrow(), &rch.borrow(), None);
+                    merge_nav_sensitivity(
+                        &pb,
+                        &nb,
+                        &lch.borrow(),
+                        &rch.borrow(),
+                        &av.borrow(),
+                        &ltv,
+                        &rtv,
+                        st.borrow().wrap_around_navigation,
+                    );
                     ccur.set(None);
                     let n = find_conflict_markers(&mb).len();
                     if n == 0 {
@@ -1198,6 +1384,13 @@ fn build_merge_view(
                     } else {
                         clbl.set_label(&format!("{n} conflicts"));
                     }
+                    conflict_nav_sensitivity(
+                        &pcb,
+                        &ncb,
+                        &mb,
+                        &mtv,
+                        st.borrow().wrap_around_navigation,
+                    );
                 }
             }
         };
@@ -1333,6 +1526,115 @@ fn build_merge_view(
                     iw.get(),
                     &dummy,
                 );
+            });
+        }
+    }
+
+    // ── Update chunk/conflict labels + nav sensitivity when cursor moves ───
+    if !any_binary {
+        // Left and right pane cursor tracking (chunk label only)
+        let connect_side_cursor = |buf: &TextBuffer, tv: &TextView, side: Side, is_right: bool| {
+            let lch = left_chunks.clone();
+            let rch = right_chunks.clone();
+            let cur = current_chunk.clone();
+            let lbl = chunk_label.clone();
+            let pb = prev_btn.clone();
+            let nb = next_btn.clone();
+            let av = active_view.clone();
+            let ltv = left_pane.text_view.clone();
+            let rtv = right_pane.text_view.clone();
+            let st = settings.clone();
+            let my_tv = tv.clone();
+            let sens = merge_nav_sensitivity;
+            buf.connect_cursor_position_notify(move |_| {
+                if av.borrow().clone() != my_tv {
+                    return;
+                }
+                let chunks = if is_right { rch.borrow() } else { lch.borrow() };
+                let cursor_line = cursor_line_from_view(&my_tv);
+                let at = diff_state::chunk_at_cursor(&chunks, cursor_line, side);
+                cur.set(at.map(|idx| (idx, is_right)));
+                let all = merge_change_indices(&lch.borrow(), &rch.borrow());
+                let total = all.len();
+                if total == 0 {
+                    lbl.set_label("No changes");
+                } else if let Some(cur_val) = cur.get() {
+                    if let Some(pos) = all.iter().position(|v| *v == cur_val) {
+                        lbl.set_label(&format!("Change {} of {}", pos + 1, total));
+                    } else {
+                        lbl.set_label(&format!("{total} changes"));
+                    }
+                } else {
+                    lbl.set_label(&format!("{total} changes"));
+                }
+                let wrap = st.borrow().wrap_around_navigation;
+                sens(
+                    &pb,
+                    &nb,
+                    &lch.borrow(),
+                    &rch.borrow(),
+                    &my_tv,
+                    &ltv,
+                    &rtv,
+                    wrap,
+                );
+            });
+        };
+        connect_side_cursor(&left_buf, &left_pane.text_view, Side::A, false);
+        connect_side_cursor(&right_buf, &right_pane.text_view, Side::B, true);
+
+        // Middle pane cursor tracking (both chunk and conflict labels)
+        {
+            let lch = left_chunks.clone();
+            let rch = right_chunks.clone();
+            let cur = current_chunk.clone();
+            let ccur = current_conflict.clone();
+            let lbl = chunk_label.clone();
+            let clbl = conflict_label.clone();
+            let pb = prev_btn.clone();
+            let nb = next_btn.clone();
+            let pcb = prev_conflict_btn.clone();
+            let ncb = next_conflict_btn.clone();
+            let av = active_view.clone();
+            let ltv = left_pane.text_view.clone();
+            let rtv = right_pane.text_view.clone();
+            let mtv = middle_pane.text_view.clone();
+            let mb = middle_buf.clone();
+            let st = settings.clone();
+            let sens = merge_nav_sensitivity;
+            let csens = conflict_nav_sensitivity;
+            middle_buf.connect_cursor_position_notify(move |_| {
+                if av.borrow().clone() != mtv {
+                    return;
+                }
+                let cursor_line = cursor_line_from_view(&mtv);
+
+                // Chunk: check left_chunks (side B = middle) and right_chunks (side A = middle)
+                let left_at = diff_state::chunk_at_cursor(&lch.borrow(), cursor_line, Side::B);
+                let right_at = diff_state::chunk_at_cursor(&rch.borrow(), cursor_line, Side::A);
+                let at = left_at
+                    .map(|idx| (idx, false))
+                    .or_else(|| right_at.map(|idx| (idx, true)));
+                cur.set(at);
+                update_merge_label(&lbl, &lch.borrow(), &rch.borrow(), at);
+
+                let wrap = st.borrow().wrap_around_navigation;
+                sens(
+                    &pb,
+                    &nb,
+                    &lch.borrow(),
+                    &rch.borrow(),
+                    &mtv,
+                    &ltv,
+                    &rtv,
+                    wrap,
+                );
+
+                // Conflict: check if cursor is inside a conflict block
+                let in_conflict = conflict_at_cursor(&mb, cursor_line);
+                ccur.set(in_conflict);
+                update_conflict_label(&clbl, &mb, in_conflict);
+                csens(&pcb, &ncb, &mb, &mtv, wrap);
             });
         }
     }
@@ -1603,6 +1905,9 @@ fn build_merge_view(
         let mf = middle_pane.filler_overlay.clone();
         let rf = right_pane.filler_overlay.clone();
         let av = active_view.clone();
+        let st = settings.clone();
+        let pb = prev_btn.clone();
+        let nb = next_btn.clone();
         action.connect_activate(move |_, _| {
             navigate_merge_chunk(
                 &lch.borrow(),
@@ -1622,8 +1927,19 @@ fn build_merge_view(
                 &mf,
                 &rf,
                 &av.borrow(),
+                st.borrow().wrap_around_navigation,
             );
             update_merge_label(&lbl, &lch.borrow(), &rch.borrow(), cur.get());
+            merge_nav_sensitivity(
+                &pb,
+                &nb,
+                &lch.borrow(),
+                &rch.borrow(),
+                &av.borrow(),
+                &ltv,
+                &rtv,
+                st.borrow().wrap_around_navigation,
+            );
         });
         action_group.add_action(&action);
     }
@@ -1646,6 +1962,9 @@ fn build_merge_view(
         let mf = middle_pane.filler_overlay.clone();
         let rf = right_pane.filler_overlay.clone();
         let av = active_view.clone();
+        let st = settings.clone();
+        let pb = prev_btn.clone();
+        let nb = next_btn.clone();
         action.connect_activate(move |_, _| {
             navigate_merge_chunk(
                 &lch.borrow(),
@@ -1665,8 +1984,19 @@ fn build_merge_view(
                 &mf,
                 &rf,
                 &av.borrow(),
+                st.borrow().wrap_around_navigation,
             );
             update_merge_label(&lbl, &lch.borrow(), &rch.borrow(), cur.get());
+            merge_nav_sensitivity(
+                &pb,
+                &nb,
+                &lch.borrow(),
+                &rch.borrow(),
+                &av.borrow(),
+                &ltv,
+                &rtv,
+                st.borrow().wrap_around_navigation,
+            );
         });
         action_group.add_action(&action);
     }
@@ -1685,11 +2015,28 @@ fn build_merge_view(
         let lch = left_chunks.clone();
         let rch = right_chunks.clone();
         let lbl = conflict_label.clone();
+        let st = settings.clone();
+        let pcb = prev_conflict_btn.clone();
+        let ncb = next_conflict_btn.clone();
         action.connect_activate(move |_, _| {
             navigate_conflict(
-                &cur, -1, &mtv, &mb, &ms, &ltv, &lb, &ls, &rtv, &rb, &rs, &lch, &rch,
+                &cur,
+                -1,
+                &mtv,
+                &mb,
+                &ms,
+                &ltv,
+                &lb,
+                &ls,
+                &rtv,
+                &rb,
+                &rs,
+                &lch,
+                &rch,
+                st.borrow().wrap_around_navigation,
             );
             update_conflict_label(&lbl, &mb, cur.get());
+            conflict_nav_sensitivity(&pcb, &ncb, &mb, &mtv, st.borrow().wrap_around_navigation);
         });
         action_group.add_action(&action);
     }
@@ -1708,11 +2055,28 @@ fn build_merge_view(
         let lch = left_chunks.clone();
         let rch = right_chunks.clone();
         let lbl = conflict_label.clone();
+        let st = settings.clone();
+        let pcb = prev_conflict_btn.clone();
+        let ncb = next_conflict_btn.clone();
         action.connect_activate(move |_, _| {
             navigate_conflict(
-                &cur, 1, &mtv, &mb, &ms, &ltv, &lb, &ls, &rtv, &rb, &rs, &lch, &rch,
+                &cur,
+                1,
+                &mtv,
+                &mb,
+                &ms,
+                &ltv,
+                &lb,
+                &ls,
+                &rtv,
+                &rb,
+                &rs,
+                &lch,
+                &rch,
+                st.borrow().wrap_around_navigation,
             );
             update_conflict_label(&lbl, &mb, cur.get());
+            conflict_nav_sensitivity(&pcb, &ncb, &mb, &mtv, st.borrow().wrap_around_navigation);
         });
         action_group.add_action(&action);
     }

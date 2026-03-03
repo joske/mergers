@@ -26,13 +26,14 @@ pub(super) enum Side {
 ///
 /// `direction > 0` searches forward; `direction < 0` searches backward.
 /// `side` selects whether to compare `start_a` or `start_b`.
-/// Wraps around if no match is found in the given direction.
-/// Returns `None` if there are no non-Equal chunks.
+/// When `wrap` is true, wraps around if no match is found in the given direction.
+/// Returns `None` if there are no non-Equal chunks (or no match when `wrap` is false).
 pub(super) fn find_next_chunk(
     chunks: &[DiffChunk],
     cursor_line: usize,
     direction: i32,
     side: Side,
+    wrap: bool,
 ) -> Option<usize> {
     let non_equal: Vec<usize> = chunks
         .iter()
@@ -54,17 +55,17 @@ pub(super) fn find_next_chunk(
     };
 
     if direction > 0 {
-        non_equal
-            .iter()
-            .find(|&&i| start_line(i) > cursor_line)
-            .or(non_equal.first())
+        let found = non_equal.iter().find(|&&i| start_line(i) > cursor_line);
+        found
+            .or(if wrap { non_equal.first() } else { None })
             .copied()
     } else {
-        non_equal
+        let found = non_equal
             .iter()
             .rev()
-            .find(|&&i| start_line(i) < cursor_line)
-            .or(non_equal.last())
+            .find(|&&i| start_line(i) < cursor_line);
+        found
+            .or(if wrap { non_equal.last() } else { None })
             .copied()
     }
 }
@@ -97,6 +98,58 @@ pub(super) fn format_chunk_label(chunks: &[DiffChunk], current: Option<usize>) -
         }
         None => format!("{total} changes"),
     }
+}
+
+/// Determine whether prev/next chunk navigation buttons should be sensitive.
+///
+/// Returns `(prev_sensitive, next_sensitive)`.
+/// - If there are no non-Equal chunks → `(false, false)`.
+/// - If `wrap` is true → `(true, true)`.
+/// - Otherwise probes backward/forward from `cursor_line`.
+#[must_use]
+pub(super) fn chunk_nav_sensitivity(
+    chunks: &[DiffChunk],
+    cursor_line: usize,
+    side: Side,
+    wrap: bool,
+) -> (bool, bool) {
+    let has_non_equal = chunks.iter().any(|c| c.tag != DiffTag::Equal);
+    if !has_non_equal {
+        return (false, false);
+    }
+    if wrap {
+        return (true, true);
+    }
+    let prev = find_next_chunk(chunks, cursor_line, -1, side, false).is_some();
+    let next = find_next_chunk(chunks, cursor_line, 1, side, false).is_some();
+    (prev, next)
+}
+
+/// Find the chunk index containing `cursor_line`, if any non-Equal chunk does.
+///
+/// Uses `start_a`/`end_a` when `side == Side::A`, otherwise `start_b`/`end_b`.
+/// Returns `None` if the cursor is in an Equal region or there are no chunks.
+#[must_use]
+pub(super) fn chunk_at_cursor(
+    chunks: &[DiffChunk],
+    cursor_line: usize,
+    side: Side,
+) -> Option<usize> {
+    chunks.iter().enumerate().find_map(|(i, c)| {
+        if c.tag == DiffTag::Equal {
+            return None;
+        }
+        let (start, end) = if side == Side::A {
+            (c.start_a, c.end_a)
+        } else {
+            (c.start_b, c.end_b)
+        };
+        if cursor_line >= start && cursor_line < end {
+            Some(i)
+        } else {
+            None
+        }
+    })
 }
 
 /// Case-insensitive substring search returning `(byte_start, byte_end)` pairs.
@@ -239,43 +292,57 @@ mod tests {
 
     #[test]
     fn find_next_empty_chunks() {
-        assert_eq!(find_next_chunk(&[], 0, 1, Side::A), None);
-        assert_eq!(find_next_chunk(&[], 0, -1, Side::A), None);
+        assert_eq!(find_next_chunk(&[], 0, 1, Side::A, true), None);
+        assert_eq!(find_next_chunk(&[], 0, -1, Side::A, true), None);
     }
 
     #[test]
     fn find_next_all_equal() {
         let chunks = [eq(0, 5, 0, 5), eq(5, 10, 5, 10)];
-        assert_eq!(find_next_chunk(&chunks, 0, 1, Side::A), None);
-        assert_eq!(find_next_chunk(&chunks, 0, -1, Side::A), None);
+        assert_eq!(find_next_chunk(&chunks, 0, 1, Side::A, true), None);
+        assert_eq!(find_next_chunk(&chunks, 0, -1, Side::A, true), None);
     }
 
     #[test]
     fn find_next_forward() {
         let chunks = [eq(0, 3, 0, 3), rep(3, 5, 3, 6), eq(5, 10, 6, 11)];
         // Cursor at line 0, forward -> chunk index 1 (start_a=3 > 0)
-        assert_eq!(find_next_chunk(&chunks, 0, 1, Side::A), Some(1));
+        assert_eq!(find_next_chunk(&chunks, 0, 1, Side::A, true), Some(1));
     }
 
     #[test]
     fn find_next_backward() {
         let chunks = [eq(0, 3, 0, 3), rep(3, 5, 3, 6), eq(5, 10, 6, 11)];
         // Cursor at line 7, backward -> chunk index 1 (start_a=3 < 7)
-        assert_eq!(find_next_chunk(&chunks, 7, -1, Side::A), Some(1));
+        assert_eq!(find_next_chunk(&chunks, 7, -1, Side::A, true), Some(1));
     }
 
     #[test]
     fn find_next_forward_wraps() {
         let chunks = [eq(0, 3, 0, 3), rep(3, 5, 3, 6), eq(5, 10, 6, 11)];
         // Cursor at line 5 (past the change), forward -> wraps to first non-equal (index 1)
-        assert_eq!(find_next_chunk(&chunks, 5, 1, Side::A), Some(1));
+        assert_eq!(find_next_chunk(&chunks, 5, 1, Side::A, true), Some(1));
     }
 
     #[test]
     fn find_next_backward_wraps() {
         let chunks = [eq(0, 3, 0, 3), rep(3, 5, 3, 6), eq(5, 10, 6, 11)];
         // Cursor at line 2 (before the change), backward -> wraps to last non-equal (index 1)
-        assert_eq!(find_next_chunk(&chunks, 2, -1, Side::A), Some(1));
+        assert_eq!(find_next_chunk(&chunks, 2, -1, Side::A, true), Some(1));
+    }
+
+    #[test]
+    fn find_next_forward_no_wrap() {
+        let chunks = [eq(0, 3, 0, 3), rep(3, 5, 3, 6), eq(5, 10, 6, 11)];
+        // Cursor at line 5 (past the change), forward, no wrap -> None
+        assert_eq!(find_next_chunk(&chunks, 5, 1, Side::A, false), None);
+    }
+
+    #[test]
+    fn find_next_backward_no_wrap() {
+        let chunks = [eq(0, 3, 0, 3), rep(3, 5, 3, 6), eq(5, 10, 6, 11)];
+        // Cursor at line 2 (before the change), backward, no wrap -> None
+        assert_eq!(find_next_chunk(&chunks, 2, -1, Side::A, false), None);
     }
 
     #[test]
@@ -283,9 +350,9 @@ mod tests {
         // Side B has different start lines
         let chunks = [eq(0, 3, 0, 5), rep(3, 5, 5, 8), eq(5, 10, 8, 13)];
         // Cursor at line 4, forward on side B -> chunk 1 (start_b=5 > 4)
-        assert_eq!(find_next_chunk(&chunks, 4, 1, Side::B), Some(1));
+        assert_eq!(find_next_chunk(&chunks, 4, 1, Side::B, true), Some(1));
         // Cursor at line 6, backward on side B -> chunk 1 (start_b=5 < 6)
-        assert_eq!(find_next_chunk(&chunks, 6, -1, Side::B), Some(1));
+        assert_eq!(find_next_chunk(&chunks, 6, -1, Side::B, true), Some(1));
     }
 
     #[test]
@@ -298,9 +365,9 @@ mod tests {
             eq(6, 10, 7, 11),
         ];
         // Cursor at line 3 (inside first change), forward -> second change at index 3 (start_a=6 > 3)
-        assert_eq!(find_next_chunk(&chunks, 3, 1, Side::A), Some(3));
+        assert_eq!(find_next_chunk(&chunks, 3, 1, Side::A, true), Some(3));
         // Cursor at line 0, forward -> first change at index 1 (start_a=2 > 0)
-        assert_eq!(find_next_chunk(&chunks, 0, 1, Side::A), Some(1));
+        assert_eq!(find_next_chunk(&chunks, 0, 1, Side::A, true), Some(1));
     }
 
     #[test]
@@ -313,18 +380,135 @@ mod tests {
             eq(6, 10, 7, 11),
         ];
         // Cursor at line 8, backward -> second change at index 3 (start_a=6 < 8)
-        assert_eq!(find_next_chunk(&chunks, 8, -1, Side::A), Some(3));
+        assert_eq!(find_next_chunk(&chunks, 8, -1, Side::A, true), Some(3));
         // Cursor at line 5, backward -> first change at index 1 (start_a=2 < 5)
-        assert_eq!(find_next_chunk(&chunks, 5, -1, Side::A), Some(1));
+        assert_eq!(find_next_chunk(&chunks, 5, -1, Side::A, true), Some(1));
     }
 
     #[test]
     fn find_next_cursor_on_change_start() {
         let chunks = [eq(0, 3, 0, 3), rep(3, 5, 3, 6), eq(5, 10, 6, 11)];
         // Cursor exactly at start_a of the change (line 3), forward -> wraps (3 is NOT > 3)
-        assert_eq!(find_next_chunk(&chunks, 3, 1, Side::A), Some(1));
+        assert_eq!(find_next_chunk(&chunks, 3, 1, Side::A, true), Some(1));
         // Cursor exactly at start_a of the change (line 3), backward -> wraps (3 is NOT < 3)
-        assert_eq!(find_next_chunk(&chunks, 3, -1, Side::A), Some(1));
+        assert_eq!(find_next_chunk(&chunks, 3, -1, Side::A, true), Some(1));
+    }
+
+    // ── chunk_nav_sensitivity ─────────────────────────────────────────
+
+    #[test]
+    fn sensitivity_no_chunks() {
+        assert_eq!(
+            chunk_nav_sensitivity(&[], 0, Side::A, false),
+            (false, false)
+        );
+        assert_eq!(chunk_nav_sensitivity(&[], 0, Side::A, true), (false, false));
+    }
+
+    #[test]
+    fn sensitivity_all_equal() {
+        let chunks = [eq(0, 5, 0, 5), eq(5, 10, 5, 10)];
+        assert_eq!(
+            chunk_nav_sensitivity(&chunks, 0, Side::A, false),
+            (false, false)
+        );
+    }
+
+    #[test]
+    fn sensitivity_wrap_always_true() {
+        let chunks = [eq(0, 3, 0, 3), rep(3, 5, 3, 6), eq(5, 10, 6, 11)];
+        assert_eq!(
+            chunk_nav_sensitivity(&chunks, 0, Side::A, true),
+            (true, true)
+        );
+        assert_eq!(
+            chunk_nav_sensitivity(&chunks, 99, Side::A, true),
+            (true, true)
+        );
+    }
+
+    #[test]
+    fn sensitivity_at_first_chunk() {
+        // Cursor at the start of the only change — no prev, no next (start is not > or <)
+        let chunks = [eq(0, 3, 0, 3), rep(3, 5, 3, 6), eq(5, 10, 6, 11)];
+        assert_eq!(
+            chunk_nav_sensitivity(&chunks, 3, Side::A, false),
+            (false, false)
+        );
+    }
+
+    #[test]
+    fn sensitivity_before_change() {
+        // Cursor before the change — prev=false, next=true
+        let chunks = [eq(0, 3, 0, 3), rep(3, 5, 3, 6), eq(5, 10, 6, 11)];
+        assert_eq!(
+            chunk_nav_sensitivity(&chunks, 0, Side::A, false),
+            (false, true)
+        );
+    }
+
+    #[test]
+    fn sensitivity_after_change() {
+        // Cursor after the change — prev=true, next=false
+        let chunks = [eq(0, 3, 0, 3), rep(3, 5, 3, 6), eq(5, 10, 6, 11)];
+        assert_eq!(
+            chunk_nav_sensitivity(&chunks, 7, Side::A, false),
+            (true, false)
+        );
+    }
+
+    #[test]
+    fn sensitivity_between_changes() {
+        // Multiple changes, cursor between them — both true
+        let chunks = [
+            eq(0, 2, 0, 2),
+            del(2, 4, 2, 2),
+            eq(4, 6, 2, 4),
+            ins(6, 6, 4, 7),
+            eq(6, 10, 7, 11),
+        ];
+        assert_eq!(
+            chunk_nav_sensitivity(&chunks, 5, Side::A, false),
+            (true, true)
+        );
+    }
+
+    // ── chunk_at_cursor ─────────────────────────────────────────────────
+
+    #[test]
+    fn chunk_at_cursor_empty() {
+        assert_eq!(chunk_at_cursor(&[], 0, Side::A), None);
+    }
+
+    #[test]
+    fn chunk_at_cursor_in_equal() {
+        let chunks = [eq(0, 5, 0, 5), rep(5, 8, 5, 7), eq(8, 10, 7, 9)];
+        assert_eq!(chunk_at_cursor(&chunks, 2, Side::A), None);
+    }
+
+    #[test]
+    fn chunk_at_cursor_in_change_side_a() {
+        let chunks = [eq(0, 5, 0, 5), rep(5, 8, 5, 7), eq(8, 10, 7, 9)];
+        assert_eq!(chunk_at_cursor(&chunks, 5, Side::A), Some(1));
+        assert_eq!(chunk_at_cursor(&chunks, 7, Side::A), Some(1));
+        // end is exclusive
+        assert_eq!(chunk_at_cursor(&chunks, 8, Side::A), None);
+    }
+
+    #[test]
+    fn chunk_at_cursor_in_change_side_b() {
+        let chunks = [eq(0, 5, 0, 5), rep(5, 8, 5, 7), eq(8, 10, 7, 9)];
+        assert_eq!(chunk_at_cursor(&chunks, 5, Side::B), Some(1));
+        assert_eq!(chunk_at_cursor(&chunks, 6, Side::B), Some(1));
+        assert_eq!(chunk_at_cursor(&chunks, 7, Side::B), None);
+    }
+
+    #[test]
+    fn chunk_at_cursor_insert_zero_range() {
+        // An insert has zero range on side A
+        let chunks = [ins(5, 5, 5, 8)];
+        assert_eq!(chunk_at_cursor(&chunks, 5, Side::A), None);
+        assert_eq!(chunk_at_cursor(&chunks, 5, Side::B), Some(0));
     }
 
     // ── format_chunk_label ──────────────────────────────────────────────
@@ -611,7 +795,7 @@ mod tests {
                 chunks in arb_chunks(),
                 cursor in 0..2000_usize,
             ) {
-                if let Some(idx) = find_next_chunk(&chunks, cursor, 1, Side::A) {
+                if let Some(idx) = find_next_chunk(&chunks, cursor, 1, Side::A, true) {
                     prop_assert!(idx < chunks.len());
                     prop_assert_ne!(chunks[idx].tag, DiffTag::Equal);
                 }
@@ -622,7 +806,7 @@ mod tests {
                 chunks in arb_chunks(),
                 cursor in 0..2000_usize,
             ) {
-                if let Some(idx) = find_next_chunk(&chunks, cursor, -1, Side::A) {
+                if let Some(idx) = find_next_chunk(&chunks, cursor, -1, Side::A, true) {
                     prop_assert!(idx < chunks.len());
                     prop_assert_ne!(chunks[idx].tag, DiffTag::Equal);
                 }
@@ -634,7 +818,7 @@ mod tests {
                 cursor in 0..2000_usize,
             ) {
                 let has_non_equal = chunks.iter().any(|c| c.tag != DiffTag::Equal);
-                let result = find_next_chunk(&chunks, cursor, 1, Side::A);
+                let result = find_next_chunk(&chunks, cursor, 1, Side::A, true);
                 prop_assert_eq!(result.is_some(), has_non_equal);
             }
         }

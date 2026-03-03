@@ -1527,6 +1527,7 @@ pub(super) fn navigate_chunk(
     right_buf: &TextBuffer,
     right_scroll: &ScrolledWindow,
     active_tv: &TextView,
+    wrap: bool,
 ) {
     let cursor_line = cursor_line_from_view(active_tv);
     let side = if active_tv == right_tv {
@@ -1535,7 +1536,7 @@ pub(super) fn navigate_chunk(
         Side::A
     };
 
-    if let Some(idx) = diff_state::find_next_chunk(chunks, cursor_line, direction, side) {
+    if let Some(idx) = diff_state::find_next_chunk(chunks, cursor_line, direction, side, wrap) {
         current_chunk.set(Some(idx));
         let chunk = &chunks[idx];
         scroll_to_line(left_tv, left_buf, chunk.start_a, left_scroll);
@@ -1584,6 +1585,26 @@ pub(super) fn scroll_to_line(
 
 pub(super) fn update_chunk_label(label: &Label, chunks: &[DiffChunk], current: Option<usize>) {
     label.set_label(&diff_state::format_chunk_label(chunks, current));
+}
+
+/// Update sensitivity of prev/next chunk nav buttons based on cursor position.
+pub(super) fn update_chunk_nav_sensitivity(
+    prev_btn: &Button,
+    next_btn: &Button,
+    chunks: &[DiffChunk],
+    active_tv: &TextView,
+    right_tv: &TextView,
+    wrap: bool,
+) {
+    let cursor_line = cursor_line_from_view(active_tv);
+    let side = if active_tv == right_tv {
+        Side::B
+    } else {
+        Side::A
+    };
+    let (prev, next) = diff_state::chunk_nav_sensitivity(chunks, cursor_line, side, wrap);
+    prev_btn.set_sensitive(prev);
+    next_btn.set_sensitive(next);
 }
 
 // ─── Scroll synchronization ───────────────────────────────────────────────

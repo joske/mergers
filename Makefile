@@ -15,6 +15,7 @@ $(VENV): tests/ui_integration/requirements.txt
 	@touch $(VENV)
 
 test-release: $(VENV)
+	cargo build --release
 	xvfb-run -a cargo test
 	xvfb-run -a $(PYTEST) tests/ui_integration/ -v
 
