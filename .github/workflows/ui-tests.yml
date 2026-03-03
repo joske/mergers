@@ -32,7 +32,7 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          python3 -m venv tests/ui_integration/.venv
+          python3 -m venv --system-site-packages tests/ui_integration/.venv
           tests/ui_integration/.venv/bin/pip install -r tests/ui_integration/requirements.txt
 
       - name: Run Rust tests under Xvfb

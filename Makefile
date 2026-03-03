@@ -10,7 +10,7 @@ test-ui:
 	xvfb-run -a cargo test
 
 $(VENV): tests/ui_integration/requirements.txt
-	python3 -m venv $(VENV)
+	python3 -m venv --system-site-packages $(VENV)
 	$(VENV)/bin/pip install -r tests/ui_integration/requirements.txt
 	@touch $(VENV)
 
