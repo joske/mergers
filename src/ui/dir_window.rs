@@ -438,10 +438,8 @@ pub(super) fn build_dir_window(
         }
     });
 
-    // Shared selection model — only the focused pane uses it;
-    // the other pane uses NoSelection so no highlight is shown.
+    // Shared selection model — both panes use it; CSS hides highlight in unfocused pane.
     let dir_sel = SingleSelection::new(Some(tree_model.clone()));
-    let no_sel = gtk4::NoSelection::new(Some(tree_model.clone()));
 
     // ── Left pane ──────────────────────────────────────────────────
     let left_view = ColumnView::new(Some(dir_sel.clone()));
@@ -460,7 +458,7 @@ pub(super) fn build_dir_window(
     }
 
     // ── Right pane ─────────────────────────────────────────────────
-    let right_view = ColumnView::new(Some(no_sel.clone()));
+    let right_view = ColumnView::new(Some(dir_sel.clone()));
     right_view.set_show_column_separators(true);
     {
         let col = ColumnViewColumn::new(Some("Name"), Some(make_name_factory(false)));
@@ -478,16 +476,15 @@ pub(super) fn build_dir_window(
     }
 
     // Track which pane was last focused (true = left, false = right).
-    // Swap models so only the focused pane shows selection.
+    // CSS hides selection highlight in the unfocused pane.
     let focused_left = Rc::new(Cell::new(true));
     let sel_syncing = Rc::new(Cell::new(false));
     left_view.add_css_class("dir-pane-focused");
+    right_view.add_css_class("dir-pane-unfocused");
     {
         let fl = focused_left.clone();
         let lv = left_view.clone();
         let rv = right_view.clone();
-        let sel = dir_sel.clone();
-        let ns = no_sel.clone();
         let fc = EventControllerFocus::new();
         fc.connect_enter(move |_| {
             if fl.get() {
@@ -495,21 +492,14 @@ pub(super) fn build_dir_window(
             }
             fl.set(true);
             lv.add_css_class("dir-pane-focused");
+            lv.remove_css_class("dir-pane-unfocused");
+            rv.add_css_class("dir-pane-unfocused");
             rv.remove_css_class("dir-pane-focused");
-            lv.set_model(Some(&sel));
-            rv.set_model(Some(&ns));
-            let pos = sel.selected();
-            let v = lv.clone();
-            gtk4::glib::idle_add_local_once(move || {
-                v.scroll_to(pos, None, gtk4::ListScrollFlags::FOCUS, None);
-            });
         });
         left_view.add_controller(fc);
         let fl = focused_left.clone();
         let lv = left_view.clone();
         let rv = right_view.clone();
-        let sel = dir_sel.clone();
-        let ns = no_sel.clone();
         let fc = EventControllerFocus::new();
         fc.connect_enter(move |_| {
             if !fl.get() {
@@ -517,14 +507,9 @@ pub(super) fn build_dir_window(
             }
             fl.set(false);
             rv.add_css_class("dir-pane-focused");
+            rv.remove_css_class("dir-pane-unfocused");
+            lv.add_css_class("dir-pane-unfocused");
             lv.remove_css_class("dir-pane-focused");
-            rv.set_model(Some(&sel));
-            lv.set_model(Some(&ns));
-            let pos = sel.selected();
-            let v = rv.clone();
-            gtk4::glib::idle_add_local_once(move || {
-                v.scroll_to(pos, None, gtk4::ListScrollFlags::FOCUS, None);
-            });
         });
         right_view.add_controller(fc);
     }
