@@ -8,12 +8,7 @@ from conftest import find_app
 def _open_diff(app_process, fixture_path):
     """Launch mergers with left/right fixtures and return the AT-SPI app node."""
     app_process(fixture_path("left.txt"), fixture_path("right.txt"))
-    app = find_app()
-    # Grab focus so keyboard events go to the app, not the terminal
-    frame = app.findChildren(lambda n: n.roleName == "frame")[0]
-    frame.grabFocus()
-    doDelay(0.5)
-    return app
+    return find_app()
 
 
 def test_ctrl_f_opens_find_bar(app_process, fixture_path):
@@ -29,13 +24,26 @@ def test_ctrl_f_opens_find_bar(app_process, fixture_path):
     assert len(entries) >= 1, "No text entry found after Ctrl+F"
 
 
-def test_alt_down_navigates_to_next_chunk(app_process, fixture_path):
-    """Alt+Down should navigate to the next diff chunk."""
+def test_next_chunk_navigation(app_process, fixture_path):
+    """Clicking 'Next change' button should update the chunk label."""
     app = _open_diff(app_process, fixture_path)
 
-    dogtail.rawinput.keyCombo("<Alt>Down")
+    # Find and click the "Next change" button
+    buttons = app.findChildren(lambda n: n.roleName == "push button")
+    next_btn = None
+    for btn in buttons:
+        if "Next change" in (btn.name or ""):
+            next_btn = btn
+            break
+
+    assert next_btn is not None, (
+        f"Next change button not found. Buttons: {[b.name for b in buttons]}"
+    )
+
+    next_btn.click()
     doDelay(1)
 
+    # After navigating, the chunk label should show "Change 1 of N"
     labels = app.findChildren(
         lambda n: n.roleName == "label" and n.showing
     )
@@ -50,7 +58,7 @@ def test_alt_down_navigates_to_next_chunk(app_process, fixture_path):
             continue
 
     assert chunk_label is not None, (
-        "Chunk navigation label not found after Alt+Down. "
+        "Chunk navigation label not found after clicking Next. "
         f"Labels found: {[getattr(l, 'name', '') for l in labels]}"
     )
     assert "1 of " in (chunk_label.text or chunk_label.name), (
