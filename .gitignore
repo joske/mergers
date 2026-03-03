@@ -12,6 +12,7 @@ target/
 .env
 .env.*
 .venv/
+__pycache__/
 
 # OS
 .DS_Store
