@@ -832,7 +832,6 @@ fn build_merge_view(
             }
         };
         if let Some((idx, is_right)) = found {
-            cur.set(Some((idx, is_right)));
             if is_right {
                 // right_chunks: A = middle, B = right
                 let chunk = &rch[idx];
@@ -852,6 +851,9 @@ fn build_merge_view(
                 // Right pane: no corresponding line — just scroll to middle line
                 scroll_to_line(rtv, rb, chunk.start_b, r_scroll);
             }
+            // Set current_chunk AFTER placing cursors, because cursor_position_notify
+            // handlers may overwrite it (e.g. for Insert chunks with zero-length ranges).
+            cur.set(Some((idx, is_right)));
             lf.queue_draw();
             mf.queue_draw();
             rf.queue_draw();

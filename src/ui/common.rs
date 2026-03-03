@@ -1537,12 +1537,14 @@ pub(super) fn navigate_chunk(
     };
 
     if let Some(idx) = diff_state::find_next_chunk(chunks, cursor_line, direction, side, wrap) {
-        current_chunk.set(Some(idx));
         let chunk = &chunks[idx];
         scroll_to_line(left_tv, left_buf, chunk.start_a, left_scroll);
         scroll_to_line(right_tv, right_buf, chunk.start_b, right_scroll);
         place_cursor_at_line(left_buf, chunk.start_a);
         place_cursor_at_line(right_buf, chunk.start_b);
+        // Set current_chunk AFTER placing cursors, because cursor_position_notify
+        // handlers may overwrite it (e.g. for Insert chunks with zero-length ranges).
+        current_chunk.set(Some(idx));
     }
 }
 
