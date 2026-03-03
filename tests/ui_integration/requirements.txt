@@ -1,0 +1,2 @@
+dogtail>=1.0
+pytest>=7.0
