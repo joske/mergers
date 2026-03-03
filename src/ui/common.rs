@@ -2221,4 +2221,36 @@ mod tests {
         assert!(content.is_empty());
         assert!(!is_binary);
     }
+
+    mod unified_diff_proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn unified_diff_always_has_headers(
+                left in "([a-z ]{0,20}\n){0,10}",
+                right in "([a-z ]{0,20}\n){0,10}",
+            ) {
+                let chunks = myers::diff_lines(&left, &right);
+                let patch = generate_unified_diff("a", "b", &left, &right, &chunks);
+                prop_assert!(patch.starts_with("--- a\n"), "missing --- header");
+                prop_assert!(patch.contains("+++ b\n"), "missing +++ header");
+            }
+
+            #[test]
+            fn unified_diff_hunks_are_well_formed(
+                left in "([a-z ]{0,20}\n){0,10}",
+                right in "([a-z ]{0,20}\n){0,10}",
+            ) {
+                let chunks = myers::diff_lines(&left, &right);
+                let patch = generate_unified_diff("a", "b", &left, &right, &chunks);
+                for line in patch.lines() {
+                    if line.starts_with("@@ ") {
+                        prop_assert!(line.contains(" @@"), "malformed hunk header: {line}");
+                    }
+                }
+            }
+        }
+    }
 }

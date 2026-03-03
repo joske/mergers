@@ -568,4 +568,72 @@ mod tests {
         assert!((rects[1].y_start - 150.0).abs() < f64::EPSILON);
         assert!((rects[1].height - 2.0).abs() < f64::EPSILON);
     }
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn arb_tag() -> impl Strategy<Value = DiffTag> {
+            prop_oneof![
+                Just(DiffTag::Equal),
+                Just(DiffTag::Replace),
+                Just(DiffTag::Insert),
+                Just(DiffTag::Delete),
+            ]
+        }
+
+        fn arb_chunks() -> impl Strategy<Value = Vec<DiffChunk>> {
+            prop::collection::vec(
+                (
+                    arb_tag(),
+                    0..1000_usize,
+                    0..1000_usize,
+                    0..1000_usize,
+                    0..1000_usize,
+                )
+                    .prop_map(|(tag, a, b, c, d)| DiffChunk {
+                        tag,
+                        start_a: a.min(b),
+                        end_a: a.max(b),
+                        start_b: c.min(d),
+                        end_b: c.max(d),
+                    }),
+                1..20,
+            )
+        }
+
+        proptest! {
+            #[test]
+            fn nav_forward_returns_valid_non_equal(
+                chunks in arb_chunks(),
+                cursor in 0..2000_usize,
+            ) {
+                if let Some(idx) = find_next_chunk(&chunks, cursor, 1, Side::A) {
+                    prop_assert!(idx < chunks.len());
+                    prop_assert_ne!(chunks[idx].tag, DiffTag::Equal);
+                }
+            }
+
+            #[test]
+            fn nav_backward_returns_valid_non_equal(
+                chunks in arb_chunks(),
+                cursor in 0..2000_usize,
+            ) {
+                if let Some(idx) = find_next_chunk(&chunks, cursor, -1, Side::A) {
+                    prop_assert!(idx < chunks.len());
+                    prop_assert_ne!(chunks[idx].tag, DiffTag::Equal);
+                }
+            }
+
+            #[test]
+            fn nav_returns_none_iff_all_equal(
+                chunks in arb_chunks(),
+                cursor in 0..2000_usize,
+            ) {
+                let has_non_equal = chunks.iter().any(|c| c.tag != DiffTag::Equal);
+                let result = find_next_chunk(&chunks, cursor, 1, Side::A);
+                prop_assert_eq!(result.is_some(), has_non_equal);
+            }
+        }
+    }
 }
