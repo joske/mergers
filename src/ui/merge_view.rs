@@ -840,21 +840,23 @@ fn build_merge_view(
         if let Some((idx, is_right)) = found {
             cur.set(Some((idx, is_right)));
             if is_right {
+                // right_chunks: A = middle, B = right
                 let chunk = &rch[idx];
                 scroll_to_line(mtv, mb, chunk.start_a, ms);
                 scroll_to_line(rtv, rb, chunk.start_b, r_scroll);
-                scroll_to_line(ltv, lb, chunk.start_a, l_scroll);
                 place_cursor_at_line(mb, chunk.start_a);
                 place_cursor_at_line(rb, chunk.start_b);
-                place_cursor_at_line(lb, chunk.start_a);
+                // Left pane: no corresponding line — just scroll to middle line
+                scroll_to_line(ltv, lb, chunk.start_a, l_scroll);
             } else {
+                // left_chunks: A = left, B = middle
                 let chunk = &lch[idx];
                 scroll_to_line(mtv, mb, chunk.start_b, ms);
                 scroll_to_line(ltv, lb, chunk.start_a, l_scroll);
-                scroll_to_line(rtv, rb, chunk.start_b, r_scroll);
                 place_cursor_at_line(mb, chunk.start_b);
                 place_cursor_at_line(lb, chunk.start_a);
-                place_cursor_at_line(rb, chunk.start_b);
+                // Right pane: no corresponding line — just scroll to middle line
+                scroll_to_line(rtv, rb, chunk.start_b, r_scroll);
             }
             lf.queue_draw();
             mf.queue_draw();
