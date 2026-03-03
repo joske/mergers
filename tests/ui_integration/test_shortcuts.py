@@ -8,7 +8,12 @@ from conftest import find_app
 def _open_diff(app_process, fixture_path):
     """Launch mergers with left/right fixtures and return the AT-SPI app node."""
     app_process(fixture_path("left.txt"), fixture_path("right.txt"))
-    return find_app()
+    app = find_app()
+    # Grab focus so keyboard events go to the app, not the terminal
+    frame = app.findChildren(lambda n: n.roleName == "frame")[0]
+    frame.grabFocus()
+    doDelay(0.5)
+    return app
 
 
 def test_ctrl_f_opens_find_bar(app_process, fixture_path):
