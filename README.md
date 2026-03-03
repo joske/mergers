@@ -156,6 +156,45 @@ brew install gtk4 gtksourceview5
 cargo build --release
 ```
 
+## Testing
+
+mergers uses a three-layer testing strategy:
+
+**Layer 1 — Pure unit tests (Rust)**
+
+Core algorithms (Myers diff, chunk navigation, merge logic, gutter hit-testing, chunk-map geometry) are extracted into pure functions in `src/ui/diff_state.rs` and `src/ui/merge_state.rs` and covered by `cargo test`. These run headlessly on every CI push — no display server needed.
+
+```bash
+cargo test
+```
+
+**Layer 2 — UI integration tests (dogtail / AT-SPI)**
+
+Higher-level tests drive the real GTK4 application via the AT-SPI accessibility bus using [dogtail](https://gitlab.gnome.org/GNOME/dogtail). They exercise file comparison, directory comparison, VCS mode, and keyboard shortcuts end-to-end. An X virtual framebuffer (Xvfb) is used so tests run headlessly in CI.
+
+Test files live in `tests/ui_integration/`. Dependencies are managed in a local venv:
+
+```bash
+# First time — sets up the venv and installs dogtail
+make test-release
+
+# Subsequent runs
+make test-release
+```
+
+`make test-release` runs `cargo test` followed by `pytest tests/ui_integration/ -v` under `xvfb-run`.
+
+**Running UI tests manually (with a display)**
+
+```bash
+source tests/ui_integration/.venv/bin/activate
+pytest tests/ui_integration/ -v
+```
+
+**CI**
+
+The `.github/workflows/ui-tests.yml` workflow runs the full suite on every push, installing `at-spi2-core` and `xdotool` from the system package manager before invoking `make test-release`.
+
 ## License
 
 GPL-2.0
