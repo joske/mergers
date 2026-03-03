@@ -39,10 +39,12 @@ def test_ctrl_f_opens_find_bar(app_process, fixture_path):
 
 
 def test_alt_down_navigates_to_next_chunk(app_process, fixture_path):
-    """Alt+Down should navigate to the next diff chunk."""
+    """Ctrl+D should navigate to the next diff chunk (Alt+Down also works when focused)."""
     app = _open_diff(app_process, fixture_path)
 
-    _send_keys("alt+Down")
+    # Alt+Down only fires when a text view has focus (capture-phase handler).
+    # Ctrl+D is registered app-level via set_accels_for_action and works regardless.
+    _send_keys("ctrl+d")
     doDelay(1)
 
     labels = app.findChildren(
