@@ -96,9 +96,9 @@ mergers file1.txt file2.txt -L "Original" -L "Modified"
 To use mergers as your git merge tool:
 
 ```bash
-git config merge.tool mergers
-git config mergetool.mergers.cmd 'mergers "$LOCAL" "$MERGED" "$REMOTE"'
-git config mergetool.mergers.trustExitCode true
+git config --global merge.tool mergers
+git config --global mergetool.mergers.cmd 'mergers "$LOCAL" "$MERGED" "$REMOTE"'
+git config --global mergetool.mergers.trustExitCode true
 ```
 
 Then resolve conflicts with:
