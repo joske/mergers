@@ -29,6 +29,7 @@ A visual diff and merge tool written in Rust with GTK4, inspired by [Meld](https
 - **Configurable folder filters** (exclude patterns like `node_modules`, `.git`, etc.)
 - **Insert spaces instead of tabs** option
 - **Show whitespace characters** (spaces, tabs, newlines)
+- **Keyboard shortcuts reference** — accessible from the preferences dialog
 - **Preferences dialog** — font, color scheme, tab width, editor & comparison defaults, filters, with live preview
 - **Binary file detection** — prevents loading binary files into text buffers
 
