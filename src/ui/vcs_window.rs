@@ -667,9 +667,9 @@ pub(super) fn build_vcs_window(
     }
 
     if let Some(gtk_app) = window.application() {
-        gtk_app.set_accels_for_action("diff.save", &["<Primary>s"]);
-        gtk_app.set_accels_for_action("win.prefs", &["<Primary>comma"]);
-        gtk_app.set_accels_for_action("win.close-tab", &["<Primary>w"]);
+        set_platform_accels(&gtk_app, "diff.save", &["<Ctrl>s"]);
+        set_platform_accels(&gtk_app, "win.prefs", &["<Ctrl>comma"]);
+        set_platform_accels(&gtk_app, "win.close-tab", &["<Ctrl>w"]);
     }
 
     // Clean up temp dir and stop watcher on destroy

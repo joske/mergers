@@ -189,8 +189,8 @@ pub(super) fn build_welcome_window(app: &Application, settings: Rc<RefCell<Setti
     window.insert_action_group("win", Some(&win_actions));
 
     if let Some(gtk_app) = window.application() {
-        gtk_app.set_accels_for_action("win.prefs", &["<Primary>comma"]);
-        gtk_app.set_accels_for_action("win.close-tab", &["<Primary>w"]);
+        set_platform_accels(&gtk_app, "win.prefs", &["<Ctrl>comma"]);
+        set_platform_accels(&gtk_app, "win.close-tab", &["<Ctrl>w"]);
     }
 
     window.set_child(Some(&content));

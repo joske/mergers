@@ -2456,7 +2456,7 @@ fn build_merge_view(
                     k if k == gtk4::gdk::Key::Right => Some("copy-chunk-left-middle"),
                     _ => None,
                 }
-            } else if mods.contains(PRIMARY_MODIFIER) {
+            } else if has_primary_modifier(mods) {
                 if key == gtk4::gdk::Key::s || key == gtk4::gdk::Key::S {
                     Some("save")
                 } else if key == gtk4::gdk::Key::e || key == gtk4::gdk::Key::E {
@@ -2680,18 +2680,18 @@ pub(super) fn build_merge_window(
     }
 
     if let Some(gtk_app) = window.application() {
-        gtk_app.set_accels_for_action("diff.prev-chunk", &["<Alt>Up", "<Primary>e"]);
-        gtk_app.set_accels_for_action("diff.next-chunk", &["<Alt>Down", "<Primary>d"]);
-        gtk_app.set_accels_for_action("diff.prev-conflict", &["<Primary>j"]);
-        gtk_app.set_accels_for_action("diff.next-conflict", &["<Primary>k"]);
-        gtk_app.set_accels_for_action("diff.find", &["<Primary>f"]);
-        gtk_app.set_accels_for_action("diff.find-replace", &["<Primary>h"]);
+        set_platform_accels(&gtk_app, "diff.prev-chunk", &["<Alt>Up", "<Ctrl>e"]);
+        set_platform_accels(&gtk_app, "diff.next-chunk", &["<Alt>Down", "<Ctrl>d"]);
+        set_platform_accels(&gtk_app, "diff.prev-conflict", &["<Ctrl>j"]);
+        set_platform_accels(&gtk_app, "diff.next-conflict", &["<Ctrl>k"]);
+        set_platform_accels(&gtk_app, "diff.find", &["<Ctrl>f"]);
+        set_platform_accels(&gtk_app, "diff.find-replace", &["<Ctrl>h"]);
         gtk_app.set_accels_for_action("diff.find-next", &["F3"]);
         gtk_app.set_accels_for_action("diff.find-prev", &["<Shift>F3"]);
-        gtk_app.set_accels_for_action("diff.go-to-line", &["<Primary>l"]);
-        gtk_app.set_accels_for_action("diff.save", &["<Primary>s"]);
-        gtk_app.set_accels_for_action("win.prefs", &["<Primary>comma"]);
-        gtk_app.set_accels_for_action("win.close-tab", &["<Primary>w"]);
+        set_platform_accels(&gtk_app, "diff.go-to-line", &["<Ctrl>l"]);
+        set_platform_accels(&gtk_app, "diff.save", &["<Ctrl>s"]);
+        set_platform_accels(&gtk_app, "win.prefs", &["<Ctrl>comma"]);
+        set_platform_accels(&gtk_app, "win.close-tab", &["<Ctrl>w"]);
     }
 
     window.connect_destroy(move |_| {

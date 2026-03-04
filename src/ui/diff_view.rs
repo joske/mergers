@@ -1404,7 +1404,7 @@ pub(super) fn build_diff_view(
                     k if k == gtk4::gdk::Key::Right => Some("copy-chunk-left-right"),
                     _ => None,
                 }
-            } else if mods.contains(PRIMARY_MODIFIER) {
+            } else if has_primary_modifier(mods) {
                 if mods.contains(gtk4::gdk::ModifierType::SHIFT_MASK)
                     && (key == gtk4::gdk::Key::p || key == gtk4::gdk::Key::P)
                 {
