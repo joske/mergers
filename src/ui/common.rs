@@ -466,39 +466,98 @@ pub(super) fn setup_diff_tags(buffer: &TextBuffer) {
     table.add(
         &TextTag::builder()
             .name("search-match")
-            .background("#ffe066")
+            .background(search_match_bg())
             .build(),
     );
     table.add(
         &TextTag::builder()
             .name("search-current")
-            .background("#ff9632")
+            .background(search_current_bg())
             .build(),
     );
     // Inline word-level highlighting (meld-style colors)
     table.add(
         &TextTag::builder()
             .name("inline-changed")
-            .background(INLINE_CHANGED)
+            .background(inline_changed())
             .build(),
     );
     table.add(
         &TextTag::builder()
             .name("inline-deleted")
-            .background(INLINE_DELETED)
+            .background(inline_deleted())
             .build(),
     );
     table.add(
         &TextTag::builder()
             .name("inline-inserted")
-            .background(INLINE_INSERTED)
+            .background(inline_inserted())
             .build(),
     );
+    // Chunk background fills (rendered behind text via paragraph_background).
+    // No foreground override — syntax highlighting is preserved as-is,
+    // matching Meld's approach (background-only, no text colour change).
+    for (name, bg) in [
+        ("chunk-insert-bg", chunk_bg_insert()),
+        ("chunk-replace-bg", chunk_bg_replace()),
+        ("chunk-conflict-bg", chunk_bg_conflict()),
+    ] {
+        table.add(
+            &TextTag::builder()
+                .name(name)
+                .paragraph_background(bg)
+                .build(),
+        );
+    }
+}
+
+/// Update existing diff tag colours to match the current light/dark scheme.
+pub(super) fn update_diff_tag_colors(buf: &TextBuffer) {
+    let table = buf.tag_table();
+    let bg_updates: &[(&str, &str)] = &[
+        ("search-match", search_match_bg()),
+        ("search-current", search_current_bg()),
+        ("inline-changed", inline_changed()),
+        ("inline-deleted", inline_deleted()),
+        ("inline-inserted", inline_inserted()),
+    ];
+    for &(name, bg) in bg_updates {
+        if let Some(tag) = table.lookup(name) {
+            tag.set_background(Some(bg));
+        }
+    }
+    for (name, bg) in [
+        ("chunk-insert-bg", chunk_bg_insert()),
+        ("chunk-replace-bg", chunk_bg_replace()),
+        ("chunk-conflict-bg", chunk_bg_conflict()),
+    ] {
+        if let Some(tag) = table.lookup(name) {
+            tag.set_paragraph_background(Some(bg));
+        }
+    }
 }
 
 thread_local! {
     static SCHEME_PROVIDER: CssProvider = CssProvider::new();
     static SCHEME_REGISTERED: Cell<bool> = const { Cell::new(false) };
+    static IS_DARK_SCHEME: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether the current sourceview scheme has a dark background.
+pub(super) fn is_dark_scheme() -> bool {
+    IS_DARK_SCHEME.with(Cell::get)
+}
+
+/// Compute perceived luminance from a CSS hex colour string (e.g. `"#2e3436"`).
+fn hex_luminance(hex: &str) -> f64 {
+    let hex = hex.trim_start_matches('#');
+    if hex.len() < 6 {
+        return 1.0; // assume light if unparseable
+    }
+    let r = f64::from(u8::from_str_radix(&hex[0..2], 16).unwrap_or(255)) / 255.0;
+    let g = f64::from(u8::from_str_radix(&hex[2..4], 16).unwrap_or(255)) / 255.0;
+    let b = f64::from(u8::from_str_radix(&hex[4..6], 16).unwrap_or(255)) / 255.0;
+    0.299 * r + 0.587 * g + 0.114 * b
 }
 
 /// Apply the sourceview scheme's text background/foreground via a global CSS
@@ -511,6 +570,16 @@ pub(super) fn apply_scheme_css(settings: &Settings) {
     let style = scheme.style("text");
     let bg = style.as_ref().and_then(sourceview5::Style::background);
     let fg = style.as_ref().and_then(sourceview5::Style::foreground);
+
+    // Determine dark/light from scheme background luminance.
+    // If the scheme doesn't define a text background, fall back to GTK's
+    // dark-mode preference (like Meld does with theme_bg_color).
+    let dark = bg.as_ref().map_or_else(
+        || gtk4::Settings::default().is_some_and(|s| super::detect_dark_mode(&s)),
+        |hex| hex_luminance(hex) < 0.5,
+    );
+    IS_DARK_SCHEME.with(|c| c.set(dark));
+
     let mut rules = Vec::new();
     if let Some(ref bg) = bg {
         rules.push(format!("background-color: {bg};"));
@@ -563,30 +632,218 @@ pub(super) fn remove_diff_tags(buf: &TextBuffer) {
     }
 }
 
-// Meld-style chunk background fill colors (with alpha for overlay transparency)
-const BG_INSERT: (f64, f64, f64, f64) = (0.816, 1.0, 0.639, 0.45); // #d0ffa3
-const BG_REPLACE: (f64, f64, f64, f64) = (0.741, 0.867, 1.0, 0.45); // #bdddff
-const BG_CONFLICT: (f64, f64, f64, f64) = (1.0, 0.647, 0.639, 0.45); // #ffa5a3
+// ─── Theme-aware colour helpers ─────────────────────────────────────────────
+//
+// Each function returns the appropriate colour for the current scheme (light or
+// dark), determined by the `IS_DARK_SCHEME` thread-local set in `apply_scheme_css`.
+//
+// Light colours are taken from Meld's meld-base.style-scheme.xml;
+// dark colours from meld-dark.style-scheme.xml.
+// Chunk fills use opaque `paragraph_background` TextTags (rendered behind text).
+// Strokes, bands, and fillers use Cairo with alpha (drawn on an overlay).
 
-// Meld-style chunk outline/stroke colors
-const STROKE_INSERT: (f64, f64, f64, f64) = (0.647, 1.0, 0.298, 0.7); // #a5ff4c
-const STROKE_REPLACE: (f64, f64, f64, f64) = (0.396, 0.698, 1.0, 0.7); // #65b2ff
-const STROKE_CONFLICT: (f64, f64, f64, f64) = (1.0, 0.31, 0.298, 0.7); // #ff4f4c
+fn stroke_insert() -> (f64, f64, f64, f64) {
+    if is_dark_scheme() {
+        (0.141, 0.333, 0.082, 0.7) // #245515
+    } else {
+        (0.647, 1.0, 0.298, 0.7) // #a5ff4c
+    }
+}
+fn stroke_replace() -> (f64, f64, f64, f64) {
+    if is_dark_scheme() {
+        (0.0, 0.325, 0.651, 0.7) // #0053a6
+    } else {
+        (0.396, 0.698, 1.0, 0.7) // #65b2ff
+    }
+}
+fn stroke_conflict() -> (f64, f64, f64, f64) {
+    if is_dark_scheme() {
+        (0.675, 0.231, 0.224, 0.7) // #ac3b39
+    } else {
+        (1.0, 0.31, 0.298, 0.7) // #ff4f4c
+    }
+}
 
-// Gutter/chunk-map band colors (meld-style)
-const BAND_INSERT: (f64, f64, f64) = (0.647, 1.0, 0.298); // #a5ff4c
-const BAND_REPLACE: (f64, f64, f64) = (0.396, 0.698, 1.0); // #65b2ff
+fn band_insert() -> (f64, f64, f64) {
+    if is_dark_scheme() {
+        (0.141, 0.333, 0.082) // #245515
+    } else {
+        (0.647, 1.0, 0.298) // #a5ff4c
+    }
+}
+fn band_replace() -> (f64, f64, f64) {
+    if is_dark_scheme() {
+        (0.0, 0.325, 0.651) // #0053a6
+    } else {
+        (0.396, 0.698, 1.0) // #65b2ff
+    }
+}
 
-// Filler line colors (derived from band colors)
-const FILLER_INSERT: (f64, f64, f64) = (BAND_INSERT.0, BAND_INSERT.1, BAND_INSERT.2);
-const FILLER_REPLACE: (f64, f64, f64) = (BAND_REPLACE.0, BAND_REPLACE.1, BAND_REPLACE.2);
+fn filler_insert() -> (f64, f64, f64) {
+    band_insert()
+}
+fn filler_replace() -> (f64, f64, f64) {
+    band_replace()
+}
 
-// Inline highlight colors (meld-style)
-const INLINE_CHANGED: &str = "#c8c864"; // yellowish highlight for changed words
-const INLINE_DELETED: &str = "#ff9696"; // pinkish for deleted words
-const INLINE_INSERTED: &str = "#64c864"; // greenish for inserted words
+fn inline_changed() -> &'static str {
+    if is_dark_scheme() {
+        "#6e6e32" // muted yellow
+    } else {
+        "#c8c864"
+    }
+}
+fn inline_deleted() -> &'static str {
+    if is_dark_scheme() {
+        "#6e3232" // muted red
+    } else {
+        "#ff9696"
+    }
+}
+fn inline_inserted() -> &'static str {
+    if is_dark_scheme() {
+        "#326e32" // muted green
+    } else {
+        "#64c864"
+    }
+}
 
-/// Draw chunk background rectangles via Cairo (replaces `paragraph_background` tags).
+fn search_match_bg() -> &'static str {
+    if is_dark_scheme() {
+        "#886a08"
+    } else {
+        "#ffe066"
+    }
+}
+fn search_current_bg() -> &'static str {
+    if is_dark_scheme() {
+        "#a05000"
+    } else {
+        "#ff9632"
+    }
+}
+
+// Opaque chunk background colours used by `paragraph_background` TextTags
+// (drawn behind text by the text view, matching Meld's rendering approach).
+fn chunk_bg_insert() -> &'static str {
+    if is_dark_scheme() {
+        "#123806" // meld-dark insert
+    } else {
+        "#b0e080" // saturated green (readable with muted-text schemes)
+    }
+}
+fn chunk_bg_replace() -> &'static str {
+    if is_dark_scheme() {
+        "#003266" // meld-dark replace
+    } else {
+        "#a0c8ee" // saturated blue
+    }
+}
+fn chunk_bg_conflict() -> &'static str {
+    if is_dark_scheme() {
+        "#7a2a28" // meld-dark conflict
+    } else {
+        "#f09090" // saturated red
+    }
+}
+
+/// Apply `paragraph_background` tags for chunk fills (drawn behind text).
+pub(super) fn apply_chunk_bg_tags(buf: &TextBuffer, chunks: &[DiffChunk], side: Side) {
+    let start = buf.start_iter();
+    let end = buf.end_iter();
+    for name in ["chunk-insert-bg", "chunk-replace-bg"] {
+        if let Some(tag) = buf.tag_table().lookup(name) {
+            buf.remove_tag(&tag, &start, &end);
+        }
+    }
+    for chunk in chunks {
+        if chunk.tag == DiffTag::Equal {
+            continue;
+        }
+        let (line_start, line_end) = match side {
+            Side::A => (chunk.start_a, chunk.end_a),
+            Side::B => (chunk.start_b, chunk.end_b),
+        };
+        if line_start == line_end {
+            continue;
+        }
+        let other_has_content = match side {
+            Side::A => chunk.end_b > chunk.start_b,
+            Side::B => chunk.end_a > chunk.start_a,
+        };
+        let tag_name = if other_has_content {
+            "chunk-replace-bg"
+        } else {
+            "chunk-insert-bg"
+        };
+        let s = buf
+            .iter_at_line(line_start as i32)
+            .unwrap_or_else(|| buf.end_iter());
+        let e = if line_end as i32 >= buf.line_count() {
+            buf.end_iter()
+        } else {
+            buf.iter_at_line(line_end as i32)
+                .unwrap_or_else(|| buf.end_iter())
+        };
+        buf.apply_tag_by_name(tag_name, &s, &e);
+    }
+}
+
+/// Apply `paragraph_background` tags for conflict regions on the merge middle pane.
+pub(super) fn apply_conflict_bg_tags(
+    buf: &TextBuffer,
+    left_chunks: &[DiffChunk],
+    right_chunks: &[DiffChunk],
+) {
+    let start = buf.start_iter();
+    let end = buf.end_iter();
+    if let Some(tag) = buf.tag_table().lookup("chunk-conflict-bg") {
+        buf.remove_tag(&tag, &start, &end);
+    }
+    for lc in left_chunks {
+        if lc.tag == DiffTag::Equal {
+            continue;
+        }
+        for rc in right_chunks {
+            if rc.tag == DiffTag::Equal {
+                continue;
+            }
+            let (l_start, l_end) = (lc.start_b, lc.end_b);
+            let (r_start, r_end) = (rc.start_a, rc.end_a);
+            let overlap_start = l_start.max(r_start);
+            let overlap_end = l_end.max(l_start).min(r_end.max(r_start));
+            let overlaps = if l_start == l_end && r_start == r_end {
+                l_start == r_start
+            } else if l_start == l_end {
+                l_start >= r_start && l_start < r_end
+            } else if r_start == r_end {
+                r_start >= l_start && r_start < l_end
+            } else {
+                overlap_start < overlap_end
+            };
+            if !overlaps {
+                continue;
+            }
+            let tag_start = l_start.min(r_start);
+            let tag_end = l_end.max(r_end);
+            if tag_start == tag_end {
+                continue;
+            }
+            let s = buf
+                .iter_at_line(tag_start as i32)
+                .unwrap_or_else(|| buf.end_iter());
+            let e = if tag_end as i32 >= buf.line_count() {
+                buf.end_iter()
+            } else {
+                buf.iter_at_line(tag_end as i32)
+                    .unwrap_or_else(|| buf.end_iter())
+            };
+            buf.apply_tag_by_name("chunk-conflict-bg", &s, &e);
+        }
+    }
+}
+
+/// Draw chunk stroke lines via Cairo overlay (fills are handled by `paragraph_background` tags).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn draw_chunk_backgrounds(
     cr: &gtk4::cairo::Context,
@@ -644,30 +901,30 @@ pub(super) fn draw_chunk_backgrounds(
             continue;
         }
 
-        let rect_h = y_bot - y_top;
-
-        // Color based on whether the OTHER side also has content:
-        //   Both sides have lines → replace (blue)
-        //   Only this side has lines → insert (green)
+        // Stroke color based on whether the OTHER side also has content
         let other_has_content = match side {
             Side::A => chunk.end_b > chunk.start_b,
             Side::B => chunk.end_a > chunk.start_a,
         };
-        let (fill, stroke) = if other_has_content {
-            (BG_REPLACE, STROKE_REPLACE)
+        let stroke = if other_has_content {
+            stroke_replace()
         } else {
-            (BG_INSERT, STROKE_INSERT)
+            stroke_insert()
         };
 
-        // Fill
-        cr.set_source_rgba(fill.0, fill.1, fill.2, fill.3);
-        cr.rectangle(0.0, y_top, width, rect_h);
-        let _ = cr.fill();
-
-        // Outline strokes (top and bottom)
+        // Outline strokes (top and bottom) — fill is handled by paragraph_background tags
         if current_chunk_idx == Some(i) {
-            // Current chunk: bold dark borders drawn outside the text area
-            cr.set_source_rgba(stroke.0 * 0.5, stroke.1 * 0.5, stroke.2 * 0.5, 1.0);
+            // Current chunk: bold borders (darken on light, brighten on dark)
+            let bold = if is_dark_scheme() {
+                (
+                    (stroke.0 * 0.5 + 0.5).min(1.0),
+                    (stroke.1 * 0.5 + 0.5).min(1.0),
+                    (stroke.2 * 0.5 + 0.5).min(1.0),
+                )
+            } else {
+                (stroke.0 * 0.5, stroke.1 * 0.5, stroke.2 * 0.5)
+            };
+            cr.set_source_rgba(bold.0, bold.1, bold.2, 1.0);
             cr.rectangle(0.0, y_top - 2.0, width, 3.0);
             let _ = cr.fill();
             cr.rectangle(0.0, y_bot - 1.0, width, 3.0);
@@ -757,18 +1014,9 @@ pub(super) fn draw_conflict_backgrounds(
                 continue;
             }
 
-            let rect_h = y_bot - y_top;
-
-            cr.set_source_rgba(BG_CONFLICT.0, BG_CONFLICT.1, BG_CONFLICT.2, BG_CONFLICT.3);
-            cr.rectangle(0.0, y_top, width, rect_h);
-            let _ = cr.fill();
-
-            cr.set_source_rgba(
-                STROKE_CONFLICT.0,
-                STROKE_CONFLICT.1,
-                STROKE_CONFLICT.2,
-                STROKE_CONFLICT.3,
-            );
+            // Stroke only — fill is handled by paragraph_background tags
+            let cs = stroke_conflict();
+            cr.set_source_rgba(cs.0, cs.1, cs.2, cs.3);
             cr.rectangle(0.0, y_top, width, 1.0);
             let _ = cr.fill();
             cr.rectangle(0.0, y_bot - 1.0, width, 1.0);
@@ -813,8 +1061,8 @@ pub(super) fn draw_fillers(
         }
 
         let color = match chunk.tag {
-            DiffTag::Delete | DiffTag::Insert => FILLER_INSERT,
-            DiffTag::Replace => FILLER_REPLACE,
+            DiffTag::Delete | DiffTag::Insert => filler_insert(),
+            DiffTag::Replace => filler_replace(),
             DiffTag::Equal => unreachable!(),
         };
 
@@ -1165,8 +1413,8 @@ pub(super) fn draw_gutter(
         let rb = line_to_gutter_y(right_tv, right_buf, chunk.end_b, right_scroll, gutter);
 
         let (r, g, b) = match chunk.tag {
-            DiffTag::Replace => BAND_REPLACE,
-            DiffTag::Delete | DiffTag::Insert => BAND_INSERT,
+            DiffTag::Replace => band_replace(),
+            DiffTag::Delete | DiffTag::Insert => band_insert(),
             DiffTag::Equal => continue,
         };
 
@@ -1484,8 +1732,8 @@ pub(super) fn draw_chunk_map(
     for rect in &diff_state::compute_chunk_map_rects(chunks, total_lines as usize, height, is_left)
     {
         let (r, g, b) = match rect.tag {
-            DiffTag::Replace => BAND_REPLACE,
-            DiffTag::Delete | DiffTag::Insert => BAND_INSERT,
+            DiffTag::Replace => band_replace(),
+            DiffTag::Delete | DiffTag::Insert => band_insert(),
             DiffTag::Equal => continue,
         };
         cr.set_source_rgba(r, g, b, 0.7);
@@ -1498,10 +1746,11 @@ pub(super) fn draw_chunk_map(
     if adj.upper() > 0.0 {
         let view_start = (adj.value() / adj.upper()) * height;
         let view_h = (adj.page_size() / adj.upper()) * height;
-        cr.set_source_rgba(0.0, 0.0, 0.0, 0.12);
+        let v = if is_dark_scheme() { 1.0 } else { 0.0 };
+        cr.set_source_rgba(v, v, v, 0.12);
         cr.rectangle(0.0, view_start, 12.0, view_h);
         let _ = cr.fill();
-        cr.set_source_rgba(0.0, 0.0, 0.0, 0.25);
+        cr.set_source_rgba(v, v, v, 0.25);
         cr.rectangle(0.0, view_start, 12.0, 1.0);
         let _ = cr.fill();
         cr.rectangle(0.0, view_start + view_h - 1.0, 12.0, 1.0);
@@ -2195,5 +2444,96 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ── hex_luminance ───────────────────────────────────────────
+
+    #[test]
+    fn luminance_white() {
+        assert!((hex_luminance("#ffffff") - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn luminance_black() {
+        assert!(hex_luminance("#000000").abs() < 0.001);
+    }
+
+    #[test]
+    fn luminance_without_hash() {
+        assert!((hex_luminance("ffffff") - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn luminance_dark_background() {
+        // #2e3436 (Adwaita dark) should be below 0.5
+        assert!(hex_luminance("#2e3436") < 0.5);
+    }
+
+    #[test]
+    fn luminance_light_background() {
+        // #fafafa (typical light bg) should be above 0.5
+        assert!(hex_luminance("#fafafa") > 0.5);
+    }
+
+    #[test]
+    fn luminance_short_string_defaults_light() {
+        assert!((hex_luminance("#fff") - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn luminance_empty_defaults_light() {
+        assert!((hex_luminance("") - 1.0).abs() < 0.001);
+    }
+
+    // ── dark-scheme colour selection ────────────────────────────
+
+    #[test]
+    fn colour_functions_respect_dark_flag() {
+        // Light mode
+        IS_DARK_SCHEME.with(|c| c.set(false));
+        let light_bg = chunk_bg_insert();
+        let light_inline = inline_changed();
+        let light_search = search_match_bg();
+
+        // Dark mode
+        IS_DARK_SCHEME.with(|c| c.set(true));
+        let dark_bg = chunk_bg_insert();
+        let dark_inline = inline_changed();
+        let dark_search = search_match_bg();
+
+        assert_ne!(light_bg, dark_bg);
+        assert_ne!(light_inline, dark_inline);
+        assert_ne!(light_search, dark_search);
+
+        // Restore
+        IS_DARK_SCHEME.with(|c| c.set(false));
+    }
+
+    #[test]
+    fn all_colour_pairs_differ() {
+        IS_DARK_SCHEME.with(|c| c.set(false));
+        let light = (
+            chunk_bg_insert(),
+            chunk_bg_replace(),
+            chunk_bg_conflict(),
+            stroke_insert(),
+            stroke_replace(),
+            stroke_conflict(),
+            band_insert(),
+            band_replace(),
+        );
+        IS_DARK_SCHEME.with(|c| c.set(true));
+        let dark = (
+            chunk_bg_insert(),
+            chunk_bg_replace(),
+            chunk_bg_conflict(),
+            stroke_insert(),
+            stroke_replace(),
+            stroke_conflict(),
+            band_insert(),
+            band_replace(),
+        );
+        assert_ne!(light, dark);
+        IS_DARK_SCHEME.with(|c| c.set(false));
     }
 }

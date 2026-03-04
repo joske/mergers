@@ -1,6 +1,6 @@
 [package]
 name = "mergers"
-version = "0.5.2"
+version = "0.5.3"
 edition = "2024"
 description = "A visual diff and merge tool for files and directories"
 license = "GPL-2.0"
@@ -18,5 +18,5 @@ serde = { version = "1.0", features = ["derive"] }
 toml = "1.0"
 
 [dev-dependencies]
-proptest = "1.6"
-tempfile = "3.17"
+proptest = "1.10"
+tempfile = "3.26"

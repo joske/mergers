@@ -1335,6 +1335,8 @@ fn build_merge_view(
             let rtv = right_pane.text_view.clone();
             let mtv = middle_pane.text_view.clone();
             let st = settings.clone();
+            let lb = left_buf.clone();
+            let rb = right_buf.clone();
             move || {
                 let lg = lg.clone();
                 let rg = rg.clone();
@@ -1359,6 +1361,8 @@ fn build_merge_view(
                 let rtv = rtv.clone();
                 let mtv = mtv.clone();
                 let st = st.clone();
+                let lb = lb.clone();
+                let rb = rb.clone();
                 move || {
                     lg.queue_draw();
                     rg.queue_draw();
@@ -1379,6 +1383,12 @@ fn build_merge_view(
                         &rtv,
                         st.borrow().wrap_around_navigation,
                     );
+                    // Apply chunk background tags (paragraph_background) for all three panes
+                    apply_chunk_bg_tags(&lb, &lch.borrow(), Side::A);
+                    apply_chunk_bg_tags(&mb, &lch.borrow(), Side::B);
+                    apply_chunk_bg_tags(&mb, &rch.borrow(), Side::A);
+                    apply_chunk_bg_tags(&rb, &rch.borrow(), Side::B);
+                    apply_conflict_bg_tags(&mb, &lch.borrow(), &rch.borrow());
                     ccur.set(None);
                     let n = find_conflict_markers(&mb).len();
                     if n == 0 {

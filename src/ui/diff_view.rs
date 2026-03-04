@@ -661,6 +661,8 @@ pub(super) fn build_diff_view(
             let av = active_view.clone();
             let r_tv = right_pane.text_view.clone();
             let st = settings.clone();
+            let l_buf = left_buf.clone();
+            let r_buf = right_buf.clone();
             move || {
                 let g = g.clone();
                 let lcm = lcm.clone();
@@ -676,6 +678,8 @@ pub(super) fn build_diff_view(
                 let av = av.clone();
                 let r_tv = r_tv.clone();
                 let st = st.clone();
+                let l_buf = l_buf.clone();
+                let r_buf = r_buf.clone();
                 move || {
                     g.queue_draw();
                     lcm.queue_draw();
@@ -692,6 +696,8 @@ pub(super) fn build_diff_view(
                         &r_tv,
                         st.borrow().wrap_around_navigation,
                     );
+                    apply_chunk_bg_tags(&l_buf, &ch.borrow(), Side::A);
+                    apply_chunk_bg_tags(&r_buf, &ch.borrow(), Side::B);
                     let is_identical = ch.borrow().is_empty();
                     for bar in &ibars {
                         bar.set_visible(is_identical);
