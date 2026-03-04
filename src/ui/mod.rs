@@ -108,7 +108,7 @@ fn update_font_css(settings: &Settings) {
 ///
 /// Checks GTK settings first (works on GNOME/freedesktop).  On macOS, falls
 /// back to querying `defaults read -g AppleInterfaceStyle`.
-fn detect_dark_mode(gtk_settings: &gtk4::Settings) -> bool {
+pub(super) fn detect_dark_mode(gtk_settings: &gtk4::Settings) -> bool {
     if gtk_settings.is_gtk_application_prefer_dark_theme() {
         return true;
     }
@@ -176,8 +176,9 @@ pub fn build_ui(application: &Application, mode: CompareMode) {
                 gtk_settings.set_gtk_application_prefer_dark_theme(is_dark);
             }
 
-            // Initial font CSS update
+            // Initial font + scheme CSS update
             update_font_css(&settings.borrow());
+            apply_scheme_css(&settings.borrow());
         });
     }
 

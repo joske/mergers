@@ -18,6 +18,7 @@ fn apply_settings_to_views(window: &gtk4::Window, settings: &Settings) {
                 if let Some(scheme) = scheme_mgr.scheme(&settings.style_scheme) {
                     sbuf.set_style_scheme(Some(&scheme));
                 }
+                update_diff_tag_colors(sbuf.upcast_ref());
             }
         }
         // Recurse into children
@@ -27,11 +28,12 @@ fn apply_settings_to_views(window: &gtk4::Window, settings: &Settings) {
             child = c.next_sibling();
         }
     }
+    update_font_css(settings);
+    // Update scheme CSS first so IS_DARK_SCHEME is set before tag colour updates.
+    apply_scheme_css(settings);
+
     let w: gtk4::Widget = window.clone().upcast();
     walk(&w, settings);
-
-    update_font_css(settings);
-    apply_scheme_css(settings);
 }
 
 fn make_pref_row(label_text: &str, widget: &impl IsA<gtk4::Widget>) -> GtkBox {
