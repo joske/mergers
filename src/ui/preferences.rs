@@ -12,6 +12,8 @@ fn apply_settings_to_views(window: &gtk4::Window, settings: &Settings) {
             sv.set_highlight_current_line(settings.highlight_current_line);
             sv.set_wrap_mode(settings.wrap_mode_gtk());
             sv.set_tab_width(settings.tab_width);
+            // Update conflict mark attributes for the new scheme colours.
+            setup_conflict_marks(&sv);
             let buf: TextBuffer = sv.buffer();
             if let Ok(sbuf) = buf.downcast::<sourceview5::Buffer>() {
                 let scheme_mgr = sourceview5::StyleSchemeManager::default();

@@ -537,6 +537,20 @@ pub(super) fn update_diff_tag_colors(buf: &TextBuffer) {
     }
 }
 
+/// Register source-mark attributes for conflict-region line backgrounds.
+///
+/// `GtkSourceView` renders mark backgrounds below text on **all** lines
+/// (including empty ones), unlike `paragraph_background` tags which skip
+/// empty lines in some GTK4 versions.
+pub(super) fn setup_conflict_marks(sv: &sourceview5::View) {
+    let bg_hex = chunk_bg_conflict();
+    if let Ok(rgba) = gtk4::gdk::RGBA::parse(bg_hex) {
+        let attrs = sourceview5::MarkAttributes::new();
+        attrs.set_background(&rgba);
+        sv.set_mark_attributes("conflict-bg", &attrs, 1);
+    }
+}
+
 thread_local! {
     static SCHEME_PROVIDER: CssProvider = CssProvider::new();
     static SCHEME_REGISTERED: Cell<bool> = const { Cell::new(false) };
@@ -625,7 +639,14 @@ pub(super) fn create_source_buffer(file_path: &Path, settings: &Settings) -> Tex
 pub(super) fn remove_diff_tags(buf: &TextBuffer) {
     let start = buf.start_iter();
     let end = buf.end_iter();
-    for name in &["inline-changed", "inline-deleted", "inline-inserted"] {
+    for name in &[
+        "inline-changed",
+        "inline-deleted",
+        "inline-inserted",
+        "chunk-insert-bg",
+        "chunk-replace-bg",
+        "chunk-conflict-bg",
+    ] {
         if let Some(tag) = buf.tag_table().lookup(name) {
             buf.remove_tag(&tag, &start, &end);
         }
@@ -679,13 +700,20 @@ fn band_replace() -> (f64, f64, f64) {
     }
 }
 
+fn band_conflict() -> (f64, f64, f64) {
+    if is_dark_scheme() {
+        (0.675, 0.231, 0.224) // #ac3b39
+    } else {
+        (1.0, 0.31, 0.298) // #ff4f4c
+    }
+}
+
 fn filler_insert() -> (f64, f64, f64) {
     band_insert()
 }
 fn filler_replace() -> (f64, f64, f64) {
     band_replace()
 }
-
 fn inline_changed() -> &'static str {
     if is_dark_scheme() {
         "#6e6e32" // muted yellow
@@ -741,7 +769,7 @@ fn chunk_bg_replace() -> &'static str {
 }
 fn chunk_bg_conflict() -> &'static str {
     if is_dark_scheme() {
-        "#7a2a28" // meld-dark conflict
+        "#501c19" // dark maroon (meld #7a2a28 is too bright for readable text)
     } else {
         "#f09090" // saturated red
     }
@@ -790,13 +818,33 @@ pub(super) fn apply_chunk_bg_tags(buf: &TextBuffer, chunks: &[DiffChunk], side: 
 }
 
 /// Apply `paragraph_background` tags for conflict regions on the merge middle pane.
+/// Check whether two line ranges overlap (handling zero-width ranges).
+fn chunks_overlap(a_start: usize, a_end: usize, b_start: usize, b_end: usize) -> bool {
+    if a_start == a_end && b_start == b_end {
+        a_start == b_start
+    } else if a_start == a_end {
+        a_start >= b_start && a_start < b_end
+    } else if b_start == b_end {
+        b_start >= a_start && b_start < a_end
+    } else {
+        let overlap_start = a_start.max(b_start);
+        let overlap_end = a_end.max(a_start).min(b_end.max(b_start));
+        overlap_start < overlap_end
+    }
+}
+
+/// Apply `paragraph_background` conflict tags on the middle pane of a 3-way merge.
 pub(super) fn apply_conflict_bg_tags(
     buf: &TextBuffer,
     left_chunks: &[DiffChunk],
     right_chunks: &[DiffChunk],
 ) {
+    let sv_buf: &sourceview5::Buffer = buf
+        .downcast_ref()
+        .expect("buffer must be a sourceview5::Buffer");
     let start = buf.start_iter();
     let end = buf.end_iter();
+    sv_buf.remove_source_marks(&start, &end, Some("conflict-bg"));
     if let Some(tag) = buf.tag_table().lookup("chunk-conflict-bg") {
         buf.remove_tag(&tag, &start, &end);
     }
@@ -808,24 +856,11 @@ pub(super) fn apply_conflict_bg_tags(
             if rc.tag == DiffTag::Equal {
                 continue;
             }
-            let (l_start, l_end) = (lc.start_b, lc.end_b);
-            let (r_start, r_end) = (rc.start_a, rc.end_a);
-            let overlap_start = l_start.max(r_start);
-            let overlap_end = l_end.max(l_start).min(r_end.max(r_start));
-            let overlaps = if l_start == l_end && r_start == r_end {
-                l_start == r_start
-            } else if l_start == l_end {
-                l_start >= r_start && l_start < r_end
-            } else if r_start == r_end {
-                r_start >= l_start && r_start < l_end
-            } else {
-                overlap_start < overlap_end
-            };
-            if !overlaps {
+            if !chunks_overlap(lc.start_b, lc.end_b, rc.start_a, rc.end_a) {
                 continue;
             }
-            let tag_start = l_start.min(r_start);
-            let tag_end = l_end.max(r_end);
+            let tag_start = lc.start_b.min(rc.start_a);
+            let tag_end = lc.end_b.max(rc.end_a);
             if tag_start == tag_end {
                 continue;
             }
@@ -838,7 +873,91 @@ pub(super) fn apply_conflict_bg_tags(
                 buf.iter_at_line(tag_end as i32)
                     .unwrap_or_else(|| buf.end_iter())
             };
+            // Remove insert/replace tags so conflict mark background shows.
+            for name in ["chunk-insert-bg", "chunk-replace-bg"] {
+                if let Some(t) = buf.tag_table().lookup(name) {
+                    buf.remove_tag(&t, &s, &e);
+                }
+            }
             buf.apply_tag_by_name("chunk-conflict-bg", &s, &e);
+            // Source marks render on empty lines too.
+            for line in tag_start..tag_end {
+                if let Some(iter) = buf.iter_at_line(line as i32) {
+                    sv_buf.create_source_mark(None, "conflict-bg", &iter);
+                }
+            }
+        }
+    }
+}
+
+/// Apply conflict backgrounds on a side pane of a 3-way merge using source marks.
+///
+/// Source marks render line backgrounds below text on **all** lines (including
+/// empty ones), unlike `paragraph_background` tags which skip empty lines.
+/// Call *after* `apply_chunk_bg_tags` so insert/replace are already present —
+/// this function removes those tags from conflict regions so the mark background
+/// shows through.
+pub(super) fn apply_side_conflict_bg_tags(
+    buf: &TextBuffer,
+    left_chunks: &[DiffChunk],
+    right_chunks: &[DiffChunk],
+    side: Side,
+) {
+    let sv_buf: &sourceview5::Buffer = buf
+        .downcast_ref()
+        .expect("buffer must be a sourceview5::Buffer");
+
+    // Remove existing conflict marks and paragraph_background conflict tags.
+    let start = buf.start_iter();
+    let end = buf.end_iter();
+    sv_buf.remove_source_marks(&start, &end, Some("conflict-bg"));
+    if let Some(tag) = buf.tag_table().lookup("chunk-conflict-bg") {
+        buf.remove_tag(&tag, &start, &end);
+    }
+
+    let my_chunks: &[DiffChunk] = match side {
+        Side::A => left_chunks,
+        Side::B => right_chunks,
+    };
+    let other_chunks: &[DiffChunk] = match side {
+        Side::A => right_chunks,
+        Side::B => left_chunks,
+    };
+
+    let merged = merged_gutter_chunks(my_chunks, other_chunks, side);
+    for (chunk, is_conflict) in &merged {
+        if !is_conflict {
+            continue;
+        }
+        let (tag_start, tag_end) = match side {
+            Side::A => (chunk.start_a, chunk.end_a),
+            Side::B => (chunk.start_b, chunk.end_b),
+        };
+        if tag_start >= tag_end {
+            continue;
+        }
+        let s = buf
+            .iter_at_line(tag_start as i32)
+            .unwrap_or_else(|| buf.end_iter());
+        let e = if tag_end as i32 >= buf.line_count() {
+            buf.end_iter()
+        } else {
+            buf.iter_at_line(tag_end as i32)
+                .unwrap_or_else(|| buf.end_iter())
+        };
+        // Apply conflict paragraph_background (overrides any insert/replace tags
+        // by GTK tag priority) and source marks (for empty lines where
+        // paragraph_background doesn't render).
+        for name in ["chunk-insert-bg", "chunk-replace-bg"] {
+            if let Some(t) = buf.tag_table().lookup(name) {
+                buf.remove_tag(&t, &s, &e);
+            }
+        }
+        buf.apply_tag_by_name("chunk-conflict-bg", &s, &e);
+        for line in tag_start..tag_end {
+            if let Some(iter) = buf.iter_at_line(line as i32) {
+                sv_buf.create_source_mark(None, "conflict-bg", &iter);
+            }
         }
     }
 }
@@ -966,20 +1085,7 @@ pub(super) fn draw_conflict_backgrounds(
             let r_start = rc.start_a;
             let r_end = rc.end_a;
 
-            // Check for overlap (same logic as apply_conflict_tags)
-            let overlap_start = l_start.max(r_start);
-            let overlap_end = l_end.max(l_start).min(r_end.max(r_start));
-            let overlaps = if l_start == l_end && r_start == r_end {
-                l_start == r_start
-            } else if l_start == l_end {
-                l_start >= r_start && l_start < r_end
-            } else if r_start == r_end {
-                r_start >= l_start && r_start < l_end
-            } else {
-                overlap_start < overlap_end
-            };
-
-            if !overlaps {
+            if !chunks_overlap(l_start, l_end, r_start, r_end) {
                 continue;
             }
 
@@ -1015,6 +1121,72 @@ pub(super) fn draw_conflict_backgrounds(
             }
 
             // Stroke only — fill is handled by paragraph_background tags
+            let cs = stroke_conflict();
+            cr.set_source_rgba(cs.0, cs.1, cs.2, cs.3);
+            cr.rectangle(0.0, y_top, width, 1.0);
+            let _ = cr.fill();
+            cr.rectangle(0.0, y_bot - 1.0, width, 1.0);
+            let _ = cr.fill();
+        }
+    }
+}
+
+/// Draw conflict stroke lines on a side pane (left or right) of a 3-way merge.
+///
+/// Uses `merged_gutter_chunks` so strokes match the fills from
+/// `apply_side_conflict_bg_tags`.
+pub(super) fn draw_side_conflict_strokes(
+    cr: &gtk4::cairo::Context,
+    width: f64,
+    tv: &TextView,
+    scroll: &ScrolledWindow,
+    left_chunks: &[DiffChunk],
+    right_chunks: &[DiffChunk],
+    side: Side,
+) {
+    let scroll_y = scroll.vadjustment().value();
+    let view_h = scroll.vadjustment().page_size();
+    let buf = tv.buffer();
+    let my_chunks: &[DiffChunk] = match side {
+        Side::A => left_chunks,
+        Side::B => right_chunks,
+    };
+    let other_chunks: &[DiffChunk] = match side {
+        Side::A => right_chunks,
+        Side::B => left_chunks,
+    };
+
+    let merged = merged_gutter_chunks(my_chunks, other_chunks, side);
+    for (chunk, is_conflict) in &merged {
+        if !is_conflict {
+            continue;
+        }
+        let (start, end) = match side {
+            Side::A => (chunk.start_a, chunk.end_a),
+            Side::B => (chunk.start_b, chunk.end_b),
+        };
+        if start >= end {
+            continue;
+        }
+        let y_top_buf = if let Some(iter) = buf.iter_at_line(start as i32) {
+            tv.line_yrange(&iter).0 as f64
+        } else {
+            let iter = buf.end_iter();
+            let (y, h) = tv.line_yrange(&iter);
+            (y + h) as f64
+        };
+        let last = end - 1;
+        let y_bot_buf = if let Some(iter) = buf.iter_at_line(last as i32) {
+            let (y, h) = tv.line_yrange(&iter);
+            (y + h) as f64
+        } else {
+            let iter = buf.end_iter();
+            let (y, h) = tv.line_yrange(&iter);
+            (y + h) as f64
+        };
+        let y_top = y_top_buf - scroll_y;
+        let y_bot = y_bot_buf - scroll_y;
+        if y_bot >= 0.0 && y_top <= view_h {
             let cs = stroke_conflict();
             cr.set_source_rgba(cs.0, cs.1, cs.2, cs.3);
             cr.rectangle(0.0, y_top, width, 1.0);
@@ -1081,6 +1253,96 @@ pub(super) fn draw_fillers(
         let line_y = anchor_y_buf - scroll_y;
 
         // Skip if not visible
+        if line_y + line_thickness < 0.0 || line_y - line_thickness > view_h {
+            continue;
+        }
+
+        cr.set_source_rgb(color.0, color.1, color.2);
+        cr.rectangle(0.0, line_y - line_thickness / 2.0, width, line_thickness);
+        let _ = cr.fill();
+    }
+}
+
+/// Like `draw_fillers` but uses conflict colour for chunks whose middle-pane
+/// range overlaps with the other diff.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn draw_merge_fillers(
+    cr: &gtk4::cairo::Context,
+    width: f64,
+    tv: &TextView,
+    scroll: &ScrolledWindow,
+    chunks: &[DiffChunk],
+    side_is_left: bool,
+    left_chunks: &[DiffChunk],
+    right_chunks: &[DiffChunk],
+) {
+    let scroll_y = scroll.vadjustment().value();
+    let view_h = scroll.vadjustment().page_size();
+    let line_thickness = 2.0_f64;
+
+    // Compute side-pane conflict bands so we can check filler anchors.
+    let (my_ch, oth_ch) = if side_is_left {
+        (left_chunks, right_chunks)
+    } else {
+        (right_chunks, left_chunks)
+    };
+    let pane_side = if side_is_left { Side::A } else { Side::B };
+    let gutter_merged = merged_gutter_chunks(my_ch, oth_ch, pane_side);
+    let side_bands: Vec<(usize, usize)> = gutter_merged
+        .iter()
+        .filter(|(_, is_c)| *is_c)
+        .map(|(ch, _)| match pane_side {
+            Side::A => (ch.start_a, ch.end_a),
+            Side::B => (ch.start_b, ch.end_b),
+        })
+        .collect();
+
+    for chunk in chunks {
+        if chunk.tag == DiffTag::Equal {
+            continue;
+        }
+        let left_lines = chunk.end_a - chunk.start_a;
+        let right_lines = chunk.end_b - chunk.start_b;
+        if left_lines == right_lines {
+            continue;
+        }
+
+        let (need_filler, anchor) = if side_is_left && right_lines > left_lines {
+            (true, chunk.end_a)
+        } else if !side_is_left && left_lines > right_lines {
+            (true, chunk.end_b)
+        } else {
+            (false, 0)
+        };
+        if !need_filler {
+            continue;
+        }
+
+        // Skip fillers whose anchor falls within a conflict band — the conflict
+        // background already covers the region, so a filler line is just noise.
+        if side_bands.iter().any(|&(s, e)| anchor >= s && anchor <= e) {
+            continue;
+        }
+
+        let color = match chunk.tag {
+            DiffTag::Delete | DiffTag::Insert => filler_insert(),
+            DiffTag::Replace => filler_replace(),
+            DiffTag::Equal => unreachable!(),
+        };
+
+        let buf = tv.buffer();
+        let anchor_y_buf = {
+            let anchor_i32 = anchor.min(buf.line_count().max(0) as usize) as i32;
+            if let Some(iter) = buf.iter_at_line(anchor_i32) {
+                tv.line_yrange(&iter).0 as f64
+            } else {
+                let iter = buf.end_iter();
+                let (y, h) = tv.line_yrange(&iter);
+                (y + h) as f64
+            }
+        };
+
+        let line_y = anchor_y_buf - scroll_y;
         if line_y + line_thickness < 0.0 || line_y - line_thickness > view_h {
             continue;
         }
@@ -1285,6 +1547,11 @@ pub(super) fn make_diff_pane(
     apply_scheme_css(settings);
     sv.add_css_class("meld-editor");
 
+    // Register mark attributes for conflict-region backgrounds on merge side
+    // panes.  Source marks render backgrounds below text on ALL lines (including
+    // empty ones), unlike `paragraph_background` tags.
+    setup_conflict_marks(&sv);
+
     let scroll = ScrolledWindow::builder()
         .min_content_width(360)
         .vexpand(true)
@@ -1428,6 +1695,214 @@ pub(super) fn draw_gutter(
         let _ = cr.fill();
 
         // Edge-aligned arrows (meld style)
+        let left_mid = f64::midpoint(lt, lb);
+        let right_mid = f64::midpoint(rt, rb);
+        if matches!(arrows, GutterArrows::Both | GutterArrows::LeftToRight) {
+            draw_edge_arrow(cr, 2.0, left_mid, true, r, g, b);
+        }
+        if matches!(arrows, GutterArrows::Both | GutterArrows::RightToLeft) {
+            draw_edge_arrow(cr, width - 2.0, right_mid, false, r, g, b);
+        }
+    }
+}
+
+/// Compute merged conflict regions on the middle pane.
+///
+/// Returns a sorted, non-overlapping list of `(start, end)` half-open line
+/// ranges on the middle pane where left and right changes overlap.
+fn middle_conflict_regions(
+    left_chunks: &[DiffChunk],
+    right_chunks: &[DiffChunk],
+) -> Vec<(usize, usize)> {
+    let mut regions: Vec<(usize, usize)> = Vec::new();
+    for lc in left_chunks {
+        if lc.tag == DiffTag::Equal {
+            continue;
+        }
+        for rc in right_chunks {
+            if rc.tag == DiffTag::Equal {
+                continue;
+            }
+            if chunks_overlap(lc.start_b, lc.end_b, rc.start_a, rc.end_a) {
+                regions.push((lc.start_b.min(rc.start_a), lc.end_b.max(rc.end_a)));
+            }
+        }
+    }
+    regions.sort_unstable();
+    // Merge overlapping / adjacent regions.
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for (s, e) in regions {
+        if let Some(last) = merged.last_mut()
+            && s <= last.1
+        {
+            last.1 = last.1.max(e);
+            continue;
+        }
+        merged.push((s, e));
+    }
+    merged
+}
+
+/// Compute merged chunk list for the merge gutter, combining conflict chunks.
+///
+/// Returns `(chunk, is_conflict)` pairs.  Consecutive conflict chunks (including
+/// equal chunks sandwiched between them) are merged into a single entry.
+/// `side` is `Side::A` for the left gutter, `Side::B` for the right gutter.
+///
+/// Conflict detection uses the merged conflict regions on the middle pane so
+/// that side-pane chunks sandwiched between two conflicting chunks (but not
+/// directly overlapping the other side) are also included in the conflict band.
+pub(super) fn merged_gutter_chunks(
+    my_chunks: &[DiffChunk],
+    other_chunks: &[DiffChunk],
+    side: Side,
+) -> Vec<(DiffChunk, bool)> {
+    // Reconstruct left/right from my/other + side so we can compute middle
+    // conflict regions the same way as the middle pane.
+    let (left_chunks, right_chunks) = match side {
+        Side::A => (my_chunks, other_chunks),
+        Side::B => (other_chunks, my_chunks),
+    };
+    let mid_regions = middle_conflict_regions(left_chunks, right_chunks);
+
+    // A non-Equal chunk is "in conflict" if its middle-pane projection
+    // overlaps any merged conflict region.
+    let is_conflict: Vec<bool> = my_chunks
+        .iter()
+        .map(|mc| {
+            if mc.tag == DiffTag::Equal {
+                return false;
+            }
+            let (mid_s, mid_e) = match side {
+                Side::A => (mc.start_b, mc.end_b),
+                Side::B => (mc.start_a, mc.end_a),
+            };
+            mid_regions
+                .iter()
+                .any(|&(rs, re)| chunks_overlap(mid_s, mid_e, rs, re))
+        })
+        .collect();
+
+    let mut result = Vec::new();
+    let mut i = 0;
+    while i < my_chunks.len() {
+        if my_chunks[i].tag == DiffTag::Equal || !is_conflict[i] {
+            result.push((my_chunks[i], false));
+            i += 1;
+            continue;
+        }
+        let mut merged = my_chunks[i];
+        i += 1;
+        while i < my_chunks.len() {
+            let absorb = is_conflict[i]
+                || (my_chunks[i].tag != DiffTag::Equal
+                    && conflict_reachable(i + 1, my_chunks, &is_conflict, side, &mid_regions))
+                || (my_chunks[i].tag == DiffTag::Equal
+                    && is_conflict.get(i + 1).copied().unwrap_or(false)
+                    && (chunk_mid_in_region(my_chunks[i], side, &mid_regions)
+                        || ((my_chunks[i].end_a - my_chunks[i].start_a) <= 5
+                            && (my_chunks[i].end_b - my_chunks[i].start_b) <= 5)));
+            if absorb {
+                merged.end_a = my_chunks[i].end_a;
+                merged.end_b = my_chunks[i].end_b;
+                i += 1;
+            } else {
+                break;
+            }
+        }
+        result.push((merged, true));
+    }
+    result
+}
+
+/// Check whether the Equal chunk's middle-pane projection falls within a
+/// conflict region.
+fn chunk_mid_in_region(chunk: DiffChunk, side: Side, mid_regions: &[(usize, usize)]) -> bool {
+    let (mid_s, mid_e) = match side {
+        Side::A => (chunk.start_b, chunk.end_b),
+        Side::B => (chunk.start_a, chunk.end_a),
+    };
+    mid_regions
+        .iter()
+        .any(|&(rs, re)| chunks_overlap(mid_s, mid_e, rs, re))
+}
+
+/// Check whether a conflict chunk is reachable from `from` without crossing a
+/// large Equal gap that is outside any conflict region.
+fn conflict_reachable(
+    from: usize,
+    chunks: &[DiffChunk],
+    is_conflict: &[bool],
+    side: Side,
+    mid_regions: &[(usize, usize)],
+) -> bool {
+    for j in from..chunks.len() {
+        if is_conflict[j] {
+            return true;
+        }
+        if chunks[j].tag == DiffTag::Equal
+            && !chunk_mid_in_region(chunks[j], side, mid_regions)
+            && ((chunks[j].end_a - chunks[j].start_a) > 5
+                || (chunks[j].end_b - chunks[j].start_b) > 5)
+        {
+            return false;
+        }
+    }
+    false
+}
+
+/// Draw a merge gutter with conflict awareness.
+///
+/// Chunks that participate in a conflict are merged into a single band drawn
+/// with the conflict colour.  Non-conflict chunks are drawn normally.
+/// `side` is `Side::A` for the left gutter, `Side::B` for the right gutter.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn draw_merge_gutter(
+    cr: &gtk4::cairo::Context,
+    width: f64,
+    left_tv: &TextView,
+    right_tv: &TextView,
+    left_buf: &TextBuffer,
+    right_buf: &TextBuffer,
+    left_scroll: &ScrolledWindow,
+    right_scroll: &ScrolledWindow,
+    gutter: &DrawingArea,
+    my_chunks: &[DiffChunk],
+    other_chunks: &[DiffChunk],
+    arrows: &GutterArrows,
+    side: Side,
+) {
+    let draw_list = merged_gutter_chunks(my_chunks, other_chunks, side);
+
+    // Draw each band
+    for (chunk, conflict) in &draw_list {
+        if chunk.tag == DiffTag::Equal {
+            continue;
+        }
+
+        let lt = line_to_gutter_y(left_tv, left_buf, chunk.start_a, left_scroll, gutter);
+        let lb = line_to_gutter_y(left_tv, left_buf, chunk.end_a, left_scroll, gutter);
+        let rt = line_to_gutter_y(right_tv, right_buf, chunk.start_b, right_scroll, gutter);
+        let rb = line_to_gutter_y(right_tv, right_buf, chunk.end_b, right_scroll, gutter);
+
+        let (r, g, b) = if *conflict {
+            band_conflict()
+        } else {
+            match chunk.tag {
+                DiffTag::Replace => band_replace(),
+                DiffTag::Delete | DiffTag::Insert => band_insert(),
+                DiffTag::Equal => continue,
+            }
+        };
+
+        cr.set_source_rgba(r, g, b, 0.3);
+        cr.move_to(0.0, lt);
+        cr.curve_to(width * 0.5, lt, width * 0.5, rt, width, rt);
+        cr.line_to(width, rb);
+        cr.curve_to(width * 0.5, rb, width * 0.5, lb, 0.0, lb);
+        cr.close_path();
+        let _ = cr.fill();
+
         let left_mid = f64::midpoint(lt, lb);
         let right_mid = f64::midpoint(rt, rb);
         if matches!(arrows, GutterArrows::Both | GutterArrows::LeftToRight) {

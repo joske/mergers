@@ -269,8 +269,9 @@ fn build_merge_view(
         let ls = left_pane.scroll.clone();
         let ms = middle_pane.scroll.clone();
         let ch = left_chunks.clone();
+        let och = right_chunks.clone();
         left_gutter.set_draw_func(move |area, cr, width, _height| {
-            draw_gutter(
+            draw_merge_gutter(
                 cr,
                 width as f64,
                 &ltv,
@@ -281,7 +282,9 @@ fn build_merge_view(
                 &ms,
                 area,
                 &ch.borrow(),
+                &och.borrow(),
                 &GutterArrows::LeftToRight,
+                Side::A,
             );
         });
     }
@@ -294,10 +297,11 @@ fn build_merge_view(
         let mb = middle_buf.clone();
         let ls = left_pane.scroll.clone();
         let ch = left_chunks.clone();
+        let och = right_chunks.clone();
         let g = left_gutter.clone();
         gesture.connect_pressed(move |_, _, _x, y| {
-            let snapshot: Vec<DiffChunk> = ch.borrow().clone();
-            for chunk in &snapshot {
+            let merged = merged_gutter_chunks(&ch.borrow(), &och.borrow(), Side::A);
+            for (chunk, _) in &merged {
                 if chunk.tag == DiffTag::Equal {
                     continue;
                 }
@@ -322,20 +326,16 @@ fn build_merge_view(
 
     // Left gutter right-click context menu
     {
-        let lg_pending: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let lg_pending: Rc<RefCell<Option<DiffChunk>>> = Rc::new(RefCell::new(None));
         let lg_ctx = gio::SimpleActionGroup::new();
         {
             let action = gio::SimpleAction::new("copy-left-middle", None);
             let pc = lg_pending.clone();
-            let ch = left_chunks.clone();
             let lb = left_buf.clone();
             let mb = middle_buf.clone();
             action.connect_activate(move |_, _| {
-                if let Some(idx) = pc.get() {
-                    let s = ch.borrow();
-                    if let Some(c) = s.get(idx) {
-                        copy_chunk(&lb, c.start_a, c.end_a, &mb, c.start_b, c.end_b);
-                    }
+                if let Some(c) = *pc.borrow() {
+                    copy_chunk(&lb, c.start_a, c.end_a, &mb, c.start_b, c.end_b);
                 }
             });
             lg_ctx.add_action(&action);
@@ -360,12 +360,13 @@ fn build_merge_view(
         let ls = left_pane.scroll.clone();
         let ms = middle_pane.scroll.clone();
         let ch = left_chunks.clone();
+        let och = right_chunks.clone();
         let g = left_gutter.clone();
         let pc = lg_pending;
         let pop = lg_popover;
         gesture.connect_pressed(move |_, _, x, y| {
-            let snapshot = ch.borrow();
-            for (idx, chunk) in snapshot.iter().enumerate() {
+            let merged = merged_gutter_chunks(&ch.borrow(), &och.borrow(), Side::A);
+            for (chunk, _) in &merged {
                 if chunk.tag == DiffTag::Equal {
                     continue;
                 }
@@ -376,7 +377,7 @@ fn build_merge_view(
                 let top = lt.min(mt) - 6.0;
                 let bottom = lb_y.max(mb_y) + 6.0;
                 if y >= top && y <= bottom {
-                    pc.set(Some(idx));
+                    *pc.borrow_mut() = Some(*chunk);
                     pop.set_pointing_to(Some(&gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
                     pop.popup();
                     return;
@@ -399,8 +400,9 @@ fn build_merge_view(
         let ms = middle_pane.scroll.clone();
         let rs = right_pane.scroll.clone();
         let ch = right_chunks.clone();
+        let och = left_chunks.clone();
         right_gutter.set_draw_func(move |area, cr, width, _height| {
-            draw_gutter(
+            draw_merge_gutter(
                 cr,
                 width as f64,
                 &mtv,
@@ -411,7 +413,9 @@ fn build_merge_view(
                 &rs,
                 area,
                 &ch.borrow(),
+                &och.borrow(),
                 &GutterArrows::RightToLeft,
+                Side::B,
             );
         });
     }
@@ -424,10 +428,11 @@ fn build_merge_view(
         let rb = right_buf.clone();
         let rs = right_pane.scroll.clone();
         let ch = right_chunks.clone();
+        let och = left_chunks.clone();
         let g = right_gutter.clone();
         gesture.connect_pressed(move |_, _, _x, y| {
-            let snapshot: Vec<DiffChunk> = ch.borrow().clone();
-            for chunk in &snapshot {
+            let merged = merged_gutter_chunks(&ch.borrow(), &och.borrow(), Side::B);
+            for (chunk, _) in &merged {
                 if chunk.tag == DiffTag::Equal {
                     continue;
                 }
@@ -452,20 +457,16 @@ fn build_merge_view(
 
     // Right gutter right-click context menu
     {
-        let rg_pending: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let rg_pending: Rc<RefCell<Option<DiffChunk>>> = Rc::new(RefCell::new(None));
         let rg_ctx = gio::SimpleActionGroup::new();
         {
             let action = gio::SimpleAction::new("copy-right-middle", None);
             let pc = rg_pending.clone();
-            let ch = right_chunks.clone();
             let mb = middle_buf.clone();
             let rb = right_buf.clone();
             action.connect_activate(move |_, _| {
-                if let Some(idx) = pc.get() {
-                    let s = ch.borrow();
-                    if let Some(c) = s.get(idx) {
-                        copy_chunk(&rb, c.start_b, c.end_b, &mb, c.start_a, c.end_a);
-                    }
+                if let Some(c) = *pc.borrow() {
+                    copy_chunk(&rb, c.start_b, c.end_b, &mb, c.start_a, c.end_a);
                 }
             });
             rg_ctx.add_action(&action);
@@ -490,12 +491,13 @@ fn build_merge_view(
         let ms = middle_pane.scroll.clone();
         let rs = right_pane.scroll.clone();
         let ch = right_chunks.clone();
+        let och = left_chunks.clone();
         let g = right_gutter.clone();
         let pc = rg_pending;
         let pop = rg_popover;
         gesture.connect_pressed(move |_, _, x, y| {
-            let snapshot = ch.borrow();
-            for (idx, chunk) in snapshot.iter().enumerate() {
+            let merged = merged_gutter_chunks(&ch.borrow(), &och.borrow(), Side::B);
+            for (chunk, _) in &merged {
                 if chunk.tag == DiffTag::Equal {
                     continue;
                 }
@@ -506,7 +508,7 @@ fn build_merge_view(
                 let top = mt.min(rt) - 6.0;
                 let bottom = mb_y.max(rb_y) + 6.0;
                 if y >= top && y <= bottom {
-                    pc.set(Some(idx));
+                    *pc.borrow_mut() = Some(*chunk);
                     pop.set_pointing_to(Some(&gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
                     pop.popup();
                     return;
@@ -546,8 +548,27 @@ fn build_merge_view(
                 // Left pane shows a-side of left_chunks
                 let cur_left = cur.get().and_then(|(i, r)| if r { None } else { Some(i) });
                 draw_chunk_backgrounds(cr, w, &ltv, &ls, &lch.borrow(), Side::A, cur_left);
-                draw_fillers(cr, w, &ltv, &ls, &lch.borrow(), true);
-                draw_fillers(cr, w, &ltv, &ls, &rch.borrow(), true);
+                draw_side_conflict_strokes(cr, w, &ltv, &ls, &lch.borrow(), &rch.borrow(), Side::A);
+                draw_merge_fillers(
+                    cr,
+                    w,
+                    &ltv,
+                    &ls,
+                    &lch.borrow(),
+                    true,
+                    &lch.borrow(),
+                    &rch.borrow(),
+                );
+                draw_merge_fillers(
+                    cr,
+                    w,
+                    &ltv,
+                    &ls,
+                    &rch.borrow(),
+                    true,
+                    &lch.borrow(),
+                    &rch.borrow(),
+                );
             });
     }
     {
@@ -563,8 +584,27 @@ fn build_merge_view(
                 // Right pane shows b-side of right_chunks
                 let cur_right = cur.get().and_then(|(i, r)| if r { Some(i) } else { None });
                 draw_chunk_backgrounds(cr, w, &rtv, &rs, &rch.borrow(), Side::B, cur_right);
-                draw_fillers(cr, w, &rtv, &rs, &rch.borrow(), false);
-                draw_fillers(cr, w, &rtv, &rs, &lch.borrow(), false);
+                draw_side_conflict_strokes(cr, w, &rtv, &rs, &lch.borrow(), &rch.borrow(), Side::B);
+                draw_merge_fillers(
+                    cr,
+                    w,
+                    &rtv,
+                    &rs,
+                    &rch.borrow(),
+                    false,
+                    &lch.borrow(),
+                    &rch.borrow(),
+                );
+                draw_merge_fillers(
+                    cr,
+                    w,
+                    &rtv,
+                    &rs,
+                    &lch.borrow(),
+                    false,
+                    &lch.borrow(),
+                    &rch.borrow(),
+                );
             });
     }
     {
@@ -584,8 +624,26 @@ fn build_merge_view(
                 draw_chunk_backgrounds(cr, w, &mtv, &ms, &lch.borrow(), Side::B, cur_left);
                 draw_chunk_backgrounds(cr, w, &mtv, &ms, &rch.borrow(), Side::A, cur_right);
                 draw_conflict_backgrounds(cr, w, &mtv, &ms, &lch.borrow(), &rch.borrow());
-                draw_fillers(cr, w, &mtv, &ms, &lch.borrow(), false);
-                draw_fillers(cr, w, &mtv, &ms, &rch.borrow(), true);
+                draw_merge_fillers(
+                    cr,
+                    w,
+                    &mtv,
+                    &ms,
+                    &lch.borrow(),
+                    false,
+                    &lch.borrow(),
+                    &rch.borrow(),
+                );
+                draw_merge_fillers(
+                    cr,
+                    w,
+                    &mtv,
+                    &ms,
+                    &rch.borrow(),
+                    true,
+                    &lch.borrow(),
+                    &rch.borrow(),
+                );
             });
     }
     // Redraw filler overlays on scroll
@@ -1383,12 +1441,15 @@ fn build_merge_view(
                         &rtv,
                         st.borrow().wrap_around_navigation,
                     );
-                    // Apply chunk background tags (paragraph_background) for all three panes
+                    // Apply chunk background tags (paragraph_background) for all three panes.
+                    // Side panes: insert/replace first, then override conflicts.
                     apply_chunk_bg_tags(&lb, &lch.borrow(), Side::A);
+                    apply_side_conflict_bg_tags(&lb, &lch.borrow(), &rch.borrow(), Side::A);
                     apply_chunk_bg_tags(&mb, &lch.borrow(), Side::B);
                     apply_chunk_bg_tags(&mb, &rch.borrow(), Side::A);
-                    apply_chunk_bg_tags(&rb, &rch.borrow(), Side::B);
                     apply_conflict_bg_tags(&mb, &lch.borrow(), &rch.borrow());
+                    apply_chunk_bg_tags(&rb, &rch.borrow(), Side::B);
+                    apply_side_conflict_bg_tags(&rb, &lch.borrow(), &rch.borrow(), Side::B);
                     ccur.set(None);
                     let n = find_conflict_markers(&mb).len();
                     if n == 0 {
@@ -2182,6 +2243,55 @@ fn build_merge_view(
         action_group.add_action(&action);
     }
 
+    // Alt+Left: copy right chunk → middle (used from right pane, pushes content left)
+    {
+        let action = gio::SimpleAction::new("copy-chunk-right-middle", None);
+        let lch = left_chunks.clone();
+        let rch = right_chunks.clone();
+        let mb = middle_buf.clone();
+        let rb = right_buf.clone();
+        let rtv = right_pane.text_view.clone();
+        action.connect_activate(move |_, _| {
+            let cursor_line = cursor_line_from_view(&rtv);
+            let merged = merged_gutter_chunks(&rch.borrow(), &lch.borrow(), Side::B);
+            for (mc, _) in &merged {
+                if mc.tag == DiffTag::Equal {
+                    continue;
+                }
+                // B-side = right pane range for right_chunks
+                if cursor_line >= mc.start_b && cursor_line < mc.end_b.max(mc.start_b + 1) {
+                    copy_chunk(&rb, mc.start_b, mc.end_b, &mb, mc.start_a, mc.end_a);
+                    return;
+                }
+            }
+        });
+        action_group.add_action(&action);
+    }
+    // Alt+Right: copy left chunk → middle (used from left pane, pushes content right)
+    {
+        let action = gio::SimpleAction::new("copy-chunk-left-middle", None);
+        let lch = left_chunks.clone();
+        let rch = right_chunks.clone();
+        let lb = left_buf.clone();
+        let mb = middle_buf.clone();
+        let ltv = left_pane.text_view.clone();
+        action.connect_activate(move |_, _| {
+            let cursor_line = cursor_line_from_view(&ltv);
+            let merged = merged_gutter_chunks(&lch.borrow(), &rch.borrow(), Side::A);
+            for (mc, _) in &merged {
+                if mc.tag == DiffTag::Equal {
+                    continue;
+                }
+                // A-side = left pane range for left_chunks
+                if cursor_line >= mc.start_a && cursor_line < mc.end_a.max(mc.start_a + 1) {
+                    copy_chunk(&lb, mc.start_a, mc.end_a, &mb, mc.start_b, mc.end_b);
+                    return;
+                }
+            }
+        });
+        action_group.add_action(&action);
+    }
+
     // Capture-phase key handler for shortcuts sourceview would consume
     for tv in [
         &left_pane.text_view,
@@ -2207,6 +2317,8 @@ fn build_merge_view(
                 match key {
                     k if k == gtk4::gdk::Key::Up => Some("prev-chunk"),
                     k if k == gtk4::gdk::Key::Down => Some("next-chunk"),
+                    k if k == gtk4::gdk::Key::Left => Some("copy-chunk-right-middle"),
+                    k if k == gtk4::gdk::Key::Right => Some("copy-chunk-left-middle"),
                     _ => None,
                 }
             } else if mods.contains(gtk4::gdk::ModifierType::CONTROL_MASK) {
