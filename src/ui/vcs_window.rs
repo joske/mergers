@@ -334,7 +334,7 @@ pub(super) fn build_vcs_window(
     refresh_btn.set_tooltip_text(Some("Refresh"));
 
     let prefs_btn = Button::from_icon_name("preferences-system-symbolic");
-    prefs_btn.set_tooltip_text(Some("Preferences (Ctrl+,)"));
+    prefs_btn.set_tooltip_text(Some(&format!("Preferences ({}+,)", primary_key_name())));
     prefs_btn.set_action_name(Some("win.prefs"));
 
     toolbar.append(&repo_label);
@@ -667,9 +667,9 @@ pub(super) fn build_vcs_window(
     }
 
     if let Some(gtk_app) = window.application() {
-        gtk_app.set_accels_for_action("diff.save", &["<Ctrl>s"]);
-        gtk_app.set_accels_for_action("win.prefs", &["<Ctrl>comma"]);
-        gtk_app.set_accels_for_action("win.close-tab", &["<Ctrl>w"]);
+        gtk_app.set_accels_for_action("diff.save", &["<Primary>s"]);
+        gtk_app.set_accels_for_action("win.prefs", &["<Primary>comma"]);
+        gtk_app.set_accels_for_action("win.close-tab", &["<Primary>w"]);
     }
 
     // Clean up temp dir and stop watcher on destroy

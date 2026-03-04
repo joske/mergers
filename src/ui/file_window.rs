@@ -181,17 +181,17 @@ pub(super) fn build_file_window(
 
     // Bind keyboard accelerators
     if let Some(gtk_app) = window.application() {
-        gtk_app.set_accels_for_action("diff.prev-chunk", &["<Alt>Up", "<Ctrl>e"]);
-        gtk_app.set_accels_for_action("diff.next-chunk", &["<Alt>Down", "<Ctrl>d"]);
-        gtk_app.set_accels_for_action("diff.find", &["<Ctrl>f"]);
-        gtk_app.set_accels_for_action("diff.find-replace", &["<Ctrl>h"]);
+        gtk_app.set_accels_for_action("diff.prev-chunk", &["<Alt>Up", "<Primary>e"]);
+        gtk_app.set_accels_for_action("diff.next-chunk", &["<Alt>Down", "<Primary>d"]);
+        gtk_app.set_accels_for_action("diff.find", &["<Primary>f"]);
+        gtk_app.set_accels_for_action("diff.find-replace", &["<Primary>h"]);
         gtk_app.set_accels_for_action("diff.find-next", &["F3"]);
         gtk_app.set_accels_for_action("diff.find-prev", &["<Shift>F3"]);
-        gtk_app.set_accels_for_action("diff.go-to-line", &["<Ctrl>l"]);
-        gtk_app.set_accels_for_action("diff.export-patch", &["<Ctrl><Shift>p"]);
-        gtk_app.set_accels_for_action("diff.save", &["<Ctrl>s"]);
-        gtk_app.set_accels_for_action("win.prefs", &["<Ctrl>comma"]);
-        gtk_app.set_accels_for_action("win.close-tab", &["<Ctrl>w"]);
+        gtk_app.set_accels_for_action("diff.go-to-line", &["<Primary>l"]);
+        gtk_app.set_accels_for_action("diff.export-patch", &["<Primary><Shift>p"]);
+        gtk_app.set_accels_for_action("diff.save", &["<Primary>s"]);
+        gtk_app.set_accels_for_action("win.prefs", &["<Primary>comma"]);
+        gtk_app.set_accels_for_action("win.close-tab", &["<Primary>w"]);
     }
 
     window.connect_destroy(move |_| {

@@ -161,7 +161,7 @@ pub(super) fn build_welcome_window(app: &Application, settings: Rc<RefCell<Setti
 
     // Preferences
     let prefs_btn = Button::from_icon_name("preferences-system-symbolic");
-    prefs_btn.set_tooltip_text(Some("Preferences (Ctrl+,)"));
+    prefs_btn.set_tooltip_text(Some(&format!("Preferences ({}+,)", primary_key_name())));
     prefs_btn.set_action_name(Some("win.prefs"));
     prefs_btn.set_halign(gtk4::Align::End);
     prefs_btn.set_margin_top(8);
@@ -189,8 +189,8 @@ pub(super) fn build_welcome_window(app: &Application, settings: Rc<RefCell<Setti
     window.insert_action_group("win", Some(&win_actions));
 
     if let Some(gtk_app) = window.application() {
-        gtk_app.set_accels_for_action("win.prefs", &["<Ctrl>comma"]);
-        gtk_app.set_accels_for_action("win.close-tab", &["<Ctrl>w"]);
+        gtk_app.set_accels_for_action("win.prefs", &["<Primary>comma"]);
+        gtk_app.set_accels_for_action("win.close-tab", &["<Primary>w"]);
     }
 
     window.set_child(Some(&content));

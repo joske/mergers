@@ -38,6 +38,21 @@ use crate::{
     settings::Settings,
 };
 
+/// The primary keyboard modifier: Cmd on macOS, Ctrl elsewhere.
+#[cfg(target_os = "macos")]
+const PRIMARY_MODIFIER: gtk4::gdk::ModifierType = gtk4::gdk::ModifierType::META_MASK;
+#[cfg(not(target_os = "macos"))]
+const PRIMARY_MODIFIER: gtk4::gdk::ModifierType = gtk4::gdk::ModifierType::CONTROL_MASK;
+
+/// Display name for the primary modifier key.
+fn primary_key_name() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Cmd"
+    } else {
+        "Ctrl"
+    }
+}
+
 mod common;
 mod diff_state;
 mod diff_view;
@@ -155,7 +170,7 @@ pub fn build_ui(application: &Application, mode: CompareMode) {
             }
         });
         application.add_action(&quit);
-        application.set_accels_for_action("app.quit", &["<Ctrl>q"]);
+        application.set_accels_for_action("app.quit", &["<Primary>q"]);
     }
 
     {

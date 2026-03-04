@@ -799,10 +799,16 @@ fn build_merge_view(
     }
 
     let prev_btn = Button::from_icon_name("go-up-symbolic");
-    prev_btn.set_tooltip_text(Some("Previous change (Alt+Up / Ctrl+E)"));
+    prev_btn.set_tooltip_text(Some(&format!(
+        "Previous change (Alt+Up / {}+E)",
+        primary_key_name()
+    )));
     prev_btn.set_sensitive(false);
     let next_btn = Button::from_icon_name("go-down-symbolic");
-    next_btn.set_tooltip_text(Some("Next change (Alt+Down / Ctrl+D)"));
+    next_btn.set_tooltip_text(Some(&format!(
+        "Next change (Alt+Down / {}+D)",
+        primary_key_name()
+    )));
     next_btn.set_sensitive(false);
 
     let nav_box = GtkBox::new(Orientation::Horizontal, 0);
@@ -812,10 +818,13 @@ fn build_merge_view(
 
     // Conflict navigation buttons
     let prev_conflict_btn = Button::from_icon_name("go-up-symbolic");
-    prev_conflict_btn.set_tooltip_text(Some("Previous conflict (Ctrl+J)"));
+    prev_conflict_btn.set_tooltip_text(Some(&format!(
+        "Previous conflict ({}+J)",
+        primary_key_name()
+    )));
     prev_conflict_btn.set_sensitive(false);
     let next_conflict_btn = Button::from_icon_name("go-down-symbolic");
-    next_conflict_btn.set_tooltip_text(Some("Next conflict (Ctrl+K)"));
+    next_conflict_btn.set_tooltip_text(Some(&format!("Next conflict ({}+K)", primary_key_name())));
     next_conflict_btn.set_sensitive(false);
     let conflict_nav_box = GtkBox::new(Orientation::Horizontal, 0);
     conflict_nav_box.add_css_class("linked");
@@ -837,9 +846,9 @@ fn build_merge_view(
 
     // Undo/Redo buttons
     let undo_btn = Button::from_icon_name("edit-undo-symbolic");
-    undo_btn.set_tooltip_text(Some("Undo (Ctrl+Z)"));
+    undo_btn.set_tooltip_text(Some(&format!("Undo ({}+Z)", primary_key_name())));
     let redo_btn = Button::from_icon_name("edit-redo-symbolic");
-    redo_btn.set_tooltip_text(Some("Redo (Ctrl+Shift+Z)"));
+    redo_btn.set_tooltip_text(Some(&format!("Redo ({}+Shift+Z)", primary_key_name())));
     let undo_redo_box = GtkBox::new(Orientation::Horizontal, 0);
     undo_redo_box.add_css_class("linked");
     undo_redo_box.append(&undo_btn);
@@ -921,7 +930,7 @@ fn build_merge_view(
     filter_box.append(&ws_toggle);
 
     let merge_prefs_btn = Button::from_icon_name("preferences-system-symbolic");
-    merge_prefs_btn.set_tooltip_text(Some("Preferences (Ctrl+,)"));
+    merge_prefs_btn.set_tooltip_text(Some(&format!("Preferences ({}+,)", primary_key_name())));
     merge_prefs_btn.set_action_name(Some("win.prefs"));
 
     toolbar.append(&undo_redo_box);
@@ -1840,7 +1849,7 @@ fn build_merge_view(
 
     // ── Find bar for merge view ───────────────────────────────────
     let find_entry = Entry::new();
-    find_entry.set_placeholder_text(Some("Find (Ctrl+F)"));
+    find_entry.set_placeholder_text(Some(&format!("Find ({}+F)", primary_key_name())));
     find_entry.set_hexpand(true);
 
     let replace_entry = Entry::new();
@@ -2447,7 +2456,7 @@ fn build_merge_view(
                     k if k == gtk4::gdk::Key::Right => Some("copy-chunk-left-middle"),
                     _ => None,
                 }
-            } else if mods.contains(gtk4::gdk::ModifierType::CONTROL_MASK) {
+            } else if mods.contains(PRIMARY_MODIFIER) {
                 if key == gtk4::gdk::Key::s || key == gtk4::gdk::Key::S {
                     Some("save")
                 } else if key == gtk4::gdk::Key::e || key == gtk4::gdk::Key::E {
@@ -2671,18 +2680,18 @@ pub(super) fn build_merge_window(
     }
 
     if let Some(gtk_app) = window.application() {
-        gtk_app.set_accels_for_action("diff.prev-chunk", &["<Alt>Up", "<Ctrl>e"]);
-        gtk_app.set_accels_for_action("diff.next-chunk", &["<Alt>Down", "<Ctrl>d"]);
-        gtk_app.set_accels_for_action("diff.prev-conflict", &["<Ctrl>j"]);
-        gtk_app.set_accels_for_action("diff.next-conflict", &["<Ctrl>k"]);
-        gtk_app.set_accels_for_action("diff.find", &["<Ctrl>f"]);
-        gtk_app.set_accels_for_action("diff.find-replace", &["<Ctrl>h"]);
+        gtk_app.set_accels_for_action("diff.prev-chunk", &["<Alt>Up", "<Primary>e"]);
+        gtk_app.set_accels_for_action("diff.next-chunk", &["<Alt>Down", "<Primary>d"]);
+        gtk_app.set_accels_for_action("diff.prev-conflict", &["<Primary>j"]);
+        gtk_app.set_accels_for_action("diff.next-conflict", &["<Primary>k"]);
+        gtk_app.set_accels_for_action("diff.find", &["<Primary>f"]);
+        gtk_app.set_accels_for_action("diff.find-replace", &["<Primary>h"]);
         gtk_app.set_accels_for_action("diff.find-next", &["F3"]);
         gtk_app.set_accels_for_action("diff.find-prev", &["<Shift>F3"]);
-        gtk_app.set_accels_for_action("diff.go-to-line", &["<Ctrl>l"]);
-        gtk_app.set_accels_for_action("diff.save", &["<Ctrl>s"]);
-        gtk_app.set_accels_for_action("win.prefs", &["<Ctrl>comma"]);
-        gtk_app.set_accels_for_action("win.close-tab", &["<Ctrl>w"]);
+        gtk_app.set_accels_for_action("diff.go-to-line", &["<Primary>l"]);
+        gtk_app.set_accels_for_action("diff.save", &["<Primary>s"]);
+        gtk_app.set_accels_for_action("win.prefs", &["<Primary>comma"]);
+        gtk_app.set_accels_for_action("win.close-tab", &["<Primary>w"]);
     }
 
     window.connect_destroy(move |_| {
