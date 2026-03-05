@@ -893,146 +893,7 @@ pub(super) fn build_dir_tab(
         }
     };
 
-    // Copy to left: right → left (with confirmation when overwriting)
-    {
-        let get_row = get_selected_row.clone();
-        let ld = left_dir.clone();
-        let rd = right_dir.clone();
-        let reload = reload_dir.clone();
-        let lv = left_view.clone();
-        copy_left_btn.connect_clicked(move |_| {
-            if let Some(raw) = get_row() {
-                let info = DirRowInfo::decode(&raw);
-                if info.status == FileStatus::RightOnly || info.status == FileStatus::Different {
-                    let rel = info.rel_path;
-                    let src = Path::new(rd.borrow().as_str()).join(&rel);
-                    let dst = Path::new(ld.borrow().as_str()).join(&rel);
-                    let reload = reload.clone();
-                    let lv2 = lv.clone();
-                    let do_copy = move || {
-                        if let Err(e) = copy_path_recursive(&src, &dst)
-                            && let Some(win) = lv2
-                                .root()
-                                .and_then(|r| r.downcast::<ApplicationWindow>().ok())
-                        {
-                            show_error_dialog(&win, &format!("Copy failed: {e}"));
-                        }
-                        reload();
-                    };
-                    if info.status == FileStatus::Different {
-                        if let Some(win) = lv
-                            .root()
-                            .and_then(|r| r.downcast::<ApplicationWindow>().ok())
-                        {
-                            show_confirm_dialog(
-                                &win,
-                                &format!("Overwrite {rel}?"),
-                                "The destination file will be replaced.",
-                                "Overwrite",
-                                do_copy,
-                            );
-                        }
-                    } else {
-                        do_copy();
-                    }
-                }
-            }
-        });
-    }
-
-    // Copy to right: left → right (with confirmation when overwriting)
-    {
-        let get_row = get_selected_row.clone();
-        let ld = left_dir.clone();
-        let rd = right_dir.clone();
-        let reload = reload_dir.clone();
-        let lv = left_view.clone();
-        copy_right_btn.connect_clicked(move |_| {
-            if let Some(raw) = get_row() {
-                let info = DirRowInfo::decode(&raw);
-                if info.status == FileStatus::LeftOnly || info.status == FileStatus::Different {
-                    let rel = info.rel_path;
-                    let src = Path::new(ld.borrow().as_str()).join(&rel);
-                    let dst = Path::new(rd.borrow().as_str()).join(&rel);
-                    let reload = reload.clone();
-                    let lv2 = lv.clone();
-                    let do_copy = move || {
-                        if let Err(e) = copy_path_recursive(&src, &dst)
-                            && let Some(win) = lv2
-                                .root()
-                                .and_then(|r| r.downcast::<ApplicationWindow>().ok())
-                        {
-                            show_error_dialog(&win, &format!("Copy failed: {e}"));
-                        }
-                        reload();
-                    };
-                    if info.status == FileStatus::Different {
-                        if let Some(win) = lv
-                            .root()
-                            .and_then(|r| r.downcast::<ApplicationWindow>().ok())
-                        {
-                            show_confirm_dialog(
-                                &win,
-                                &format!("Overwrite {rel}?"),
-                                "The destination file will be replaced.",
-                                "Overwrite",
-                                do_copy,
-                            );
-                        }
-                    } else {
-                        do_copy();
-                    }
-                }
-            }
-        });
-    }
-
-    // Delete selected (trash with confirmation)
-    {
-        let get_row = get_selected_row.clone();
-        let ld = left_dir.clone();
-        let rd = right_dir.clone();
-        let reload = reload_dir.clone();
-        let fl = focused_left.clone();
-        let lv = left_view.clone();
-        delete_btn.connect_clicked(move |_| {
-            if let Some(raw) = get_row() {
-                let info = DirRowInfo::decode(&raw);
-                let rel = info.rel_path;
-                let status = info.status;
-                let lp = Path::new(ld.borrow().as_str()).join(&rel);
-                let rp = Path::new(rd.borrow().as_str()).join(&rel);
-                let path = match status {
-                    FileStatus::LeftOnly => Some(lp),
-                    FileStatus::RightOnly => Some(rp),
-                    FileStatus::Different | FileStatus::Same => {
-                        Some(if fl.get() { lp } else { rp })
-                    }
-                };
-                if let Some(p) = path
-                    && let Some(win) = lv
-                        .root()
-                        .and_then(|r| r.downcast::<ApplicationWindow>().ok())
-                {
-                    let reload = reload.clone();
-                    show_confirm_dialog(
-                        &win,
-                        &format!("Move {rel} to trash?"),
-                        "The file will be moved to the system trash.",
-                        "Trash",
-                        move || {
-                            if let Err(e) = gio::File::for_path(&p).trash(gio::Cancellable::NONE) {
-                                eprintln!("Trash failed: {e}");
-                            }
-                            reload();
-                        },
-                    );
-                }
-            }
-        });
-    }
-
-    // Directory action group for keyboard shortcuts
+    // Directory action group — used by both keyboard shortcuts and toolbar buttons
     let dir_action_group = gio::SimpleActionGroup::new();
     {
         let action = gio::SimpleAction::new("folder-copy-left", None);
@@ -1281,6 +1142,26 @@ pub(super) fn build_dir_tab(
     dir_tab.set_vexpand(true);
     dir_paned.set_vexpand(true);
     dir_tab.insert_action_group("dir", Some(&dir_action_group));
+
+    // Wire toolbar buttons to activate the corresponding actions
+    {
+        let dag = dir_action_group.clone();
+        copy_left_btn.connect_clicked(move |_| {
+            dag.activate_action("folder-copy-left", None);
+        });
+    }
+    {
+        let dag = dir_action_group.clone();
+        copy_right_btn.connect_clicked(move |_| {
+            dag.activate_action("folder-copy-right", None);
+        });
+    }
+    {
+        let dag = dir_action_group.clone();
+        delete_btn.connect_clicked(move |_| {
+            dag.activate_action("folder-delete", None);
+        });
+    }
 
     // Capture-phase key handler for dir-only shortcuts (Alt+Left/Right, Delete)
     // so they don't fire when a file-diff tab is focused.
