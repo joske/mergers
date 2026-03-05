@@ -385,14 +385,20 @@ fn make_field_factory(is_left: bool, field_idx: usize) -> SignalListItemFactory 
     factory
 }
 
-// ─── Directory comparison window ───────────────────────────────────────────
+// ─── Directory comparison tab ──────────────────────────────────────────────
 
-pub(super) fn build_dir_window(
-    app: &Application,
+/// Build the directory comparison widget and all its state (tree model, file
+/// watcher, copy/delete handlers, context menus). The widget can be embedded
+/// as a tab in an existing notebook or wrapped in its own window.
+///
+/// Returns `(dir_tab, watcher_alive, left_view, title)`.
+pub(super) fn build_dir_tab(
     left_dir: std::path::PathBuf,
     right_dir: std::path::PathBuf,
     settings: Rc<RefCell<Settings>>,
-) {
+    notebook: &Notebook,
+    open_tabs: &Rc<RefCell<Vec<FileTab>>>,
+) -> (GtkBox, Rc<Cell<bool>>, ColumnView, String) {
     let left_dir = Rc::new(RefCell::new(left_dir.to_string_lossy().into_owned()));
     let right_dir = Rc::new(RefCell::new(right_dir.to_string_lossy().into_owned()));
 
@@ -1168,6 +1174,105 @@ pub(super) fn build_dir_window(
         dir_action_group.add_action(&action);
     }
 
+    // Open externally: open selected file/dir in system default app
+    {
+        let action = gio::SimpleAction::new("folder-open-externally", None);
+        let get_row = get_selected_row.clone();
+        let ld = left_dir.clone();
+        let rd = right_dir.clone();
+        let fl = focused_left.clone();
+        action.connect_activate(move |_, _| {
+            if let Some(raw) = get_row() {
+                let info = DirRowInfo::decode(&raw);
+                let lp = Path::new(ld.borrow().as_str()).join(&info.rel_path);
+                let rp = Path::new(rd.borrow().as_str()).join(&info.rel_path);
+                let path = match info.status {
+                    FileStatus::LeftOnly => lp,
+                    FileStatus::RightOnly => rp,
+                    FileStatus::Different | FileStatus::Same => {
+                        if fl.get() {
+                            lp
+                        } else {
+                            rp
+                        }
+                    }
+                };
+                let abs = path.canonicalize().unwrap_or(path);
+                open_externally(&abs);
+            }
+        });
+        dir_action_group.add_action(&action);
+    }
+
+    // Collapse all: collapse every expanded row in the tree
+    {
+        let action = gio::SimpleAction::new("folder-collapse-all", None);
+        let tm = tree_model.clone();
+        action.connect_activate(move |_, _| {
+            for i in 0..tm.n_items() {
+                if let Some(item) = tm.item(i)
+                    && let Ok(row) = item.downcast::<TreeListRow>()
+                    && row.is_expanded()
+                {
+                    row.set_expanded(false);
+                }
+            }
+        });
+        dir_action_group.add_action(&action);
+    }
+
+    // Expand all: expand every directory row in the tree
+    {
+        let action = gio::SimpleAction::new("folder-expand-all", None);
+        let tm = tree_model.clone();
+        action.connect_activate(move |_, _| {
+            // Expand iteratively since expanding a row may add new children
+            let mut i = 0;
+            while i < tm.n_items() {
+                if let Some(item) = tm.item(i)
+                    && let Ok(row) = item.downcast::<TreeListRow>()
+                    && row.is_expandable()
+                    && !row.is_expanded()
+                {
+                    row.set_expanded(true);
+                }
+                i += 1;
+            }
+        });
+        dir_action_group.add_action(&action);
+    }
+
+    // Copy file path: copy the selected file's absolute path to clipboard
+    {
+        let action = gio::SimpleAction::new("folder-copy-path", None);
+        let get_row = get_selected_row.clone();
+        let ld = left_dir.clone();
+        let rd = right_dir.clone();
+        let fl = focused_left.clone();
+        let lv = left_view.clone();
+        action.connect_activate(move |_, _| {
+            if let Some(raw) = get_row() {
+                let info = DirRowInfo::decode(&raw);
+                let lp = Path::new(ld.borrow().as_str()).join(&info.rel_path);
+                let rp = Path::new(rd.borrow().as_str()).join(&info.rel_path);
+                let path = match info.status {
+                    FileStatus::LeftOnly => lp,
+                    FileStatus::RightOnly => rp,
+                    FileStatus::Different | FileStatus::Same => {
+                        if fl.get() {
+                            lp
+                        } else {
+                            rp
+                        }
+                    }
+                };
+                let abs = path.canonicalize().unwrap_or(path);
+                lv.clipboard().set_text(&abs.display().to_string());
+            }
+        });
+        dir_action_group.add_action(&action);
+    }
+
     // ── Dir tab: toolbar + paned ──────────────────────────────────
     let dir_tab = GtkBox::new(Orientation::Vertical, 0);
     dir_tab.append(&dir_toolbar);
@@ -1209,15 +1314,7 @@ pub(super) fn build_dir_window(
         dir_tab.add_controller(key_ctl);
     }
 
-    // ── Notebook (tabs) ────────────────────────────────────────────
-    let notebook = Notebook::new();
-    notebook.set_scrollable(true);
-    notebook.append_page(&dir_tab, Some(&Label::new(Some("Directory"))));
-
-    // Open file tabs tracking
-    let open_tabs: Rc<RefCell<Vec<FileTab>>> = Rc::new(RefCell::new(Vec::new()));
-
-    // Add "folder-open-diff" action now that notebook and open_tabs exist
+    // Add "folder-open-diff" action (uses the passed-in notebook and open_tabs)
     {
         let action = gio::SimpleAction::new("folder-open-diff", None);
         let get_row = get_selected_row.clone();
@@ -1240,10 +1337,20 @@ pub(super) fn build_dir_window(
     // ── Dir context menu ────────────────────────────────────────────
     {
         let dir_menu = gio::Menu::new();
-        dir_menu.append(Some("Open Diff"), Some("dir.folder-open-diff"));
-        dir_menu.append(Some("Copy to Left"), Some("dir.folder-copy-left"));
-        dir_menu.append(Some("Copy to Right"), Some("dir.folder-copy-right"));
-        dir_menu.append(Some("Delete"), Some("dir.folder-delete"));
+        let actions_section = gio::Menu::new();
+        actions_section.append(Some("Open Diff"), Some("dir.folder-open-diff"));
+        actions_section.append(Some("Copy to Left"), Some("dir.folder-copy-left"));
+        actions_section.append(Some("Copy to Right"), Some("dir.folder-copy-right"));
+        actions_section.append(Some("Delete"), Some("dir.folder-delete"));
+        dir_menu.append_section(None, &actions_section);
+        let tree_section = gio::Menu::new();
+        tree_section.append(Some("Collapse All"), Some("dir.folder-collapse-all"));
+        tree_section.append(Some("Expand All"), Some("dir.folder-expand-all"));
+        dir_menu.append_section(None, &tree_section);
+        let util_section = gio::Menu::new();
+        util_section.append(Some("Open Externally"), Some("dir.folder-open-externally"));
+        util_section.append(Some("Copy File Path"), Some("dir.folder-copy-path"));
+        dir_menu.append_section(None, &util_section);
 
         let dir_popover_l = PopoverMenu::from_model(Some(&dir_menu));
         dir_popover_l.set_parent(&left_view);
@@ -1448,7 +1555,7 @@ pub(super) fn build_dir_window(
         });
     }
 
-    // Window title
+    // Build title
     let left_name = Path::new(left_dir.borrow().as_str())
         .file_name()
         .map_or_else(
@@ -1463,9 +1570,28 @@ pub(super) fn build_dir_window(
         );
     let title = format!("{left_name} — {right_name}");
 
+    (dir_tab, dir_watcher_alive, left_view, title)
+}
+
+// ─── Directory comparison window ───────────────────────────────────────────
+
+pub(super) fn build_dir_window(
+    app: &Application,
+    left_dir: std::path::PathBuf,
+    right_dir: std::path::PathBuf,
+    settings: Rc<RefCell<Settings>>,
+) {
+    let notebook = Notebook::new();
+    notebook.set_scrollable(true);
+    let open_tabs: Rc<RefCell<Vec<FileTab>>> = Rc::new(RefCell::new(Vec::new()));
+
+    let (dir_tab, dir_watcher_alive, left_view, title) =
+        build_dir_tab(left_dir, right_dir, settings.clone(), &notebook, &open_tabs);
+    notebook.append_page(&dir_tab, Some(&Label::new(Some(&title))));
+
     let window = ApplicationWindow::builder()
         .application(app)
-        .title(&title)
+        .title("Mergers")
         .default_width(900)
         .default_height(600)
         .child(&notebook)
@@ -1494,7 +1620,20 @@ pub(super) fn build_dir_window(
         });
         win_actions.add_action(&action);
     }
+    // New comparison (Ctrl+N)
+    {
+        let action = gio::SimpleAction::new("new-comparison", None);
+        let nb = notebook.clone();
+        let st = settings.clone();
+        let tabs = open_tabs.clone();
+        action.connect_activate(move |_, _| {
+            build_new_comparison_tab(&nb, &st, &tabs);
+        });
+        win_actions.add_action(&action);
+    }
+    add_tab_navigation_actions(&win_actions, &notebook);
     window.insert_action_group("win", Some(&win_actions));
+    add_tab_navigation_keys(&window);
 
     // Unsaved-changes guard on window close button
     {
@@ -1516,9 +1655,7 @@ pub(super) fn build_dir_window(
         set_platform_accels(&gtk_app, "diff.save", &["<Ctrl>s"]);
         set_platform_accels(&gtk_app, "win.prefs", &["<Ctrl>comma"]);
         set_platform_accels(&gtk_app, "win.close-tab", &["<Ctrl>w"]);
-        // Note: dir.folder-copy-left/right/delete are NOT registered as app accels
-        // because they would fire even on file-diff tabs. Instead, a capture-phase
-        // key handler on dir_tab dispatches them (see below dir_tab setup).
+        set_platform_accels(&gtk_app, "win.new-comparison", &["<Ctrl>n"]);
     }
 
     window.connect_destroy(move |_| {

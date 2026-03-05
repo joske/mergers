@@ -114,6 +114,12 @@ pub(super) fn reload_file_tab(tab: &FileTab) -> bool {
         return true; // not a read failure — just skip
     }
 
+    // Skip tabs that aren't backed by two on-disk files (e.g. merge tabs,
+    // blank comparisons).
+    if tab.left_path.borrow().is_empty() || tab.right_path.borrow().is_empty() {
+        return true;
+    }
+
     // Use tab.left_path / right_path (which track swaps) instead of
     // reconstructing from left_dir + rel_path, so reloads respect swapped panes.
     let left_content = read_file_for_reload(Path::new(&*tab.left_path.borrow()));
@@ -157,6 +163,11 @@ pub(super) fn reload_file_tab(tab: &FileTab) -> bool {
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
+/// Returns `true` when `path` is the empty sentinel used for blank comparisons.
+pub(super) fn is_blank_path(p: &Path) -> bool {
+    p.as_os_str().is_empty()
+}
+
 /// Read a file as text, returning content and whether it was binary.
 /// Binary files return an empty string and `true`.
 /// Only reads the file once.
@@ -198,6 +209,35 @@ pub(super) fn save_file(path: &Path, content: &str, save_btn: &Button) {
             }
         }
     }
+}
+
+/// Open a file with the system's default application.
+pub(super) fn open_externally(path: &Path) {
+    let path = path.to_path_buf();
+    std::thread::spawn(move || {
+        #[cfg(target_os = "macos")]
+        let result = std::process::Command::new("open").arg(&path).status();
+        #[cfg(target_os = "windows")]
+        let result = std::process::Command::new("cmd")
+            .args(["/C", "start", ""])
+            .arg(&path)
+            .status();
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        let result = std::process::Command::new("xdg-open").arg(&path).status();
+        match result {
+            Ok(status) if !status.success() => {
+                eprintln!(
+                    "Failed to open {}: external opener exited with status {:?}",
+                    path.display(),
+                    status.code()
+                );
+            }
+            Err(e) => {
+                eprintln!("Failed to open {}: {e}", path.display());
+            }
+            _ => {}
+        }
+    });
 }
 
 /// Show a modal error dialog with a single OK button.
@@ -1522,6 +1562,7 @@ pub(super) struct DiffPane {
     pub(super) save_btn: Button,
     pub(super) path_label: Label,
     pub(super) save_path: Rc<RefCell<PathBuf>>,
+    pub(super) tab_path: Rc<RefCell<String>>,
 }
 
 pub(super) fn make_diff_pane(
@@ -1577,9 +1618,23 @@ pub(super) fn make_diff_pane(
     let save_btn = Button::from_icon_name("document-save-symbolic");
     save_btn.set_tooltip_text(Some("Save"));
     save_btn.set_sensitive(false);
-    let display_name = label_override.map_or_else(|| shortened_path(file_path), String::from);
+    let display_name = label_override.map_or_else(
+        || {
+            if is_blank_path(file_path) {
+                "Untitled".to_string()
+            } else {
+                shortened_path(file_path)
+            }
+        },
+        String::from,
+    );
     let path_label = Label::new(Some(&display_name));
-    path_label.set_tooltip_text(Some(&file_path.display().to_string()));
+    let tooltip = if is_blank_path(file_path) {
+        "Untitled".to_string()
+    } else {
+        file_path.display().to_string()
+    };
+    path_label.set_tooltip_text(Some(&tooltip));
     path_label.set_ellipsize(gtk4::pango::EllipsizeMode::Start);
     path_label.set_hexpand(true);
     path_label.set_halign(gtk4::Align::Center);
@@ -1596,11 +1651,54 @@ pub(super) fn make_diff_pane(
 
     let buf_clone = buf.clone();
     let save_path = Rc::new(RefCell::new(file_path.to_path_buf()));
+    let tab_path = Rc::new(RefCell::new(file_path.display().to_string()));
     let save_path_clone = save_path.clone();
+    let tab_path_clone = tab_path.clone();
     let save_btn_ref = save_btn.clone();
+    let path_label_clone = path_label.clone();
     save_btn.connect_clicked(move |_| {
-        let text = buf_clone.text(&buf_clone.start_iter(), &buf_clone.end_iter(), false);
-        save_file(&save_path_clone.borrow(), text.as_str(), &save_btn_ref);
+        if is_blank_path(&save_path_clone.borrow()) {
+            let dialog = gtk4::FileDialog::builder().title("Save As").build();
+            let win = save_btn_ref
+                .root()
+                .and_then(|r| r.downcast::<ApplicationWindow>().ok());
+            let buf = buf_clone.clone();
+            let sp = save_path_clone.clone();
+            let tp = tab_path_clone.clone();
+            let btn = save_btn_ref.clone();
+            let lbl = path_label_clone.clone();
+            dialog.save(win.as_ref(), gio::Cancellable::NONE, move |result| {
+                if let Ok(file) = result
+                    && let Some(path) = file.path()
+                {
+                    let text = buf.text(&buf.start_iter(), &buf.end_iter(), false);
+                    match fs::write(&path, text.as_str()) {
+                        Ok(()) => {
+                            mark_saving(&path);
+                            btn.set_sensitive(false);
+                            (*sp.borrow_mut()).clone_from(&path);
+                            *tp.borrow_mut() = path.display().to_string();
+                            lbl.set_text(&shortened_path(&path));
+                            lbl.set_tooltip_text(Some(&path.display().to_string()));
+                        }
+                        Err(e) => {
+                            if let Some(win) = btn
+                                .root()
+                                .and_then(|r| r.downcast::<ApplicationWindow>().ok())
+                            {
+                                show_error_dialog(
+                                    &win,
+                                    &format!("Failed to save {}: {e}", path.display()),
+                                );
+                            }
+                        }
+                    }
+                }
+            });
+        } else {
+            let text = buf_clone.text(&buf_clone.start_iter(), &buf_clone.end_iter(), false);
+            save_file(&save_path_clone.borrow(), text.as_str(), &save_btn_ref);
+        }
     });
 
     let filler_overlay = DrawingArea::new();
@@ -1625,6 +1723,7 @@ pub(super) fn make_diff_pane(
         save_btn,
         path_label,
         save_path,
+        tab_path,
     }
 }
 
@@ -2584,6 +2683,50 @@ pub(super) fn setup_scroll_sync(
 /// `unsaved` lists (`display_path`, `save_button`) for each file with unsaved
 /// changes.  The user can check / uncheck individual files.
 ///
+/// Process unsaved saves one at a time. Synchronous saves (non-blank paths) are
+/// handled immediately. Async saves (blank paths via Save As dialog) pause the
+/// chain until the save button becomes insensitive, then continue with the rest.
+fn process_unsaved_saves(
+    checks: &Rc<Vec<(gtk4::CheckButton, Button)>>,
+    dialog: &gtk4::Window,
+    on_close: &Rc<dyn Fn()>,
+) {
+    for (check, btn) in checks.iter() {
+        if check.is_active() && btn.is_sensitive() {
+            btn.emit_clicked();
+            if btn.is_sensitive() {
+                // Save was async (Save As dialog opened). Wait for completion,
+                // then resume processing the remaining saves.
+                let checks = checks.clone();
+                let dialog = dialog.clone();
+                let on_close = on_close.clone();
+                let handler_id: Rc<RefCell<Option<gtk4::glib::SignalHandlerId>>> =
+                    Rc::new(RefCell::new(None));
+                let handler_id2 = handler_id.clone();
+                *handler_id.borrow_mut() =
+                    Some(btn.connect_notify_local(Some("sensitive"), move |btn, _| {
+                        if !btn.is_sensitive() {
+                            if let Some(id) = handler_id2.borrow_mut().take() {
+                                btn.disconnect(id);
+                            }
+                            process_unsaved_saves(&checks, &dialog, &on_close);
+                        }
+                    }));
+                return;
+            }
+            // Sync save succeeded (button now insensitive), continue to next
+        }
+    }
+    // All checked saves completed — close dialog.
+    let any_failed = checks
+        .iter()
+        .any(|(check, btn)| check.is_active() && btn.is_sensitive());
+    if !any_failed {
+        dialog.close();
+        on_close();
+    }
+}
+
 /// * **Save** — clicks the save button for every checked file, then calls
 ///   `on_close`.
 /// * **Close without Saving** — marks every save button insensitive (so the
@@ -2663,25 +2806,14 @@ pub(super) fn confirm_unsaved_dialog(
         cancel_btn.connect_clicked(move |_| d.close());
     }
     // Save checked files, then close (unless a save failed).
+    // Saves are processed one at a time: if a save is async (Save As for blank
+    // panes), we wait for it to complete before processing the next.
     {
         let d = dialog.clone();
         let checks = checks.clone();
         let on_close = on_close.clone();
         save_btn.connect_clicked(move |_| {
-            for (check, btn) in checks.iter() {
-                if check.is_active() && btn.is_sensitive() {
-                    btn.emit_clicked();
-                }
-            }
-            // If any save button is still sensitive, a save failed — don't close.
-            let any_failed = checks
-                .iter()
-                .any(|(check, btn)| check.is_active() && btn.is_sensitive());
-            if any_failed {
-                return;
-            }
-            d.close();
-            on_close();
+            process_unsaved_saves(&checks, &d, &on_close);
         });
     }
     // Close without saving — mark all insensitive so the subsequent
@@ -2711,18 +2843,120 @@ pub(super) fn collect_unsaved(files: Vec<(String, Button)>) -> Vec<(String, Butt
         .collect()
 }
 
-/// Shared close-request handler for windows with save buttons.
-pub(super) fn handle_close_request(
-    window: &ApplicationWindow,
-    files: Vec<(String, Button)>,
-) -> gtk4::glib::Propagation {
-    let unsaved = collect_unsaved(files);
-    if unsaved.is_empty() {
-        return gtk4::glib::Propagation::Proceed;
+/// Add tab navigation actions (prev-tab, next-tab, goto-tab) to a window action group.
+pub(super) fn add_tab_navigation_actions(
+    win_actions: &gio::SimpleActionGroup,
+    notebook: &Notebook,
+) {
+    // Previous tab (Ctrl+Alt+PageUp)
+    {
+        let action = gio::SimpleAction::new("prev-tab", None);
+        let nb = notebook.clone();
+        action.connect_activate(move |_, _| {
+            if let Some(cur) = nb.current_page()
+                && cur > 0
+            {
+                nb.set_current_page(Some(cur - 1));
+            }
+        });
+        win_actions.add_action(&action);
     }
-    let w = window.clone();
-    confirm_unsaved_dialog(window, unsaved, move || w.close());
-    gtk4::glib::Propagation::Stop
+    // Next tab (Ctrl+Alt+PageDown)
+    {
+        let action = gio::SimpleAction::new("next-tab", None);
+        let nb = notebook.clone();
+        action.connect_activate(move |_, _| {
+            if let Some(cur) = nb.current_page() {
+                let last = nb.n_pages().saturating_sub(1);
+                if cur < last {
+                    nb.set_current_page(Some(cur + 1));
+                }
+            }
+        });
+        win_actions.add_action(&action);
+    }
+    // Go to tab N (Alt+1-9): expects variant "u" with 0-based index
+    {
+        let action = gio::SimpleAction::new("goto-tab", Some(gtk4::glib::VariantTy::UINT32));
+        let nb = notebook.clone();
+        action.connect_activate(move |_, param| {
+            if let Some(p) = param {
+                let idx = p.get::<u32>().unwrap_or(0);
+                if idx < nb.n_pages() {
+                    nb.set_current_page(Some(idx));
+                }
+            }
+        });
+        win_actions.add_action(&action);
+    }
+}
+
+/// Map a hardware keycode to a digit (0-8) for Alt+1-9 tab switching.
+/// On macOS the keyval is translated by the input method (Alt+1 → ¡) so we
+/// must match on the physical keycode instead.
+fn keycode_to_tab_index(keycode: u32) -> Option<u32> {
+    #[cfg(target_os = "macos")]
+    {
+        // macOS virtual keycodes for the number row
+        match keycode {
+            18 => Some(0), // 1
+            19 => Some(1), // 2
+            20 => Some(2), // 3
+            21 => Some(3), // 4
+            23 => Some(4), // 5
+            22 => Some(5), // 6
+            26 => Some(6), // 7
+            28 => Some(7), // 8
+            25 => Some(8), // 9
+            _ => None,
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // X11/Wayland keycodes: 10 = 1, 11 = 2, ..., 18 = 9
+        if (10..=18).contains(&keycode) {
+            Some(keycode - 10)
+        } else {
+            None
+        }
+    }
+}
+
+/// Install a capture-phase key handler for tab navigation shortcuts.
+/// Handles Ctrl+Alt+PageUp/Down and Alt+1-9.
+pub(super) fn add_tab_navigation_keys(widget: &impl IsA<gtk4::Widget>) {
+    let key_ctl = EventControllerKey::new();
+    key_ctl.set_propagation_phase(gtk4::PropagationPhase::Capture);
+    key_ctl.connect_key_pressed(move |ctl, key, keycode, mods| {
+        // Ctrl+Alt+PageUp/Down — prev/next tab
+        if has_primary_modifier(mods) && mods.contains(gtk4::gdk::ModifierType::ALT_MASK) {
+            let action_name = match key {
+                k if k == gtk4::gdk::Key::Page_Up => Some("prev-tab"),
+                k if k == gtk4::gdk::Key::Page_Down => Some("next-tab"),
+                _ => None,
+            };
+            if let Some(name) = action_name {
+                if let Some(w) = ctl.widget() {
+                    w.activate_action(&format!("win.{name}"), None).ok();
+                }
+                return gtk4::glib::Propagation::Stop;
+            }
+        }
+        // Alt+1-9 — go to tab by number (use hardware keycode because
+        // macOS translates Alt+digit to special characters)
+        if mods.contains(gtk4::gdk::ModifierType::ALT_MASK)
+            && !has_primary_modifier(mods)
+            && let Some(idx) = keycode_to_tab_index(keycode)
+        {
+            if let Some(w) = ctl.widget() {
+                w.activate_action("win.goto-tab", Some(&idx.to_variant()))
+                    .ok();
+            }
+            return gtk4::glib::Propagation::Stop;
+        }
+        gtk4::glib::Propagation::Proceed
+    });
+    widget.add_controller(key_ctl);
 }
 
 /// Close a notebook file tab, prompting to save if needed.
@@ -2748,6 +2982,16 @@ pub(super) fn close_notebook_tab(
     let Some((tab_id, lp, rp, ls, rs)) = info else {
         notebook.remove_page(Some(page));
         return;
+    };
+    let lp = if lp.is_empty() {
+        "Untitled".to_string()
+    } else {
+        lp
+    };
+    let rp = if rp.is_empty() {
+        "Untitled".to_string()
+    } else {
+        rp
     };
     let unsaved = collect_unsaved(vec![(lp, ls), (rp, rs)]);
     if unsaved.is_empty() {
@@ -2782,10 +3026,22 @@ pub(super) fn handle_notebook_close_request(
         .flat_map(|t| {
             let mut v = Vec::new();
             if t.left_save.is_sensitive() {
-                v.push((t.left_path.borrow().clone(), t.left_save.clone()));
+                let path = t.left_path.borrow().clone();
+                let label = if path.is_empty() {
+                    "Untitled".to_string()
+                } else {
+                    path
+                };
+                v.push((label, t.left_save.clone()));
             }
             if t.right_save.is_sensitive() {
-                v.push((t.right_path.borrow().clone(), t.right_save.clone()));
+                let path = t.right_path.borrow().clone();
+                let label = if path.is_empty() {
+                    "Untitled".to_string()
+                } else {
+                    path
+                };
+                v.push((label, t.right_save.clone()));
             }
             v
         })
@@ -2796,6 +3052,366 @@ pub(super) fn handle_notebook_close_request(
     let w = window.clone();
     confirm_unsaved_dialog(window, unsaved, move || w.close());
     gtk4::glib::Propagation::Stop
+}
+
+/// Create a large button with a title and subtitle, matching the welcome screen style.
+pub(super) fn make_welcome_button(title_text: &str, subtitle_text: &str) -> Button {
+    let bx = GtkBox::new(Orientation::Vertical, 2);
+    bx.set_margin_top(8);
+    bx.set_margin_bottom(8);
+    bx.set_margin_start(8);
+    bx.set_margin_end(8);
+    let t = Label::new(Some(title_text));
+    t.add_css_class("heading");
+    let s = Label::new(Some(subtitle_text));
+    s.add_css_class("dim-label");
+    bx.append(&t);
+    bx.append(&s);
+    let btn = Button::new();
+    btn.set_child(Some(&bx));
+    btn
+}
+
+/// Append a "New Comparison" tab to the given notebook with buttons to start
+/// file, directory, or 3-way merge comparisons.
+///
+/// "Compare Files", "Compare Directories", and "3-way Merge" all open
+/// comparisons as tabs in the current notebook.
+pub(super) fn build_new_comparison_tab(
+    notebook: &Notebook,
+    settings: &Rc<RefCell<Settings>>,
+    open_tabs: &Rc<RefCell<Vec<FileTab>>>,
+) {
+    let content = GtkBox::new(Orientation::Vertical, 16);
+    content.set_margin_top(32);
+    content.set_margin_bottom(32);
+    content.set_margin_start(48);
+    content.set_margin_end(48);
+    content.set_valign(gtk4::Align::Center);
+    content.set_vexpand(true);
+
+    let title = Label::new(Some("New Comparison"));
+    title.add_css_class("title-1");
+    content.append(&title);
+
+    let spacer = GtkBox::new(Orientation::Vertical, 0);
+    spacer.set_margin_top(8);
+    content.append(&spacer);
+
+    let files_btn = make_welcome_button("Compare Files", "Compare two files side-by-side");
+    content.append(&files_btn);
+    let dirs_btn = make_welcome_button("Compare Directories", "Compare directory trees");
+    content.append(&dirs_btn);
+    let merge_btn = make_welcome_button("3-way Merge", "Merge three files");
+    content.append(&merge_btn);
+    let blank_btn = make_welcome_button("Blank Comparison", "Start with empty files");
+    content.append(&blank_btn);
+
+    // Tab label with close button
+    let tab_label_box = GtkBox::new(Orientation::Horizontal, 4);
+    tab_label_box.append(&Label::new(Some("New Comparison")));
+    let close_btn = Button::from_icon_name("window-close-symbolic");
+    close_btn.add_css_class("flat");
+    close_btn.set_margin_start(4);
+    tab_label_box.append(&close_btn);
+
+    let page_num = notebook.append_page(&content, Some(&tab_label_box));
+    notebook.set_current_page(Some(page_num));
+
+    // Close button on tab label
+    {
+        let nb = notebook.clone();
+        let w = content.clone();
+        close_btn.connect_clicked(move |_| {
+            if let Some(n) = nb.page_num(&w) {
+                nb.remove_page(Some(n));
+            }
+        });
+    }
+
+    // Compare Files handler — opens as a tab in the current notebook
+    {
+        let nb = notebook.clone();
+        let st = settings.clone();
+        let w = content.clone();
+        let tabs = open_tabs.clone();
+        files_btn.connect_clicked(move |btn| {
+            let win = btn
+                .root()
+                .and_downcast::<ApplicationWindow>()
+                .expect("button must be in a window");
+            let dialog = gtk4::FileDialog::new();
+            dialog.set_title("Select first file");
+            let st2 = st.clone();
+            let nb2 = nb.clone();
+            let w2 = w.clone();
+            let tabs2 = tabs.clone();
+            dialog.open(Some(&win), gio::Cancellable::NONE, move |result| {
+                if let Ok(first) = result
+                    && let Some(first_path) = first.path()
+                {
+                    let dialog2 = gtk4::FileDialog::new();
+                    dialog2.set_title("Select second file");
+                    let st3 = st2.clone();
+                    let nb3 = nb2.clone();
+                    let w3 = w2.clone();
+                    let tabs3 = tabs2.clone();
+                    let win2 = nb2.root().and_downcast::<ApplicationWindow>().unwrap();
+                    dialog2.open(Some(&win2), gio::Cancellable::NONE, move |result2| {
+                        if let Ok(second) = result2
+                            && let Some(second_path) = second.path()
+                        {
+                            open_file_diff_paths(&nb3, first_path, second_path, &tabs3, &st3);
+                            if let Some(n) = nb3.page_num(&w3) {
+                                nb3.remove_page(Some(n));
+                            }
+                        }
+                    });
+                }
+            });
+        });
+    }
+
+    // Compare Directories handler — opens as a tab in the current notebook
+    {
+        let nb = notebook.clone();
+        let st = settings.clone();
+        let w = content.clone();
+        let tabs = open_tabs.clone();
+        dirs_btn.connect_clicked(move |btn| {
+            let win = btn
+                .root()
+                .and_downcast::<ApplicationWindow>()
+                .expect("button must be in a window");
+            let dialog = gtk4::FileDialog::new();
+            dialog.set_title("Select first directory");
+            let st2 = st.clone();
+            let nb2 = nb.clone();
+            let w2 = w.clone();
+            let tabs2 = tabs.clone();
+            dialog.select_folder(Some(&win), gio::Cancellable::NONE, move |result| {
+                if let Ok(first) = result
+                    && let Some(first_path) = first.path()
+                {
+                    let dialog2 = gtk4::FileDialog::new();
+                    dialog2.set_title("Select second directory");
+                    let st3 = st2.clone();
+                    let nb3 = nb2.clone();
+                    let w3 = w2.clone();
+                    let tabs3 = tabs2.clone();
+                    let win2 = nb2.root().and_downcast::<ApplicationWindow>().unwrap();
+                    dialog2.select_folder(Some(&win2), gio::Cancellable::NONE, move |result2| {
+                        if let Ok(second) = result2
+                            && let Some(second_path) = second.path()
+                        {
+                            let (dir_widget, watcher_alive, left_view, dir_title) =
+                                build_dir_tab(first_path, second_path, st3, &nb3, &tabs3);
+
+                            // Tab label with close button
+                            let tab_label_box = GtkBox::new(Orientation::Horizontal, 4);
+                            tab_label_box.append(&Label::new(Some(&dir_title)));
+                            let close_btn = Button::from_icon_name("window-close-symbolic");
+                            close_btn.set_has_frame(false);
+                            tab_label_box.append(&close_btn);
+
+                            let page_num = nb3.append_page(&dir_widget, Some(&tab_label_box));
+                            nb3.set_current_page(Some(page_num));
+                            left_view.grab_focus();
+
+                            // Stop watcher when tab is removed by any means
+                            // (close button, Ctrl+W, window close)
+                            {
+                                let dw2 = dir_widget.clone();
+                                let wa = watcher_alive.clone();
+                                nb3.connect_page_removed(move |_, child, _| {
+                                    if *child == dw2 {
+                                        wa.set(false);
+                                    }
+                                });
+                            }
+
+                            {
+                                let nb4 = nb3.clone();
+                                let dw = dir_widget.clone();
+                                close_btn.connect_clicked(move |_| {
+                                    if let Some(n) = nb4.page_num(&dw) {
+                                        nb4.remove_page(Some(n));
+                                    }
+                                });
+                            }
+
+                            // Remove the New Comparison tab
+                            if let Some(n) = nb3.page_num(&w3) {
+                                nb3.remove_page(Some(n));
+                            }
+                        }
+                    });
+                }
+            });
+        });
+    }
+
+    // 3-way Merge handler — opens as a tab in the current notebook
+    {
+        let nb = notebook.clone();
+        let st = settings.clone();
+        let w = content.clone();
+        let tabs = open_tabs.clone();
+        merge_btn.connect_clicked(move |btn| {
+            let win = btn
+                .root()
+                .and_downcast::<ApplicationWindow>()
+                .expect("button must be in a window");
+            let dialog = gtk4::FileDialog::new();
+            dialog.set_title("Select left file");
+            let st2 = st.clone();
+            let nb2 = nb.clone();
+            let w2 = w.clone();
+            let tabs2 = tabs.clone();
+            dialog.open(Some(&win), gio::Cancellable::NONE, move |result| {
+                if let Ok(first) = result
+                    && let Some(first_path) = first.path()
+                {
+                    let dialog2 = gtk4::FileDialog::new();
+                    dialog2.set_title("Select middle (base) file");
+                    let st3 = st2.clone();
+                    let nb3 = nb2.clone();
+                    let w3 = w2.clone();
+                    let tabs3 = tabs2.clone();
+                    let win2 = nb2.root().and_downcast::<ApplicationWindow>().unwrap();
+                    dialog2.open(Some(&win2), gio::Cancellable::NONE, move |result2| {
+                        if let Ok(second) = result2
+                            && let Some(second_path) = second.path()
+                        {
+                            let dialog3 = gtk4::FileDialog::new();
+                            dialog3.set_title("Select right file");
+                            let st4 = st3.clone();
+                            let nb4 = nb3.clone();
+                            let w4 = w3.clone();
+                            let tabs4 = tabs3.clone();
+                            let win3 = nb3.root().and_downcast::<ApplicationWindow>().unwrap();
+                            dialog3.open(Some(&win3), gio::Cancellable::NONE, move |result3| {
+                                if let Ok(third) = result3
+                                    && let Some(third_path) = third.path()
+                                {
+                                    let mv = build_merge_view(
+                                        &first_path,
+                                        &second_path,
+                                        &third_path,
+                                        &[],
+                                        &st4,
+                                    );
+                                    mv.widget
+                                        .insert_action_group("diff", Some(&mv.action_group));
+
+                                    // Build tab title
+                                    let ln = first_path.file_name().map_or_else(
+                                        || first_path.display().to_string(),
+                                        |n| n.to_string_lossy().into_owned(),
+                                    );
+                                    let mn = second_path.file_name().map_or_else(
+                                        || second_path.display().to_string(),
+                                        |n| n.to_string_lossy().into_owned(),
+                                    );
+                                    let rn = third_path.file_name().map_or_else(
+                                        || third_path.display().to_string(),
+                                        |n| n.to_string_lossy().into_owned(),
+                                    );
+                                    let merge_title = format!("{ln} — {mn} — {rn}");
+
+                                    // Tab label with close button
+                                    let tab_label_box = GtkBox::new(Orientation::Horizontal, 4);
+                                    tab_label_box.append(&Label::new(Some(&merge_title)));
+                                    let close_btn = Button::from_icon_name("window-close-symbolic");
+                                    close_btn.set_has_frame(false);
+                                    tab_label_box.append(&close_btn);
+
+                                    let page_num =
+                                        nb4.append_page(&mv.widget, Some(&tab_label_box));
+                                    nb4.set_current_page(Some(page_num));
+
+                                    // Register in open_tabs so window-close checks unsaved
+                                    let tab_id = NEXT_TAB_ID
+                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                    let dummy_save = Button::new();
+                                    dummy_save.set_sensitive(false);
+                                    tabs4.borrow_mut().push(FileTab {
+                                        id: tab_id,
+                                        rel_path: merge_title,
+                                        widget: mv.widget.clone(),
+                                        left_path: Rc::new(RefCell::new(
+                                            second_path.display().to_string(),
+                                        )),
+                                        right_path: Rc::new(RefCell::new(String::new())),
+                                        left_buf: mv.middle_buf.clone(),
+                                        right_buf: mv.middle_buf,
+                                        left_save: mv.middle_save.clone(),
+                                        right_save: dummy_save,
+                                    });
+
+                                    {
+                                        let nb5 = nb4.clone();
+                                        let mw = mv.widget.clone();
+                                        let ms = mv.middle_save.clone();
+                                        let save_path = second_path.display().to_string();
+                                        let tabs5 = tabs4.clone();
+                                        close_btn.connect_clicked(move |_| {
+                                            // Check unsaved merge before closing
+                                            if ms.is_sensitive() {
+                                                if let Some(win) =
+                                                    nb5.root().and_downcast::<ApplicationWindow>()
+                                                {
+                                                    let nb6 = nb5.clone();
+                                                    let mw2 = mw.clone();
+                                                    let tabs6 = tabs5.clone();
+                                                    confirm_unsaved_dialog(
+                                                        &win,
+                                                        vec![(save_path.clone(), ms.clone())],
+                                                        move || {
+                                                            if let Some(n) = nb6.page_num(&mw2) {
+                                                                nb6.remove_page(Some(n));
+                                                            }
+                                                            tabs6
+                                                                .borrow_mut()
+                                                                .retain(|t| t.id != tab_id);
+                                                        },
+                                                    );
+                                                }
+                                                return;
+                                            }
+                                            if let Some(n) = nb5.page_num(&mw) {
+                                                nb5.remove_page(Some(n));
+                                            }
+                                            tabs5.borrow_mut().retain(|t| t.id != tab_id);
+                                        });
+                                    }
+
+                                    // Remove the New Comparison tab
+                                    if let Some(n) = nb4.page_num(&w4) {
+                                        nb4.remove_page(Some(n));
+                                    }
+                                }
+                            });
+                        }
+                    });
+                }
+            });
+        });
+    }
+
+    // Blank Comparison handler — opens an empty diff tab
+    {
+        let nb = notebook.clone();
+        let st = settings.clone();
+        let w = content.clone();
+        let tabs = open_tabs.clone();
+        blank_btn.connect_clicked(move |_| {
+            open_blank_diff(&nb, &tabs, &st);
+            if let Some(n) = nb.page_num(&w) {
+                nb.remove_page(Some(n));
+            }
+        });
+    }
 }
 
 #[cfg(test)]

@@ -14,6 +14,8 @@ pub(super) struct DiffViewResult {
     pub(super) right_save: Button,
     pub(super) left_save_path: Rc<RefCell<PathBuf>>,
     pub(super) right_save_path: Rc<RefCell<PathBuf>>,
+    pub(super) left_tab_path: Rc<RefCell<String>>,
+    pub(super) right_tab_path: Rc<RefCell<String>>,
     pub(super) action_group: gio::SimpleActionGroup,
     pub(super) swap_callback: SwapCallback,
 }
@@ -463,6 +465,8 @@ pub(super) fn build_diff_view(
         let rl = right_pane.path_label.clone();
         let lsp = left_pane.save_path.clone();
         let rsp = right_pane.save_path.clone();
+        let ltp = left_pane.tab_path.clone();
+        let rtp = right_pane.tab_path.clone();
         let ls = left_pane.save_btn.clone();
         let rs = right_pane.save_btn.clone();
         let cb = swap_callback.clone();
@@ -486,6 +490,7 @@ pub(super) fn build_diff_view(
             ll.set_tooltip_text(rl_tip.as_deref());
             rl.set_tooltip_text(ll_tip.as_deref());
             std::mem::swap(&mut *lsp.borrow_mut(), &mut *rsp.borrow_mut());
+            std::mem::swap(&mut *ltp.borrow_mut(), &mut *rtp.borrow_mut());
             if let Some(f) = cb.borrow().as_ref() {
                 f();
             }
@@ -1358,6 +1363,21 @@ pub(super) fn build_diff_view(
         let action = gio::SimpleAction::new("save", None);
         let av = active_view.clone();
         let ltv = left_pane.text_view.clone();
+        let ls = left_pane.save_btn.clone();
+        let rs = right_pane.save_btn.clone();
+        action.connect_activate(move |_, _| {
+            let active = av.borrow().clone();
+            let btn = if active == ltv { &ls } else { &rs };
+            if btn.is_sensitive() {
+                btn.emit_clicked();
+            }
+        });
+        action_group.add_action(&action);
+    }
+
+    // Ctrl+R / F5: refresh — re-read both files from disk
+    {
+        let action = gio::SimpleAction::new("refresh", None);
         let lb = left_buf.clone();
         let rb = right_buf.clone();
         let lsp = left_pane.save_path.clone();
@@ -1365,15 +1385,146 @@ pub(super) fn build_diff_view(
         let ls = left_pane.save_btn.clone();
         let rs = right_pane.save_btn.clone();
         action.connect_activate(move |_, _| {
-            let active = av.borrow().clone();
-            let (buf, path, btn) = if active == ltv {
-                (&lb, &lsp, &ls)
-            } else {
-                (&rb, &rsp, &rs)
+            let do_reload = {
+                let lsp = lsp.clone();
+                let rsp = rsp.clone();
+                let lb = lb.clone();
+                let rb = rb.clone();
+                let ls = ls.clone();
+                let rs = rs.clone();
+                move || {
+                    if !is_blank_path(&lsp.borrow())
+                        && let Some(lc) = read_file_for_reload(&lsp.borrow())
+                    {
+                        lb.set_text(&lc);
+                        ls.set_sensitive(false);
+                    }
+                    if !is_blank_path(&rsp.borrow())
+                        && let Some(rc) = read_file_for_reload(&rsp.borrow())
+                    {
+                        rb.set_text(&rc);
+                        rs.set_sensitive(false);
+                    }
+                }
             };
-            if btn.is_sensitive() {
-                let text = buf.text(&buf.start_iter(), &buf.end_iter(), false);
-                save_file(&path.borrow(), text.as_str(), btn);
+            if ls.is_sensitive() || rs.is_sensitive() {
+                if let Some(win) = ls
+                    .root()
+                    .and_then(|r| r.downcast::<ApplicationWindow>().ok())
+                {
+                    let reload = do_reload;
+                    show_confirm_dialog(
+                        &win,
+                        "Discard Changes?",
+                        "Unsaved changes will be lost. Reload from disk?",
+                        "Reload",
+                        reload,
+                    );
+                }
+            } else {
+                do_reload();
+            }
+        });
+        action_group.add_action(&action);
+    }
+
+    // Ctrl+Shift+O: open focused file externally
+    {
+        let action = gio::SimpleAction::new("open-externally", None);
+        let av = active_view.clone();
+        let ltv = left_pane.text_view.clone();
+        let lsp = left_pane.save_path.clone();
+        let rsp = right_pane.save_path.clone();
+        action.connect_activate(move |_, _| {
+            let active = av.borrow().clone();
+            let path = if active == ltv {
+                lsp.borrow().clone()
+            } else {
+                rsp.borrow().clone()
+            };
+            if is_blank_path(&path) {
+                return;
+            }
+            open_externally(&path);
+        });
+        action_group.add_action(&action);
+    }
+
+    // Ctrl+Shift+S: save as — save focused pane to a new path
+    {
+        let action = gio::SimpleAction::new("save-as", None);
+        let av = active_view.clone();
+        let ltv = left_pane.text_view.clone();
+        let lb = left_buf.clone();
+        let rb = right_buf.clone();
+        let lsp = left_pane.save_path.clone();
+        let rsp = right_pane.save_path.clone();
+        let ltp = left_pane.tab_path.clone();
+        let rtp = right_pane.tab_path.clone();
+        let ls = left_pane.save_btn.clone();
+        let rs = right_pane.save_btn.clone();
+        let ll = left_pane.path_label.clone();
+        let rl = right_pane.path_label.clone();
+        action.connect_activate(move |_, _| {
+            let active = av.borrow().clone();
+            let (buf, sp, tp, btn, lbl) = if active == ltv {
+                (lb.clone(), lsp.clone(), ltp.clone(), ls.clone(), ll.clone())
+            } else {
+                (rb.clone(), rsp.clone(), rtp.clone(), rs.clone(), rl.clone())
+            };
+            let dialog = gtk4::FileDialog::builder().title("Save As").build();
+            let win = btn
+                .root()
+                .and_then(|r| r.downcast::<ApplicationWindow>().ok());
+            dialog.save(win.as_ref(), gio::Cancellable::NONE, move |result| {
+                if let Ok(file) = result
+                    && let Some(path) = file.path()
+                {
+                    let text = buf.text(&buf.start_iter(), &buf.end_iter(), false);
+                    match fs::write(&path, text.as_str()) {
+                        Ok(()) => {
+                            mark_saving(&path);
+                            btn.set_sensitive(false);
+                            (*sp.borrow_mut()).clone_from(&path);
+                            *tp.borrow_mut() = path.display().to_string();
+                            lbl.set_text(&shortened_path(&path));
+                            lbl.set_tooltip_text(Some(&path.display().to_string()));
+                        }
+                        Err(e) => {
+                            if let Some(win) = btn
+                                .root()
+                                .and_then(|r| r.downcast::<ApplicationWindow>().ok())
+                            {
+                                show_error_dialog(
+                                    &win,
+                                    &format!("Failed to save {}: {e}", path.display()),
+                                );
+                            }
+                        }
+                    }
+                }
+            });
+        });
+        action_group.add_action(&action);
+    }
+
+    // Ctrl+Shift+L: save all dirty panes
+    {
+        let action = gio::SimpleAction::new("save-all", None);
+        let lb = left_buf.clone();
+        let rb = right_buf.clone();
+        let lsp = left_pane.save_path.clone();
+        let rsp = right_pane.save_path.clone();
+        let ls = left_pane.save_btn.clone();
+        let rs = right_pane.save_btn.clone();
+        action.connect_activate(move |_, _| {
+            if ls.is_sensitive() && !is_blank_path(&lsp.borrow()) {
+                let text = lb.text(&lb.start_iter(), &lb.end_iter(), false);
+                save_file(&lsp.borrow(), text.as_str(), &ls);
+            }
+            if rs.is_sensitive() && !is_blank_path(&rsp.borrow()) {
+                let text = rb.text(&rb.start_iter(), &rb.end_iter(), false);
+                save_file(&rsp.borrow(), text.as_str(), &rs);
             }
         });
         action_group.add_action(&action);
@@ -1405,12 +1556,22 @@ pub(super) fn build_diff_view(
                     _ => None,
                 }
             } else if has_primary_modifier(mods) {
-                if mods.contains(gtk4::gdk::ModifierType::SHIFT_MASK)
-                    && (key == gtk4::gdk::Key::p || key == gtk4::gdk::Key::P)
-                {
-                    Some("export-patch")
+                if mods.contains(gtk4::gdk::ModifierType::SHIFT_MASK) {
+                    if key == gtk4::gdk::Key::p || key == gtk4::gdk::Key::P {
+                        Some("export-patch")
+                    } else if key == gtk4::gdk::Key::o || key == gtk4::gdk::Key::O {
+                        Some("open-externally")
+                    } else if key == gtk4::gdk::Key::s || key == gtk4::gdk::Key::S {
+                        Some("save-as")
+                    } else if key == gtk4::gdk::Key::l || key == gtk4::gdk::Key::L {
+                        Some("save-all")
+                    } else {
+                        None
+                    }
                 } else if key == gtk4::gdk::Key::s || key == gtk4::gdk::Key::S {
                     Some("save")
+                } else if key == gtk4::gdk::Key::r || key == gtk4::gdk::Key::R {
+                    Some("refresh")
                 } else if key == gtk4::gdk::Key::e || key == gtk4::gdk::Key::E {
                     Some("prev-chunk")
                 } else if key == gtk4::gdk::Key::d || key == gtk4::gdk::Key::D {
@@ -1430,6 +1591,8 @@ pub(super) fn build_diff_view(
                 } else {
                     Some("find-next")
                 }
+            } else if key == gtk4::gdk::Key::F5 {
+                Some("refresh")
             } else {
                 None
             };
@@ -1456,6 +1619,8 @@ pub(super) fn build_diff_view(
         right_save: right_pane.save_btn,
         left_save_path: left_pane.save_path,
         right_save_path: right_pane.save_path,
+        left_tab_path: left_pane.tab_path,
+        right_tab_path: right_pane.tab_path,
         action_group,
         swap_callback,
     }
@@ -1480,14 +1645,12 @@ pub(super) fn open_file_diff(
 
     // Track tab
     let tab_id = NEXT_TAB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let tab_left_path = Rc::new(RefCell::new(left_path.display().to_string()));
-    let tab_right_path = Rc::new(RefCell::new(right_path.display().to_string()));
     open_tabs.borrow_mut().push(FileTab {
         id: tab_id,
         rel_path: rel_path.to_string(),
         widget: dv.widget.clone(),
-        left_path: tab_left_path.clone(),
-        right_path: tab_right_path.clone(),
+        left_path: dv.left_tab_path,
+        right_path: dv.right_tab_path,
         left_buf: dv.left_buf,
         right_buf: dv.right_buf,
         left_save: dv.left_save,
@@ -1516,15 +1679,14 @@ pub(super) fn open_file_diff(
     tab_label_box.append(&label);
     tab_label_box.append(&close_btn);
 
-    // Update tab label and FileTab paths when panes are swapped
+    // Update tab label when panes are swapped (FileTab paths are swapped
+    // centrally in build_diff_view's swap handler)
     {
         let lbl = label.clone();
         let ln = left_dir_name;
         let rn = right_dir_name;
         let fn_ = file_name;
         let swapped = Rc::new(Cell::new(false));
-        let tlp = tab_left_path;
-        let trp = tab_right_path;
         *dv.swap_callback.borrow_mut() = Some(Box::new(move || {
             let s = !swapped.get();
             swapped.set(s);
@@ -1533,7 +1695,6 @@ pub(super) fn open_file_diff(
             } else {
                 lbl.set_text(&format!("[{ln}] {fn_} — [{rn}] {fn_}"));
             }
-            std::mem::swap(&mut *tlp.borrow_mut(), &mut *trp.borrow_mut());
         }));
     }
 
@@ -1541,6 +1702,159 @@ pub(super) fn open_file_diff(
     notebook.set_current_page(Some(page_num));
 
     // Focus the left text view so keyboard shortcuts work immediately
+    let ltv = dv.left_text_view.clone();
+    gtk4::glib::idle_add_local_once(move || {
+        ltv.grab_focus();
+    });
+
+    {
+        let nb = notebook.clone();
+        let w = dv.widget.clone();
+        let tabs = open_tabs.clone();
+        close_btn.connect_clicked(move |_| {
+            if let Some(n) = nb.page_num(&w) {
+                let win = nb
+                    .root()
+                    .and_then(|r| r.downcast::<ApplicationWindow>().ok());
+                if let Some(win) = win {
+                    close_notebook_tab(&win, &nb, &tabs, n);
+                } else {
+                    nb.remove_page(Some(n));
+                    tabs.borrow_mut().retain(|t| t.id != tab_id);
+                }
+            }
+        });
+    }
+}
+
+/// Open a file diff as a notebook tab, given two absolute paths.
+/// Used by the New Comparison tab when the user picks "Compare Files".
+pub(super) fn open_file_diff_paths(
+    notebook: &Notebook,
+    left_path: PathBuf,
+    right_path: PathBuf,
+    open_tabs: &Rc<RefCell<Vec<FileTab>>>,
+    settings: &Rc<RefCell<Settings>>,
+) {
+    let dv = build_diff_view(&left_path, &right_path, &[], settings);
+    dv.widget
+        .insert_action_group("diff", Some(&dv.action_group));
+
+    // Track tab
+    let tab_id = NEXT_TAB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+    let left_name = left_path.file_name().map_or_else(
+        || left_path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    let right_name = right_path.file_name().map_or_else(
+        || right_path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    let tab_title = format!("{left_name} — {right_name}");
+
+    open_tabs.borrow_mut().push(FileTab {
+        id: tab_id,
+        rel_path: tab_title.clone(),
+        widget: dv.widget.clone(),
+        left_path: dv.left_tab_path,
+        right_path: dv.right_tab_path,
+        left_buf: dv.left_buf,
+        right_buf: dv.right_buf,
+        left_save: dv.left_save,
+        right_save: dv.right_save,
+    });
+
+    let tab_label_box = GtkBox::new(Orientation::Horizontal, 4);
+    let label = Label::new(Some(&tab_title));
+    let close_btn = Button::from_icon_name("window-close-symbolic");
+    close_btn.set_has_frame(false);
+    tab_label_box.append(&label);
+    tab_label_box.append(&close_btn);
+
+    // Update tab label when panes are swapped (FileTab paths are swapped
+    // centrally in build_diff_view's swap handler)
+    {
+        let lbl = label.clone();
+        let ln = left_name;
+        let rn = right_name;
+        let swapped = Rc::new(Cell::new(false));
+        *dv.swap_callback.borrow_mut() = Some(Box::new(move || {
+            let s = !swapped.get();
+            swapped.set(s);
+            if s {
+                lbl.set_text(&format!("{rn} — {ln}"));
+            } else {
+                lbl.set_text(&format!("{ln} — {rn}"));
+            }
+        }));
+    }
+
+    let page_num = notebook.append_page(&dv.widget, Some(&tab_label_box));
+    notebook.set_current_page(Some(page_num));
+
+    // Focus the left text view
+    let ltv = dv.left_text_view.clone();
+    gtk4::glib::idle_add_local_once(move || {
+        ltv.grab_focus();
+    });
+
+    {
+        let nb = notebook.clone();
+        let w = dv.widget.clone();
+        let tabs = open_tabs.clone();
+        close_btn.connect_clicked(move |_| {
+            if let Some(n) = nb.page_num(&w) {
+                let win = nb
+                    .root()
+                    .and_then(|r| r.downcast::<ApplicationWindow>().ok());
+                if let Some(win) = win {
+                    close_notebook_tab(&win, &nb, &tabs, n);
+                } else {
+                    nb.remove_page(Some(n));
+                    tabs.borrow_mut().retain(|t| t.id != tab_id);
+                }
+            }
+        });
+    }
+}
+
+/// Open a blank (empty) diff as a tab in the given notebook.
+pub(super) fn open_blank_diff(
+    notebook: &Notebook,
+    open_tabs: &Rc<RefCell<Vec<FileTab>>>,
+    settings: &Rc<RefCell<Settings>>,
+) {
+    let blank = PathBuf::new();
+    let labels = ["Untitled".to_string(), "Untitled".to_string()];
+    let dv = build_diff_view(&blank, &blank, &labels, settings);
+    dv.widget
+        .insert_action_group("diff", Some(&dv.action_group));
+
+    let tab_id = NEXT_TAB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+    open_tabs.borrow_mut().push(FileTab {
+        id: tab_id,
+        rel_path: "Blank Comparison".to_string(),
+        widget: dv.widget.clone(),
+        left_path: dv.left_tab_path,
+        right_path: dv.right_tab_path,
+        left_buf: dv.left_buf,
+        right_buf: dv.right_buf,
+        left_save: dv.left_save,
+        right_save: dv.right_save,
+    });
+
+    let tab_label_box = GtkBox::new(Orientation::Horizontal, 4);
+    let label = Label::new(Some("Blank Comparison"));
+    let close_btn = Button::from_icon_name("window-close-symbolic");
+    close_btn.set_has_frame(false);
+    tab_label_box.append(&label);
+    tab_label_box.append(&close_btn);
+
+    let page_num = notebook.append_page(&dv.widget, Some(&tab_label_box));
+    notebook.set_current_page(Some(page_num));
+
     let ltv = dv.left_text_view.clone();
     gtk4::glib::idle_add_local_once(move || {
         ltv.grab_focus();

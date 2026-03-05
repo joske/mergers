@@ -3,13 +3,13 @@ use super::*;
 
 // ─── 3-way merge view ───────────────────────────────────────────────────────
 
-struct MergeViewResult {
-    widget: GtkBox,
-    left_buf: TextBuffer,
-    middle_buf: TextBuffer,
-    right_buf: TextBuffer,
-    middle_save: Button,
-    action_group: gio::SimpleActionGroup,
+pub(super) struct MergeViewResult {
+    pub(super) widget: GtkBox,
+    pub(super) left_buf: TextBuffer,
+    pub(super) middle_buf: TextBuffer,
+    pub(super) right_buf: TextBuffer,
+    pub(super) middle_save: Button,
+    pub(super) action_group: gio::SimpleActionGroup,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -288,7 +288,7 @@ fn conflict_at_cursor(buf: &TextBuffer, cursor_line: usize) -> Option<usize> {
     super::merge_state::conflict_at_cursor(&text, cursor_line)
 }
 
-fn build_merge_view(
+pub(super) fn build_merge_view(
     left_path: &Path,
     middle_path: &Path,
     right_path: &Path,
@@ -2378,6 +2378,144 @@ fn build_merge_view(
         action_group.add_action(&action);
     }
 
+    // Ctrl+R / F5: refresh — re-read all 3 files from disk
+    {
+        let action = gio::SimpleAction::new("refresh", None);
+        let lb = left_buf.clone();
+        let mb = middle_buf.clone();
+        let rb = right_buf.clone();
+        let lsp = left_pane.save_path.clone();
+        let msp = middle_pane.save_path.clone();
+        let rsp = right_pane.save_path.clone();
+        let ms = middle_pane.save_btn.clone();
+        action.connect_activate(move |_, _| {
+            let do_reload = {
+                let lb = lb.clone();
+                let mb = mb.clone();
+                let rb = rb.clone();
+                let lsp = lsp.clone();
+                let msp = msp.clone();
+                let rsp = rsp.clone();
+                let ms = ms.clone();
+                move || {
+                    if let Some(lc) = read_file_for_reload(&lsp.borrow()) {
+                        lb.set_text(&lc);
+                    }
+                    if let Some(mc) = read_file_for_reload(&msp.borrow()) {
+                        mb.set_text(&mc);
+                        ms.set_sensitive(false);
+                    }
+                    if let Some(rc) = read_file_for_reload(&rsp.borrow()) {
+                        rb.set_text(&rc);
+                    }
+                }
+            };
+            if ms.is_sensitive() {
+                if let Some(win) = ms
+                    .root()
+                    .and_then(|r| r.downcast::<ApplicationWindow>().ok())
+                {
+                    let reload = do_reload;
+                    show_confirm_dialog(
+                        &win,
+                        "Discard Changes?",
+                        "Unsaved changes will be lost. Reload from disk?",
+                        "Reload",
+                        reload,
+                    );
+                }
+            } else {
+                do_reload();
+            }
+        });
+        action_group.add_action(&action);
+    }
+
+    // Ctrl+Shift+O: open focused file externally
+    {
+        let action = gio::SimpleAction::new("open-externally", None);
+        let av = active_view.clone();
+        let ltv = left_pane.text_view.clone();
+        let mtv = middle_pane.text_view.clone();
+        let lsp = left_pane.save_path.clone();
+        let msp = middle_pane.save_path.clone();
+        let rsp = right_pane.save_path.clone();
+        action.connect_activate(move |_, _| {
+            let active = av.borrow().clone();
+            let path = if active == ltv {
+                lsp.borrow().clone()
+            } else if active == mtv {
+                msp.borrow().clone()
+            } else {
+                rsp.borrow().clone()
+            };
+            open_externally(&path);
+        });
+        action_group.add_action(&action);
+    }
+
+    // Ctrl+Shift+S: save as — save middle pane to a new path
+    {
+        let action = gio::SimpleAction::new("save-as", None);
+        let mb = middle_buf.clone();
+        let msp = middle_pane.save_path.clone();
+        let ms = middle_pane.save_btn.clone();
+        let ml = middle_pane.path_label.clone();
+        action.connect_activate(move |_, _| {
+            let dialog = gtk4::FileDialog::builder().title("Save As").build();
+            let win = ms
+                .root()
+                .and_then(|r| r.downcast::<ApplicationWindow>().ok());
+            let mb = mb.clone();
+            let msp = msp.clone();
+            let ms = ms.clone();
+            let ml = ml.clone();
+            dialog.save(win.as_ref(), gio::Cancellable::NONE, move |result| {
+                if let Ok(file) = result
+                    && let Some(path) = file.path()
+                {
+                    let text = mb.text(&mb.start_iter(), &mb.end_iter(), false);
+                    match fs::write(&path, text.as_str()) {
+                        Ok(()) => {
+                            mark_saving(&path);
+                            ms.set_sensitive(false);
+                            (*msp.borrow_mut()).clone_from(&path);
+                            ml.set_text(&shortened_path(&path));
+                            ml.set_tooltip_text(Some(&path.display().to_string()));
+                        }
+                        Err(e) => {
+                            if let Some(win) = ms
+                                .root()
+                                .and_then(|r| r.downcast::<ApplicationWindow>().ok())
+                            {
+                                show_error_dialog(
+                                    &win,
+                                    &format!("Failed to save {}: {e}", path.display()),
+                                );
+                            }
+                        }
+                    }
+                }
+            });
+        });
+        action_group.add_action(&action);
+    }
+
+    // Ctrl+Shift+L: save all dirty panes (middle only in merge)
+    {
+        let action = gio::SimpleAction::new("save-all", None);
+        let mb = middle_buf.clone();
+        let msp = middle_pane.save_path.clone();
+        let ms = middle_pane.save_btn.clone();
+        action.connect_activate(move |_, _| {
+            if ms.is_sensitive() {
+                let text = mb.text(&mb.start_iter(), &mb.end_iter(), false);
+                save_file(&msp.borrow(), text.as_str(), &ms);
+            }
+        });
+        action_group.add_action(&action);
+    }
+
     // Alt+Left: copy right chunk → middle (used from right pane, pushes content left)
     {
         let action = gio::SimpleAction::new("copy-chunk-right-middle", None);
@@ -2457,8 +2595,20 @@ fn build_merge_view(
                     _ => None,
                 }
             } else if has_primary_modifier(mods) {
-                if key == gtk4::gdk::Key::s || key == gtk4::gdk::Key::S {
+                if mods.contains(gtk4::gdk::ModifierType::SHIFT_MASK) {
+                    if key == gtk4::gdk::Key::o || key == gtk4::gdk::Key::O {
+                        Some("open-externally")
+                    } else if key == gtk4::gdk::Key::s || key == gtk4::gdk::Key::S {
+                        Some("save-as")
+                    } else if key == gtk4::gdk::Key::l || key == gtk4::gdk::Key::L {
+                        Some("save-all")
+                    } else {
+                        None
+                    }
+                } else if key == gtk4::gdk::Key::s || key == gtk4::gdk::Key::S {
                     Some("save")
+                } else if key == gtk4::gdk::Key::r || key == gtk4::gdk::Key::R {
+                    Some("refresh")
                 } else if key == gtk4::gdk::Key::e || key == gtk4::gdk::Key::E {
                     Some("prev-chunk")
                 } else if key == gtk4::gdk::Key::d || key == gtk4::gdk::Key::D {
@@ -2482,6 +2632,8 @@ fn build_merge_view(
                 } else {
                     Some("find-next")
                 }
+            } else if key == gtk4::gdk::Key::F5 {
+                Some("refresh")
             } else {
                 None
             };
@@ -2626,7 +2778,7 @@ pub(super) fn build_merge_window(
         });
     }
 
-    // Window title
+    // Window title / tab title
     let left_name = left_path.file_name().map_or_else(
         || left_path.display().to_string(),
         |n| n.to_string_lossy().into_owned(),
@@ -2641,12 +2793,20 @@ pub(super) fn build_merge_window(
     );
     let title = format!("{left_name} — {middle_name} — {right_name}");
 
+    // ── Notebook (tabs) ────────────────────────────────────────────
+    let notebook = Notebook::new();
+    notebook.set_scrollable(true);
+    notebook.append_page(&mv.widget, Some(&Label::new(Some(&title))));
+
+    // Track open file tabs (New Comparison tabs that open file diffs)
+    let open_tabs: Rc<RefCell<Vec<FileTab>>> = Rc::new(RefCell::new(Vec::new()));
+
     let window = ApplicationWindow::builder()
         .application(app)
-        .title(&title)
+        .title("Mergers")
         .default_width(1200)
         .default_height(600)
-        .child(&mv.widget)
+        .child(&notebook)
         .build();
     window.insert_action_group("diff", Some(&mv.action_group));
 
@@ -2661,21 +2821,72 @@ pub(super) fn build_merge_window(
         });
         win_actions.add_action(&action);
     }
-    // Close-tab action (Ctrl+W) — close merge window
+    // Close-tab action (Ctrl+W) — close current tab or window
     {
         let action = gio::SimpleAction::new("close-tab", None);
+        let nb = notebook.clone();
         let w = window.clone();
-        action.connect_activate(move |_, _| w.close());
+        let tabs = open_tabs.clone();
+        action.connect_activate(move |_, _| match nb.current_page() {
+            // Page 0 is the merge view — close entire window
+            Some(0) | None => w.close(),
+            Some(n) => close_notebook_tab(&w, &nb, &tabs, n),
+        });
         win_actions.add_action(&action);
     }
+    // New comparison (Ctrl+N)
+    {
+        let action = gio::SimpleAction::new("new-comparison", None);
+        let nb = notebook.clone();
+        let st = settings.clone();
+        let tabs = open_tabs.clone();
+        action.connect_activate(move |_, _| {
+            build_new_comparison_tab(&nb, &st, &tabs);
+        });
+        win_actions.add_action(&action);
+    }
+    add_tab_navigation_actions(&win_actions, &notebook);
     window.insert_action_group("win", Some(&win_actions));
+    add_tab_navigation_keys(&window);
 
     // Unsaved-changes guard on window close button
     {
         let ms = mv.middle_save.clone();
         let save_path = middle_path.display().to_string();
+        let tabs = open_tabs.clone();
         window.connect_close_request(move |w| {
-            handle_close_request(w, vec![(save_path.clone(), ms.clone())])
+            // Collect unsaved from the merge tab's middle save button
+            let mut unsaved: Vec<(String, Button)> = Vec::new();
+            if ms.is_sensitive() {
+                unsaved.push((save_path.clone(), ms.clone()));
+            }
+            // Also collect from any file diff tabs opened via New Comparison
+            for t in tabs.borrow().iter() {
+                if t.left_save.is_sensitive() {
+                    let path = t.left_path.borrow();
+                    let label = if path.is_empty() {
+                        "Untitled".to_string()
+                    } else {
+                        path.clone()
+                    };
+                    unsaved.push((label, t.left_save.clone()));
+                }
+                if t.right_save.is_sensitive() {
+                    let path = t.right_path.borrow();
+                    let label = if path.is_empty() {
+                        "Untitled".to_string()
+                    } else {
+                        path.clone()
+                    };
+                    unsaved.push((label, t.right_save.clone()));
+                }
+            }
+            if unsaved.is_empty() {
+                return gtk4::glib::Propagation::Proceed;
+            }
+            let w2 = w.clone();
+            confirm_unsaved_dialog(w, unsaved, move || w2.close());
+            gtk4::glib::Propagation::Stop
         });
     }
 
@@ -2690,8 +2901,13 @@ pub(super) fn build_merge_window(
         gtk_app.set_accels_for_action("diff.find-prev", &["<Shift>F3"]);
         set_platform_accels(&gtk_app, "diff.go-to-line", &["<Ctrl>l"]);
         set_platform_accels(&gtk_app, "diff.save", &["<Ctrl>s"]);
+        set_platform_accels(&gtk_app, "diff.refresh", &["<Ctrl>r"]);
+        set_platform_accels(&gtk_app, "diff.open-externally", &["<Ctrl><Shift>o"]);
+        set_platform_accels(&gtk_app, "diff.save-as", &["<Ctrl><Shift>s"]);
+        set_platform_accels(&gtk_app, "diff.save-all", &["<Ctrl><Shift>l"]);
         set_platform_accels(&gtk_app, "win.prefs", &["<Ctrl>comma"]);
         set_platform_accels(&gtk_app, "win.close-tab", &["<Ctrl>w"]);
+        set_platform_accels(&gtk_app, "win.new-comparison", &["<Ctrl>n"]);
     }
 
     window.connect_destroy(move |_| {
