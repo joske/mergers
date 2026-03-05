@@ -387,6 +387,97 @@ pub fn make_info_bar(message: &str) -> GtkBox {
     bar
 }
 
+/// Save all dirty panes to disk.
+pub fn save_all_panes(panes: &[(TextBuffer, Rc<RefCell<PathBuf>>, Button)]) {
+    for (buf, save_path, save_btn) in panes {
+        if save_btn.is_sensitive() && !is_blank_path(&save_path.borrow()) {
+            let text = buf.text(&buf.start_iter(), &buf.end_iter(), false);
+            save_file(&save_path.borrow(), text.as_str(), save_btn);
+        }
+    }
+}
+
+/// Reload panes from disk, with confirm dialog if any pane has unsaved changes.
+/// Each entry is (buffer, `save_path`, optional `save_button`). If `save_button` is `Some`
+/// and sensitive, the pane is considered dirty. Read-only panes pass `None`.
+/// `anchor` is any button used to find the parent `ApplicationWindow` for the dialog.
+pub fn refresh_panes(
+    anchor: &Button,
+    panes: Vec<(TextBuffer, Rc<RefCell<PathBuf>>, Option<Button>)>,
+) {
+    let any_dirty = panes
+        .iter()
+        .any(|(_, _, btn)| btn.as_ref().is_some_and(Button::is_sensitive));
+    let do_reload = move || {
+        for (buf, sp, btn) in &panes {
+            if !is_blank_path(&sp.borrow())
+                && let Some(content) = read_file_for_reload(&sp.borrow())
+            {
+                buf.set_text(&content);
+                if let Some(b) = btn {
+                    b.set_sensitive(false);
+                }
+            }
+        }
+    };
+    if any_dirty
+        && let Some(win) =
+            WidgetExt::root(anchor).and_then(|r| r.downcast::<ApplicationWindow>().ok())
+    {
+        show_confirm_dialog(
+            &win,
+            "Discard Changes?",
+            "Unsaved changes will be lost. Reload from disk?",
+            "Reload",
+            do_reload,
+        );
+        return;
+    }
+    do_reload();
+}
+
+/// Run a Save As dialog for a single pane. On success, writes the buffer content,
+/// updates `save_path`/`save_btn`/`path_label`, and optionally updates `tab_path`.
+pub fn save_as_pane(
+    buf: TextBuffer,
+    save_path: Rc<RefCell<PathBuf>>,
+    save_btn: Button,
+    path_label: Label,
+    tab_path: Option<Rc<RefCell<String>>>,
+) {
+    let dialog = gtk4::FileDialog::builder().title("Save As").build();
+    let win = save_btn
+        .root()
+        .and_then(|r| r.downcast::<ApplicationWindow>().ok());
+    dialog.save(win.as_ref(), gio::Cancellable::NONE, move |result| {
+        if let Ok(file) = result
+            && let Some(path) = file.path()
+        {
+            let text = buf.text(&buf.start_iter(), &buf.end_iter(), false);
+            match fs::write(&path, text.as_str()) {
+                Ok(()) => {
+                    mark_saving(&path);
+                    save_btn.set_sensitive(false);
+                    (*save_path.borrow_mut()).clone_from(&path);
+                    path_label.set_text(&shortened_path(&path));
+                    path_label.set_tooltip_text(Some(&path.display().to_string()));
+                    if let Some(tp) = &tab_path {
+                        *tp.borrow_mut() = path.display().to_string();
+                    }
+                }
+                Err(e) => {
+                    if let Some(win) = save_btn
+                        .root()
+                        .and_then(|r| r.downcast::<ApplicationWindow>().ok())
+                    {
+                        show_error_dialog(&win, &format!("Failed to save {}: {e}", path.display()));
+                    }
+                }
+            }
+        }
+    });
+}
+
 pub fn shortened_path(full: &Path) -> String {
     let components: Vec<_> = full.components().collect();
     if components.len() <= 2 {

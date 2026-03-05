@@ -2007,44 +2007,14 @@ pub(super) fn build_merge_view(
         let rsp = right_pane.save_path.clone();
         let ms = middle_pane.save_btn.clone();
         action.connect_activate(move |_, _| {
-            let do_reload = {
-                let lb = lb.clone();
-                let mb = mb.clone();
-                let rb = rb.clone();
-                let lsp = lsp.clone();
-                let msp = msp.clone();
-                let rsp = rsp.clone();
-                let ms = ms.clone();
-                move || {
-                    if let Some(lc) = read_file_for_reload(&lsp.borrow()) {
-                        lb.set_text(&lc);
-                    }
-                    if let Some(mc) = read_file_for_reload(&msp.borrow()) {
-                        mb.set_text(&mc);
-                        ms.set_sensitive(false);
-                    }
-                    if let Some(rc) = read_file_for_reload(&rsp.borrow()) {
-                        rb.set_text(&rc);
-                    }
-                }
-            };
-            if ms.is_sensitive() {
-                if let Some(win) = ms
-                    .root()
-                    .and_then(|r| r.downcast::<ApplicationWindow>().ok())
-                {
-                    let reload = do_reload;
-                    show_confirm_dialog(
-                        &win,
-                        "Discard Changes?",
-                        "Unsaved changes will be lost. Reload from disk?",
-                        "Reload",
-                        reload,
-                    );
-                }
-            } else {
-                do_reload();
-            }
+            refresh_panes(
+                &ms,
+                vec![
+                    (lb.clone(), lsp.clone(), None),
+                    (mb.clone(), msp.clone(), Some(ms.clone())),
+                    (rb.clone(), rsp.clone(), None),
+                ],
+            );
         });
         action_group.add_action(&action);
     }
@@ -2080,41 +2050,7 @@ pub(super) fn build_merge_view(
         let ms = middle_pane.save_btn.clone();
         let ml = middle_pane.path_label.clone();
         action.connect_activate(move |_, _| {
-            let dialog = gtk4::FileDialog::builder().title("Save As").build();
-            let win = ms
-                .root()
-                .and_then(|r| r.downcast::<ApplicationWindow>().ok());
-            let mb = mb.clone();
-            let msp = msp.clone();
-            let ms = ms.clone();
-            let ml = ml.clone();
-            dialog.save(win.as_ref(), gio::Cancellable::NONE, move |result| {
-                if let Ok(file) = result
-                    && let Some(path) = file.path()
-                {
-                    let text = mb.text(&mb.start_iter(), &mb.end_iter(), false);
-                    match fs::write(&path, text.as_str()) {
-                        Ok(()) => {
-                            mark_saving(&path);
-                            ms.set_sensitive(false);
-                            (*msp.borrow_mut()).clone_from(&path);
-                            ml.set_text(&shortened_path(&path));
-                            ml.set_tooltip_text(Some(&path.display().to_string()));
-                        }
-                        Err(e) => {
-                            if let Some(win) = ms
-                                .root()
-                                .and_then(|r| r.downcast::<ApplicationWindow>().ok())
-                            {
-                                show_error_dialog(
-                                    &win,
-                                    &format!("Failed to save {}: {e}", path.display()),
-                                );
-                            }
-                        }
-                    }
-                }
-            });
+            save_as_pane(mb.clone(), msp.clone(), ms.clone(), ml.clone(), None);
         });
         action_group.add_action(&action);
     }
@@ -2126,10 +2062,7 @@ pub(super) fn build_merge_view(
         let msp = middle_pane.save_path.clone();
         let ms = middle_pane.save_btn.clone();
         action.connect_activate(move |_, _| {
-            if ms.is_sensitive() {
-                let text = mb.text(&mb.start_iter(), &mb.end_iter(), false);
-                save_file(&msp.borrow(), text.as_str(), &ms);
-            }
+            save_all_panes(&[(mb.clone(), msp.clone(), ms.clone())]);
         });
         action_group.add_action(&action);
     }

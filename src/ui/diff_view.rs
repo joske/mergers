@@ -1009,45 +1009,13 @@ pub(super) fn build_diff_view(
         let ls = left_pane.save_btn.clone();
         let rs = right_pane.save_btn.clone();
         action.connect_activate(move |_, _| {
-            let do_reload = {
-                let lsp = lsp.clone();
-                let rsp = rsp.clone();
-                let lb = lb.clone();
-                let rb = rb.clone();
-                let ls = ls.clone();
-                let rs = rs.clone();
-                move || {
-                    if !is_blank_path(&lsp.borrow())
-                        && let Some(lc) = read_file_for_reload(&lsp.borrow())
-                    {
-                        lb.set_text(&lc);
-                        ls.set_sensitive(false);
-                    }
-                    if !is_blank_path(&rsp.borrow())
-                        && let Some(rc) = read_file_for_reload(&rsp.borrow())
-                    {
-                        rb.set_text(&rc);
-                        rs.set_sensitive(false);
-                    }
-                }
-            };
-            if ls.is_sensitive() || rs.is_sensitive() {
-                if let Some(win) = ls
-                    .root()
-                    .and_then(|r| r.downcast::<ApplicationWindow>().ok())
-                {
-                    let reload = do_reload;
-                    show_confirm_dialog(
-                        &win,
-                        "Discard Changes?",
-                        "Unsaved changes will be lost. Reload from disk?",
-                        "Reload",
-                        reload,
-                    );
-                }
-            } else {
-                do_reload();
-            }
+            refresh_panes(
+                &ls,
+                vec![
+                    (lb.clone(), lsp.clone(), Some(ls.clone())),
+                    (rb.clone(), rsp.clone(), Some(rs.clone())),
+                ],
+            );
         });
         action_group.add_action(&action);
     }
@@ -1091,43 +1059,23 @@ pub(super) fn build_diff_view(
         let rl = right_pane.path_label.clone();
         action.connect_activate(move |_, _| {
             let active = av.borrow().clone();
-            let (buf, sp, tp, btn, lbl) = if active == ltv {
-                (lb.clone(), lsp.clone(), ltp.clone(), ls.clone(), ll.clone())
+            if active == ltv {
+                save_as_pane(
+                    lb.clone(),
+                    lsp.clone(),
+                    ls.clone(),
+                    ll.clone(),
+                    Some(ltp.clone()),
+                );
             } else {
-                (rb.clone(), rsp.clone(), rtp.clone(), rs.clone(), rl.clone())
-            };
-            let dialog = gtk4::FileDialog::builder().title("Save As").build();
-            let win = btn
-                .root()
-                .and_then(|r| r.downcast::<ApplicationWindow>().ok());
-            dialog.save(win.as_ref(), gio::Cancellable::NONE, move |result| {
-                if let Ok(file) = result
-                    && let Some(path) = file.path()
-                {
-                    let text = buf.text(&buf.start_iter(), &buf.end_iter(), false);
-                    match fs::write(&path, text.as_str()) {
-                        Ok(()) => {
-                            mark_saving(&path);
-                            btn.set_sensitive(false);
-                            (*sp.borrow_mut()).clone_from(&path);
-                            *tp.borrow_mut() = path.display().to_string();
-                            lbl.set_text(&shortened_path(&path));
-                            lbl.set_tooltip_text(Some(&path.display().to_string()));
-                        }
-                        Err(e) => {
-                            if let Some(win) = btn
-                                .root()
-                                .and_then(|r| r.downcast::<ApplicationWindow>().ok())
-                            {
-                                show_error_dialog(
-                                    &win,
-                                    &format!("Failed to save {}: {e}", path.display()),
-                                );
-                            }
-                        }
-                    }
-                }
-            });
+                save_as_pane(
+                    rb.clone(),
+                    rsp.clone(),
+                    rs.clone(),
+                    rl.clone(),
+                    Some(rtp.clone()),
+                );
+            }
         });
         action_group.add_action(&action);
     }
@@ -1142,14 +1090,10 @@ pub(super) fn build_diff_view(
         let ls = left_pane.save_btn.clone();
         let rs = right_pane.save_btn.clone();
         action.connect_activate(move |_, _| {
-            if ls.is_sensitive() && !is_blank_path(&lsp.borrow()) {
-                let text = lb.text(&lb.start_iter(), &lb.end_iter(), false);
-                save_file(&lsp.borrow(), text.as_str(), &ls);
-            }
-            if rs.is_sensitive() && !is_blank_path(&rsp.borrow()) {
-                let text = rb.text(&rb.start_iter(), &rb.end_iter(), false);
-                save_file(&rsp.borrow(), text.as_str(), &rs);
-            }
+            save_all_panes(&[
+                (lb.clone(), lsp.clone(), ls.clone()),
+                (rb.clone(), rsp.clone(), rs.clone()),
+            ]);
         });
         action_group.add_action(&action);
     }
