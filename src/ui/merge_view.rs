@@ -9,6 +9,7 @@ pub(super) struct MergeViewResult {
     pub(super) middle_buf: TextBuffer,
     pub(super) right_buf: TextBuffer,
     pub(super) middle_save: Button,
+    pub(super) middle_tab_path: Rc<RefCell<String>>,
     pub(super) action_group: gio::SimpleActionGroup,
 }
 
@@ -2049,8 +2050,15 @@ pub(super) fn build_merge_view(
         let msp = middle_pane.save_path.clone();
         let ms = middle_pane.save_btn.clone();
         let ml = middle_pane.path_label.clone();
+        let mtp = middle_pane.tab_path.clone();
         action.connect_activate(move |_, _| {
-            save_as_pane(mb.clone(), msp.clone(), ms.clone(), ml.clone(), None);
+            save_as_pane(
+                mb.clone(),
+                msp.clone(),
+                ms.clone(),
+                ml.clone(),
+                Some(mtp.clone()),
+            );
         });
         action_group.add_action(&action);
     }
@@ -2208,6 +2216,7 @@ pub(super) fn build_merge_view(
         middle_buf,
         right_buf,
         middle_save: middle_pane.save_btn,
+        middle_tab_path: middle_pane.tab_path,
         action_group,
     }
 }
@@ -2330,7 +2339,7 @@ pub(super) fn build_merge_window(
             rel_path: title,
             widget: mv.widget.clone(),
             middle: PaneInfo {
-                path: Rc::new(RefCell::new(middle_path.display().to_string())),
+                path: mv.middle_tab_path,
                 buf: mv.middle_buf.clone(),
                 save: mv.middle_save,
             },

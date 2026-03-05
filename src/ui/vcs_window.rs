@@ -606,7 +606,6 @@ pub(super) fn build_vcs_window(
         view.add_controller(gesture);
     }
 
-    vcs_tab.insert_action_group("vcs", Some(&vcs_action_group));
     notebook.append_page(&vcs_tab, Some(&Label::new(Some("Changes"))));
 
     // Clean up temp dir and stop watcher on destroy

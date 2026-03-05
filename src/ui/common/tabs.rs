@@ -646,9 +646,7 @@ pub fn build_new_comparison_tab(
                                         rel_path: merge_title,
                                         widget: mv.widget.clone(),
                                         middle: PaneInfo {
-                                            path: Rc::new(RefCell::new(
-                                                second_path.display().to_string(),
-                                            )),
+                                            path: mv.middle_tab_path.clone(),
                                             buf: mv.middle_buf.clone(),
                                             save: mv.middle_save.clone(),
                                         },
