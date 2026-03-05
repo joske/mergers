@@ -114,16 +114,20 @@ pub(super) fn build_file_window(
     // Register initial tab
     {
         let tab_id = NEXT_TAB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        open_tabs.borrow_mut().push(FileTab {
+        open_tabs.borrow_mut().push(FileTab::Diff {
             id: tab_id,
             rel_path: title.clone(),
             widget: dv.widget.clone(),
-            left_path: dv.left_tab_path.clone(),
-            right_path: dv.right_tab_path.clone(),
-            left_buf: dv.left_buf.clone(),
-            right_buf: dv.right_buf.clone(),
-            left_save: dv.left_save.clone(),
-            right_save: dv.right_save.clone(),
+            left: PaneInfo {
+                path: dv.left_tab_path.clone(),
+                buf: dv.left_buf.clone(),
+                save: dv.left_save.clone(),
+            },
+            right: PaneInfo {
+                path: dv.right_tab_path.clone(),
+                buf: dv.right_buf.clone(),
+                save: dv.right_save.clone(),
+            },
         });
     }
 

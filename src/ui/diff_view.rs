@@ -1269,16 +1269,20 @@ pub(super) fn open_file_diff(
 
     // Track tab
     let tab_id = NEXT_TAB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    open_tabs.borrow_mut().push(FileTab {
+    open_tabs.borrow_mut().push(FileTab::Diff {
         id: tab_id,
         rel_path: rel_path.to_string(),
         widget: dv.widget.clone(),
-        left_path: dv.left_tab_path,
-        right_path: dv.right_tab_path,
-        left_buf: dv.left_buf,
-        right_buf: dv.right_buf,
-        left_save: dv.left_save,
-        right_save: dv.right_save,
+        left: PaneInfo {
+            path: dv.left_tab_path,
+            buf: dv.left_buf,
+            save: dv.left_save,
+        },
+        right: PaneInfo {
+            path: dv.right_tab_path,
+            buf: dv.right_buf,
+            save: dv.right_save,
+        },
     });
 
     // Tab label
@@ -1344,7 +1348,7 @@ pub(super) fn open_file_diff(
                     close_notebook_tab(&win, &nb, &tabs, n);
                 } else {
                     nb.remove_page(Some(n));
-                    tabs.borrow_mut().retain(|t| t.id != tab_id);
+                    tabs.borrow_mut().retain(|t| t.id() != tab_id);
                 }
             }
         });
@@ -1377,16 +1381,20 @@ pub(super) fn open_file_diff_paths(
     );
     let tab_title = format!("{left_name} — {right_name}");
 
-    open_tabs.borrow_mut().push(FileTab {
+    open_tabs.borrow_mut().push(FileTab::Diff {
         id: tab_id,
         rel_path: tab_title.clone(),
         widget: dv.widget.clone(),
-        left_path: dv.left_tab_path,
-        right_path: dv.right_tab_path,
-        left_buf: dv.left_buf,
-        right_buf: dv.right_buf,
-        left_save: dv.left_save,
-        right_save: dv.right_save,
+        left: PaneInfo {
+            path: dv.left_tab_path,
+            buf: dv.left_buf,
+            save: dv.left_save,
+        },
+        right: PaneInfo {
+            path: dv.right_tab_path,
+            buf: dv.right_buf,
+            save: dv.right_save,
+        },
     });
 
     let tab_label_box = GtkBox::new(Orientation::Horizontal, 4);
@@ -1436,7 +1444,7 @@ pub(super) fn open_file_diff_paths(
                     close_notebook_tab(&win, &nb, &tabs, n);
                 } else {
                     nb.remove_page(Some(n));
-                    tabs.borrow_mut().retain(|t| t.id != tab_id);
+                    tabs.borrow_mut().retain(|t| t.id() != tab_id);
                 }
             }
         });
@@ -1457,16 +1465,20 @@ pub(super) fn open_blank_diff(
 
     let tab_id = NEXT_TAB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-    open_tabs.borrow_mut().push(FileTab {
+    open_tabs.borrow_mut().push(FileTab::Diff {
         id: tab_id,
         rel_path: "Blank Comparison".to_string(),
         widget: dv.widget.clone(),
-        left_path: dv.left_tab_path,
-        right_path: dv.right_tab_path,
-        left_buf: dv.left_buf,
-        right_buf: dv.right_buf,
-        left_save: dv.left_save,
-        right_save: dv.right_save,
+        left: PaneInfo {
+            path: dv.left_tab_path,
+            buf: dv.left_buf,
+            save: dv.left_save,
+        },
+        right: PaneInfo {
+            path: dv.right_tab_path,
+            buf: dv.right_buf,
+            save: dv.right_save,
+        },
     });
 
     let tab_label_box = GtkBox::new(Orientation::Horizontal, 4);
@@ -1497,7 +1509,7 @@ pub(super) fn open_blank_diff(
                     close_notebook_tab(&win, &nb, &tabs, n);
                 } else {
                     nb.remove_page(Some(n));
-                    tabs.borrow_mut().retain(|t| t.id != tab_id);
+                    tabs.borrow_mut().retain(|t| t.id() != tab_id);
                 }
             }
         });

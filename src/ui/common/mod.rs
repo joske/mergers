@@ -58,16 +58,65 @@ pub(super) struct DirMeta {
     pub(super) is_dir: bool,
 }
 
-pub(super) struct FileTab {
-    pub(super) id: u64,
-    pub(super) rel_path: String,
-    pub(super) widget: GtkBox,
-    pub(super) left_path: Rc<RefCell<String>>,
-    pub(super) right_path: Rc<RefCell<String>>,
-    pub(super) left_buf: TextBuffer,
-    pub(super) right_buf: TextBuffer,
-    pub(super) left_save: Button,
-    pub(super) right_save: Button,
+pub(super) struct PaneInfo {
+    pub(super) path: Rc<RefCell<String>>,
+    pub(super) buf: TextBuffer,
+    pub(super) save: Button,
+}
+
+pub(super) enum FileTab {
+    Diff {
+        id: u64,
+        rel_path: String,
+        widget: GtkBox,
+        left: PaneInfo,
+        right: PaneInfo,
+    },
+    Merge {
+        id: u64,
+        rel_path: String,
+        widget: GtkBox,
+        middle: PaneInfo,
+    },
+}
+
+impl FileTab {
+    pub(super) fn id(&self) -> u64 {
+        match self {
+            Self::Diff { id, .. } | Self::Merge { id, .. } => *id,
+        }
+    }
+
+    pub(super) fn rel_path(&self) -> &str {
+        match self {
+            Self::Diff { rel_path, .. } | Self::Merge { rel_path, .. } => rel_path,
+        }
+    }
+
+    pub(super) fn widget(&self) -> &GtkBox {
+        match self {
+            Self::Diff { widget, .. } | Self::Merge { widget, .. } => widget,
+        }
+    }
+
+    /// Returns panes that can be saved / checked for unsaved changes.
+    pub(super) fn saveable_panes(&self) -> Vec<&PaneInfo> {
+        match self {
+            Self::Diff { left, right, .. } => vec![left, right],
+            Self::Merge { middle, .. } => vec![middle],
+        }
+    }
+
+    /// Whether this tab should be reloaded from disk on file-change events.
+    /// Only 2-way diff tabs backed by two real on-disk files are reloadable.
+    pub(super) fn is_reloadable(&self) -> bool {
+        match self {
+            Self::Diff { left, right, .. } => {
+                !left.path.borrow().is_empty() && !right.path.borrow().is_empty()
+            }
+            Self::Merge { .. } => false,
+        }
+    }
 }
 
 pub(super) static NEXT_TAB_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -136,23 +185,22 @@ pub(super) fn apply_merge_tags(
 /// Reload a file tab from disk. Returns `false` if a read failed (binary or
 /// I/O error) so the caller can keep dirty and retry on the next tick.
 pub(super) fn reload_file_tab(tab: &FileTab) -> bool {
-    // Don't overwrite unsaved user edits
-    if tab.left_save.is_sensitive() || tab.right_save.is_sensitive() {
-        return true; // not a read failure — just skip
-    }
-
-    // Skip tabs that aren't backed by two on-disk files (e.g. merge tabs,
-    // blank comparisons).
-    if tab.left_path.borrow().is_empty() || tab.right_path.borrow().is_empty() {
+    if !tab.is_reloadable() {
         return true;
     }
 
-    // Use tab.left_path / right_path (which track swaps) instead of
-    // reconstructing from left_dir + rel_path, so reloads respect swapped panes.
-    let left_content = read_file_for_reload(Path::new(&*tab.left_path.borrow()));
-    let right_content = read_file_for_reload(Path::new(&*tab.right_path.borrow()));
+    // Don't overwrite unsaved user edits
+    if tab.saveable_panes().iter().any(|p| p.save.is_sensitive()) {
+        return true;
+    }
 
-    // Skip panes where read failed or file became binary
+    let FileTab::Diff { left, right, .. } = tab else {
+        return true;
+    };
+
+    let left_content = read_file_for_reload(Path::new(&*left.path.borrow()));
+    let right_content = read_file_for_reload(Path::new(&*right.path.borrow()));
+
     let Some(left_content) = left_content else {
         return false;
     };
@@ -160,30 +208,20 @@ pub(super) fn reload_file_tab(tab: &FileTab) -> bool {
         return false;
     };
 
-    // Only reset buffers if the on-disk content actually differs from what's in the buffer
-    let cur_left = tab
-        .left_buf
-        .text(&tab.left_buf.start_iter(), &tab.left_buf.end_iter(), false);
-    let cur_right = tab.right_buf.text(
-        &tab.right_buf.start_iter(),
-        &tab.right_buf.end_iter(),
-        false,
-    );
+    let cur_left = left
+        .buf
+        .text(&left.buf.start_iter(), &left.buf.end_iter(), false);
+    let cur_right = right
+        .buf
+        .text(&right.buf.start_iter(), &right.buf.end_iter(), false);
 
     if cur_left.as_str() == left_content && cur_right.as_str() == right_content {
-        return true; // nothing changed on disk vs buffer
+        return true;
     }
 
-    // set_text triggers connect_changed which schedules refresh_diff with
-    // the current filter state (ignore_blanks / ignore_whitespace).
-    // We must NOT run a separate diff here — it would race and potentially
-    // overwrite the filtered result with an unfiltered one.
-    tab.left_buf.set_text(&left_content);
-    tab.right_buf.set_text(&right_content);
-    // Buffer now matches disk — clear unsaved-changes indicator.
-    // (set_text triggers the save-button connect_changed which sets
-    // sensitive=true, so we reset it after.)
-    tab.left_save.set_sensitive(false);
-    tab.right_save.set_sensitive(false);
+    left.buf.set_text(&left_content);
+    right.buf.set_text(&right_content);
+    left.save.set_sensitive(false);
+    right.save.set_sensitive(false);
     true
 }

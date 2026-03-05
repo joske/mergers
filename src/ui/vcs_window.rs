@@ -168,8 +168,8 @@ fn open_vcs_diff(
     if let Some(page) = open_tabs
         .borrow()
         .iter()
-        .find(|t| t.rel_path == rel_path)
-        .and_then(|t| notebook.page_num(&t.widget))
+        .find(|t| t.rel_path() == rel_path)
+        .and_then(|t| notebook.page_num(t.widget()))
     {
         notebook.set_current_page(Some(page));
         return;
@@ -223,16 +223,20 @@ fn open_vcs_diff(
         .insert_action_group("diff", Some(&dv.action_group));
 
     let tab_id = NEXT_TAB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    open_tabs.borrow_mut().push(FileTab {
+    open_tabs.borrow_mut().push(FileTab::Diff {
         id: tab_id,
         rel_path: rel_path.to_string(),
         widget: dv.widget.clone(),
-        left_path: dv.left_tab_path,
-        right_path: dv.right_tab_path,
-        left_buf: dv.left_buf,
-        right_buf: dv.right_buf,
-        left_save: dv.left_save,
-        right_save: dv.right_save,
+        left: PaneInfo {
+            path: dv.left_tab_path,
+            buf: dv.left_buf,
+            save: dv.left_save,
+        },
+        right: PaneInfo {
+            path: dv.right_tab_path,
+            buf: dv.right_buf,
+            save: dv.right_save,
+        },
     });
 
     let (status_text, _) = vcs_status_info(status_code);
@@ -265,7 +269,7 @@ fn open_vcs_diff(
                     close_notebook_tab(&win, &nb, &tabs, n);
                 } else {
                     nb.remove_page(Some(n));
-                    tabs.borrow_mut().retain(|t| t.id != tab_id);
+                    tabs.borrow_mut().retain(|t| t.id() != tab_id);
                 }
             }
         });

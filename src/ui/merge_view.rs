@@ -2392,19 +2392,15 @@ pub(super) fn build_merge_window(
     // picks up the middle_save unsaved state automatically.
     {
         let tab_id = NEXT_TAB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        // Dummy right_save button (never sensitive) — only middle_save matters.
-        let dummy_save = Button::new();
-        dummy_save.set_sensitive(false);
-        open_tabs.borrow_mut().push(FileTab {
+        open_tabs.borrow_mut().push(FileTab::Merge {
             id: tab_id,
             rel_path: title,
             widget: mv.widget.clone(),
-            left_path: Rc::new(RefCell::new(middle_path.display().to_string())),
-            right_path: Rc::new(RefCell::new(String::new())),
-            left_buf: mv.middle_buf.clone(),
-            right_buf: mv.middle_buf.clone(),
-            left_save: mv.middle_save,
-            right_save: dummy_save,
+            middle: PaneInfo {
+                path: Rc::new(RefCell::new(middle_path.display().to_string())),
+                buf: mv.middle_buf.clone(),
+                save: mv.middle_save,
+            },
         });
     }
 

@@ -287,51 +287,46 @@ pub fn close_notebook_tab(
     page: u32,
 ) {
     let info = tabs.borrow().iter().find_map(|t| {
-        if notebook.page_num(&t.widget) == Some(page) {
-            Some((
-                t.id,
-                t.left_path.borrow().clone(),
-                t.right_path.borrow().clone(),
-                t.left_save.clone(),
-                t.right_save.clone(),
-            ))
+        if notebook.page_num(t.widget()) == Some(page) {
+            let pairs: Vec<(String, Button)> = t
+                .saveable_panes()
+                .iter()
+                .map(|p| {
+                    let path = p.path.borrow().clone();
+                    let label = if path.is_empty() {
+                        "Untitled".to_string()
+                    } else {
+                        path
+                    };
+                    (label, p.save.clone())
+                })
+                .collect();
+            Some((t.id(), pairs))
         } else {
             None
         }
     });
-    let Some((tab_id, lp, rp, ls, rs)) = info else {
+    let Some((tab_id, pane_pairs)) = info else {
         notebook.remove_page(Some(page));
         return;
     };
-    let lp = if lp.is_empty() {
-        "Untitled".to_string()
-    } else {
-        lp
-    };
-    let rp = if rp.is_empty() {
-        "Untitled".to_string()
-    } else {
-        rp
-    };
-    let unsaved = collect_unsaved(vec![(lp, ls), (rp, rs)]);
+    let unsaved = collect_unsaved(pane_pairs);
     if unsaved.is_empty() {
         notebook.remove_page(Some(page));
-        tabs.borrow_mut().retain(|t| t.id != tab_id);
+        tabs.borrow_mut().retain(|t| t.id() != tab_id);
         return;
     }
     let nb = notebook.clone();
     let tabs = tabs.clone();
-    // Look up the widget so we can find the current page index at dialog-confirm
-    // time (the page number may have shifted if other tabs were closed first).
     let widget = tabs
         .borrow()
         .iter()
-        .find(|t| t.id == tab_id)
-        .map(|t| t.widget.clone());
+        .find(|t| t.id() == tab_id)
+        .map(|t| t.widget().clone());
     confirm_unsaved_dialog(window, unsaved, move || {
         let current_page = widget.as_ref().and_then(|w| nb.page_num(w)).unwrap_or(page);
         nb.remove_page(Some(current_page));
-        tabs.borrow_mut().retain(|t| t.id != tab_id);
+        tabs.borrow_mut().retain(|t| t.id() != tab_id);
     });
 }
 
@@ -344,26 +339,19 @@ pub fn handle_notebook_close_request(
         .borrow()
         .iter()
         .flat_map(|t| {
-            let mut v = Vec::new();
-            if t.left_save.is_sensitive() {
-                let path = t.left_path.borrow().clone();
-                let label = if path.is_empty() {
-                    "Untitled".to_string()
-                } else {
-                    path
-                };
-                v.push((label, t.left_save.clone()));
-            }
-            if t.right_save.is_sensitive() {
-                let path = t.right_path.borrow().clone();
-                let label = if path.is_empty() {
-                    "Untitled".to_string()
-                } else {
-                    path
-                };
-                v.push((label, t.right_save.clone()));
-            }
-            v
+            t.saveable_panes()
+                .into_iter()
+                .filter(|p| p.save.is_sensitive())
+                .map(|p| {
+                    let path = p.path.borrow().clone();
+                    let label = if path.is_empty() {
+                        "Untitled".to_string()
+                    } else {
+                        path
+                    };
+                    (label, p.save.clone())
+                })
+                .collect::<Vec<_>>()
         })
         .collect();
     if unsaved.is_empty() {
@@ -653,20 +641,17 @@ pub fn build_new_comparison_tab(
                                     // Register in open_tabs so window-close checks unsaved
                                     let tab_id = NEXT_TAB_ID
                                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                    let dummy_save = Button::new();
-                                    dummy_save.set_sensitive(false);
-                                    tabs4.borrow_mut().push(FileTab {
+                                    tabs4.borrow_mut().push(FileTab::Merge {
                                         id: tab_id,
                                         rel_path: merge_title,
                                         widget: mv.widget.clone(),
-                                        left_path: Rc::new(RefCell::new(
-                                            second_path.display().to_string(),
-                                        )),
-                                        right_path: Rc::new(RefCell::new(String::new())),
-                                        left_buf: mv.middle_buf.clone(),
-                                        right_buf: mv.middle_buf,
-                                        left_save: mv.middle_save.clone(),
-                                        right_save: dummy_save,
+                                        middle: PaneInfo {
+                                            path: Rc::new(RefCell::new(
+                                                second_path.display().to_string(),
+                                            )),
+                                            buf: mv.middle_buf.clone(),
+                                            save: mv.middle_save.clone(),
+                                        },
                                     });
 
                                     {
@@ -693,7 +678,7 @@ pub fn build_new_comparison_tab(
                                                             }
                                                             tabs6
                                                                 .borrow_mut()
-                                                                .retain(|t| t.id != tab_id);
+                                                                .retain(|t| t.id() != tab_id);
                                                         },
                                                     );
                                                 }
@@ -702,7 +687,7 @@ pub fn build_new_comparison_tab(
                                             if let Some(n) = nb5.page_num(&mw) {
                                                 nb5.remove_page(Some(n));
                                             }
-                                            tabs5.borrow_mut().retain(|t| t.id != tab_id);
+                                            tabs5.borrow_mut().retain(|t| t.id() != tab_id);
                                         });
                                     }
 
