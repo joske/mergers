@@ -21,6 +21,7 @@
 - [ ] "3-way Merge" button: three file dialogs, then opens merge; welcome closes
 - [ ] Preferences button / Ctrl+,: opens Preferences dialog
 - [ ] Ctrl+W: closes welcome window
+- [ ] Ctrl+N: opens a new welcome window
 - [ ] Cancel any file dialog: nothing happens
 
 ## File Diff (2-way)
@@ -32,6 +33,7 @@
 - [ ] Filler lines: thin colored lines where the other side has more content
 - [ ] Gutter: curved connecting bands between panes
 - [ ] Chunk map strips: minimap of changes at far edges; clickable to jump
+- [ ] Chunk map viewport indicator: visible rectangle showing current scroll position
 - [ ] Syntax highlighting: detected from filename
 - [ ] Line numbers: shown/hidden per settings
 
@@ -68,11 +70,19 @@
 - [ ] Close (X / Escape): hides bar, clears highlights
 
 ### Save
+- [ ] Ctrl+S: saves focused pane; button goes insensitive
 - [ ] Save button insensitive until buffer changes
 - [ ] Save writes correct file; button goes insensitive; error dialog on failure
 - [ ] Save path tracks swaps: after swap, save writes to correct original file
 - [ ] Save after swap: pane contents and labels remain consistent (no un-swap)
 - [ ] Save after swap in dir file tab: watcher reload preserves swapped state
+- [ ] Ctrl+Shift+S (Save As): file dialog; writes to chosen path; updates pane label and tooltip
+- [ ] Save As updates tab-tracked path (close/unsaved dialog shows new name)
+- [ ] Ctrl+Shift+L (Save All): saves all dirty panes in current view
+- [ ] Ctrl+Shift+O: opens focused file in system default app
+- [ ] Ctrl+R / F5 (Refresh): reloads both files from disk
+- [ ] Refresh with unsaved changes: confirm dialog before reloading
+- [ ] Refresh on blank comparison pane: no-op (doesn't crash)
 
 ### File Watcher
 - [ ] External file change: auto-reloads if no unsaved changes
@@ -110,6 +120,8 @@
 - [ ] Click in pane, then Alt+Down: navigates from cursor position, not from top
 - [ ] Navigate chunks with cursor in different positions: cursor-aware seeking
 - [ ] Alt+Up/Down intercepted: sourceview move-lines action does not fire
+- [ ] Wrap-around navigation: Alt+Down past last chunk wraps to first (if enabled in prefs)
+- [ ] Wrap-around off: Alt+Down on last chunk stays; Alt+Up on first chunk stays
 
 ## Directory Comparison
 
@@ -150,6 +162,12 @@
 - [ ] Ctrl+W on Directory tab: closes entire window
 - [ ] Ctrl+W on file tab: closes that tab
 - [ ] Same file not opened twice: switches to existing tab
+- [ ] Ctrl+1..9: switches to tab by index
+- [ ] Ctrl+N: opens New Comparison tab
+- [ ] New Comparison tab: "Compare Files" and "3-Way Merge" buttons with file choosers
+- [ ] New Comparison → Compare Files: opens diff tab, removes new-comparison tab
+- [ ] New Comparison → 3-Way Merge: opens merge tab, removes new-comparison tab
+- [ ] Blank comparison (Ctrl+T or from New Comparison): opens editable blank diff tab
 
 ### File Watcher
 - [ ] Directory rescans on FS changes (500ms poll)
@@ -203,6 +221,16 @@
 - [ ] Match count sums all three buffers
 - [ ] Replace All replaces in all three buffers
 
+### Save
+- [ ] Ctrl+S: saves middle pane
+- [ ] Ctrl+Shift+S (Save As): saves middle to a new path; updates pane label
+- [ ] Save As updates tab-tracked path (close/unsaved dialog shows new name)
+- [ ] Ctrl+Shift+L (Save All): saves middle if dirty
+- [ ] Ctrl+Shift+O: opens focused file externally (works for all 3 panes)
+- [ ] Ctrl+R / F5 (Refresh): reloads all 3 files from disk
+- [ ] Refresh with unsaved middle: confirm dialog before reloading
+- [ ] After Save As, watcher still monitors original source files (by design)
+
 ### Edge Cases
 - [ ] Binary files: all panes show info bar; all read-only; middle save hidden
 - [ ] All three identical: no changes, no chunks
@@ -242,6 +270,8 @@
 - [ ] Ctrl+W on file tab: closes tab with unsaved check
 - [ ] Window close: checks all tabs for unsaved changes
 - [ ] Temp directory cleaned up on window destroy
+- [ ] Ctrl+1..9: switches to tab by index
+- [ ] Ctrl+N: opens New Comparison tab
 
 ### Security
 - [ ] Paths with `..` components refused
@@ -255,6 +285,7 @@
 - [ ] Word wrap (None/Word/Character): dropdown; live-apply
 - [ ] Tab width (1-16): spin button; live-apply
 - [ ] Hide hidden files: toggle; default on; saved to settings
+- [ ] Wrap-around navigation: toggle; saved to settings
 - [ ] File filters: add/remove entries; saved on dialog close
 - [ ] Settings persisted to `~/.config/mergers/settings.toml`
 - [ ] Changes applied to all views in the parent window
@@ -289,6 +320,17 @@
 | Alt+Left | Copy chunk right→left (file diff) / Copy file to left (dir) |
 | Alt+Right | Copy chunk left→right (file diff) / Copy file to right (dir) |
 | Ctrl+S | Save active pane |
+| Ctrl+Shift+S | Save As (file diff / merge) |
+| Ctrl+Shift+L | Save All dirty panes |
+| Ctrl+Shift+O | Open focused file externally |
+| Ctrl+R / F5 | Refresh (reload from disk) |
+| Ctrl+N | New Comparison tab (dir/VCS windows) |
+| Ctrl+1..9 | Switch to tab by index (notebook windows) |
 | Delete | Delete selected (dir only) |
 | Enter | Open selected file / expand-collapse dir (dir/VCS) |
 | Escape | Close find bar / go-to-line / preferences dialog |
+
+## Preferences — Keyboard Shortcuts
+
+- [ ] "Keyboard Shortcuts" button in Preferences: opens shortcuts dialog
+- [ ] Dialog lists all shortcuts grouped by category
