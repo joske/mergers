@@ -165,13 +165,13 @@ fn open_vcs_diff(
     settings: &Rc<RefCell<Settings>>,
 ) {
     // If already open, switch to it
-    if let Some(idx) = open_tabs
+    if let Some(page) = open_tabs
         .borrow()
         .iter()
-        .position(|t| t.rel_path == rel_path)
+        .find(|t| t.rel_path == rel_path)
+        .and_then(|t| notebook.page_num(&t.widget))
     {
-        // +1 because page 0 is the VCS list tab
-        notebook.set_current_page(Some((idx + 1) as u32));
+        notebook.set_current_page(Some(page));
         return;
     }
 
@@ -227,8 +227,8 @@ fn open_vcs_diff(
         id: tab_id,
         rel_path: rel_path.to_string(),
         widget: dv.widget.clone(),
-        left_path: Rc::new(RefCell::new(left_path.display().to_string())),
-        right_path: Rc::new(RefCell::new(right_path.display().to_string())),
+        left_path: dv.left_tab_path,
+        right_path: dv.right_tab_path,
         left_buf: dv.left_buf,
         right_buf: dv.right_buf,
         left_save: dv.left_save,

@@ -14,6 +14,8 @@ pub(super) struct DiffViewResult {
     pub(super) right_save: Button,
     pub(super) left_save_path: Rc<RefCell<PathBuf>>,
     pub(super) right_save_path: Rc<RefCell<PathBuf>>,
+    pub(super) left_tab_path: Rc<RefCell<String>>,
+    pub(super) right_tab_path: Rc<RefCell<String>>,
     pub(super) action_group: gio::SimpleActionGroup,
     pub(super) swap_callback: SwapCallback,
 }
@@ -1454,16 +1456,18 @@ pub(super) fn build_diff_view(
         let rb = right_buf.clone();
         let lsp = left_pane.save_path.clone();
         let rsp = right_pane.save_path.clone();
+        let ltp = left_pane.tab_path.clone();
+        let rtp = right_pane.tab_path.clone();
         let ls = left_pane.save_btn.clone();
         let rs = right_pane.save_btn.clone();
         let ll = left_pane.path_label.clone();
         let rl = right_pane.path_label.clone();
         action.connect_activate(move |_, _| {
             let active = av.borrow().clone();
-            let (buf, sp, btn, lbl) = if active == ltv {
-                (lb.clone(), lsp.clone(), ls.clone(), ll.clone())
+            let (buf, sp, tp, btn, lbl) = if active == ltv {
+                (lb.clone(), lsp.clone(), ltp.clone(), ls.clone(), ll.clone())
             } else {
-                (rb.clone(), rsp.clone(), rs.clone(), rl.clone())
+                (rb.clone(), rsp.clone(), rtp.clone(), rs.clone(), rl.clone())
             };
             let dialog = gtk4::FileDialog::builder().title("Save As").build();
             let win = btn
@@ -1479,6 +1483,7 @@ pub(super) fn build_diff_view(
                             mark_saving(&path);
                             btn.set_sensitive(false);
                             (*sp.borrow_mut()).clone_from(&path);
+                            *tp.borrow_mut() = path.display().to_string();
                             lbl.set_text(&shortened_path(&path));
                             lbl.set_tooltip_text(Some(&path.display().to_string()));
                         }
@@ -1611,6 +1616,8 @@ pub(super) fn build_diff_view(
         right_save: right_pane.save_btn,
         left_save_path: left_pane.save_path,
         right_save_path: right_pane.save_path,
+        left_tab_path: left_pane.tab_path,
+        right_tab_path: right_pane.tab_path,
         action_group,
         swap_callback,
     }
@@ -1635,14 +1642,14 @@ pub(super) fn open_file_diff(
 
     // Track tab
     let tab_id = NEXT_TAB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let tab_left_path = Rc::new(RefCell::new(left_path.display().to_string()));
-    let tab_right_path = Rc::new(RefCell::new(right_path.display().to_string()));
+    let tab_left_path = dv.left_tab_path.clone();
+    let tab_right_path = dv.right_tab_path.clone();
     open_tabs.borrow_mut().push(FileTab {
         id: tab_id,
         rel_path: rel_path.to_string(),
         widget: dv.widget.clone(),
-        left_path: tab_left_path.clone(),
-        right_path: tab_right_path.clone(),
+        left_path: dv.left_tab_path,
+        right_path: dv.right_tab_path,
         left_buf: dv.left_buf,
         right_buf: dv.right_buf,
         left_save: dv.left_save,
@@ -1736,8 +1743,8 @@ pub(super) fn open_file_diff_paths(
 
     // Track tab
     let tab_id = NEXT_TAB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let tab_left_path = Rc::new(RefCell::new(left_path.display().to_string()));
-    let tab_right_path = Rc::new(RefCell::new(right_path.display().to_string()));
+    let tab_left_path = dv.left_tab_path.clone();
+    let tab_right_path = dv.right_tab_path.clone();
 
     let left_name = left_path.file_name().map_or_else(
         || left_path.display().to_string(),
@@ -1753,8 +1760,8 @@ pub(super) fn open_file_diff_paths(
         id: tab_id,
         rel_path: tab_title.clone(),
         widget: dv.widget.clone(),
-        left_path: tab_left_path.clone(),
-        right_path: tab_right_path.clone(),
+        left_path: dv.left_tab_path,
+        right_path: dv.right_tab_path,
         left_buf: dv.left_buf,
         right_buf: dv.right_buf,
         left_save: dv.left_save,
@@ -1830,15 +1837,13 @@ pub(super) fn open_blank_diff(
         .insert_action_group("diff", Some(&dv.action_group));
 
     let tab_id = NEXT_TAB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let tab_left_path = Rc::new(RefCell::new(String::new()));
-    let tab_right_path = Rc::new(RefCell::new(String::new()));
 
     open_tabs.borrow_mut().push(FileTab {
         id: tab_id,
         rel_path: "Blank Comparison".to_string(),
         widget: dv.widget.clone(),
-        left_path: tab_left_path,
-        right_path: tab_right_path,
+        left_path: dv.left_tab_path,
+        right_path: dv.right_tab_path,
         left_buf: dv.left_buf,
         right_buf: dv.right_buf,
         left_save: dv.left_save,

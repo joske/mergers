@@ -114,6 +114,12 @@ pub(super) fn reload_file_tab(tab: &FileTab) -> bool {
         return true; // not a read failure — just skip
     }
 
+    // Skip tabs that aren't backed by two on-disk files (e.g. merge tabs,
+    // blank comparisons).
+    if tab.left_path.borrow().is_empty() || tab.right_path.borrow().is_empty() {
+        return true;
+    }
+
     // Use tab.left_path / right_path (which track swaps) instead of
     // reconstructing from left_dir + rel_path, so reloads respect swapped panes.
     let left_content = read_file_for_reload(Path::new(&*tab.left_path.borrow()));
@@ -1546,6 +1552,7 @@ pub(super) struct DiffPane {
     pub(super) save_btn: Button,
     pub(super) path_label: Label,
     pub(super) save_path: Rc<RefCell<PathBuf>>,
+    pub(super) tab_path: Rc<RefCell<String>>,
 }
 
 pub(super) fn make_diff_pane(
@@ -1634,7 +1641,9 @@ pub(super) fn make_diff_pane(
 
     let buf_clone = buf.clone();
     let save_path = Rc::new(RefCell::new(file_path.to_path_buf()));
+    let tab_path = Rc::new(RefCell::new(file_path.display().to_string()));
     let save_path_clone = save_path.clone();
+    let tab_path_clone = tab_path.clone();
     let save_btn_ref = save_btn.clone();
     let path_label_clone = path_label.clone();
     save_btn.connect_clicked(move |_| {
@@ -1645,6 +1654,7 @@ pub(super) fn make_diff_pane(
                 .and_then(|r| r.downcast::<ApplicationWindow>().ok());
             let buf = buf_clone.clone();
             let sp = save_path_clone.clone();
+            let tp = tab_path_clone.clone();
             let btn = save_btn_ref.clone();
             let lbl = path_label_clone.clone();
             dialog.save(win.as_ref(), gio::Cancellable::NONE, move |result| {
@@ -1657,6 +1667,7 @@ pub(super) fn make_diff_pane(
                             mark_saving(&path);
                             btn.set_sensitive(false);
                             (*sp.borrow_mut()).clone_from(&path);
+                            *tp.borrow_mut() = path.display().to_string();
                             lbl.set_text(&shortened_path(&path));
                             lbl.set_tooltip_text(Some(&path.display().to_string()));
                         }
@@ -1702,6 +1713,7 @@ pub(super) fn make_diff_pane(
         save_btn,
         path_label,
         save_path,
+        tab_path,
     }
 }
 
@@ -3223,6 +3235,7 @@ pub(super) fn build_new_comparison_tab(
         let nb = notebook.clone();
         let st = settings.clone();
         let w = content.clone();
+        let tabs = open_tabs.clone();
         merge_btn.connect_clicked(move |btn| {
             let win = btn
                 .root()
@@ -3233,6 +3246,7 @@ pub(super) fn build_new_comparison_tab(
             let st2 = st.clone();
             let nb2 = nb.clone();
             let w2 = w.clone();
+            let tabs2 = tabs.clone();
             dialog.open(Some(&win), gio::Cancellable::NONE, move |result| {
                 if let Ok(first) = result
                     && let Some(first_path) = first.path()
@@ -3242,6 +3256,7 @@ pub(super) fn build_new_comparison_tab(
                     let st3 = st2.clone();
                     let nb3 = nb2.clone();
                     let w3 = w2.clone();
+                    let tabs3 = tabs2.clone();
                     let win2 = nb2.root().and_downcast::<ApplicationWindow>().unwrap();
                     dialog2.open(Some(&win2), gio::Cancellable::NONE, move |result2| {
                         if let Ok(second) = result2
@@ -3252,6 +3267,7 @@ pub(super) fn build_new_comparison_tab(
                             let st4 = st3.clone();
                             let nb4 = nb3.clone();
                             let w4 = w3.clone();
+                            let tabs4 = tabs3.clone();
                             let win3 = nb3.root().and_downcast::<ApplicationWindow>().unwrap();
                             dialog3.open(Some(&win3), gio::Cancellable::NONE, move |result3| {
                                 if let Ok(third) = result3
@@ -3293,11 +3309,31 @@ pub(super) fn build_new_comparison_tab(
                                         nb4.append_page(&mv.widget, Some(&tab_label_box));
                                     nb4.set_current_page(Some(page_num));
 
+                                    // Register in open_tabs so window-close checks unsaved
+                                    let tab_id = NEXT_TAB_ID
+                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                    let dummy_save = Button::new();
+                                    dummy_save.set_sensitive(false);
+                                    tabs4.borrow_mut().push(FileTab {
+                                        id: tab_id,
+                                        rel_path: merge_title,
+                                        widget: mv.widget.clone(),
+                                        left_path: Rc::new(RefCell::new(
+                                            second_path.display().to_string(),
+                                        )),
+                                        right_path: Rc::new(RefCell::new(String::new())),
+                                        left_buf: mv.middle_buf.clone(),
+                                        right_buf: mv.middle_buf,
+                                        left_save: mv.middle_save.clone(),
+                                        right_save: dummy_save,
+                                    });
+
                                     {
                                         let nb5 = nb4.clone();
                                         let mw = mv.widget.clone();
                                         let ms = mv.middle_save.clone();
                                         let save_path = second_path.display().to_string();
+                                        let tabs5 = tabs4.clone();
                                         close_btn.connect_clicked(move |_| {
                                             // Check unsaved merge before closing
                                             if ms.is_sensitive() {
@@ -3306,6 +3342,7 @@ pub(super) fn build_new_comparison_tab(
                                                 {
                                                     let nb6 = nb5.clone();
                                                     let mw2 = mw.clone();
+                                                    let tabs6 = tabs5.clone();
                                                     confirm_unsaved_dialog(
                                                         &win,
                                                         vec![(save_path.clone(), ms.clone())],
@@ -3313,6 +3350,9 @@ pub(super) fn build_new_comparison_tab(
                                                             if let Some(n) = nb6.page_num(&mw2) {
                                                                 nb6.remove_page(Some(n));
                                                             }
+                                                            tabs6
+                                                                .borrow_mut()
+                                                                .retain(|t| t.id != tab_id);
                                                         },
                                                     );
                                                 }
@@ -3321,6 +3361,7 @@ pub(super) fn build_new_comparison_tab(
                                             if let Some(n) = nb5.page_num(&mw) {
                                                 nb5.remove_page(Some(n));
                                             }
+                                            tabs5.borrow_mut().retain(|t| t.id != tab_id);
                                         });
                                     }
 
