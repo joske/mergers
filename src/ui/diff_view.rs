@@ -290,27 +290,13 @@ pub(super) fn build_diff_view(
             });
     }
     // Redraw filler overlays on scroll
-    {
+    for scroll in [&left_pane.scroll, &right_pane.scroll] {
         let lf = left_pane.filler_overlay.clone();
         let rf = right_pane.filler_overlay.clone();
-        left_pane
-            .scroll
-            .vadjustment()
-            .connect_value_changed(move |_| {
-                lf.queue_draw();
-                rf.queue_draw();
-            });
-    }
-    {
-        let lf = left_pane.filler_overlay.clone();
-        let rf = right_pane.filler_overlay.clone();
-        right_pane
-            .scroll
-            .vadjustment()
-            .connect_value_changed(move |_| {
-                lf.queue_draw();
-                rf.queue_draw();
-            });
+        scroll.vadjustment().connect_value_changed(move |_| {
+            lf.queue_draw();
+            rf.queue_draw();
+        });
     }
 
     let chunk_label = Label::new(None);
@@ -432,81 +418,17 @@ pub(super) fn build_diff_view(
     });
 
     // ── Chunk maps (overview strips) ─────────────────────────────
-    let left_chunk_map = DrawingArea::new();
-    left_chunk_map.set_content_width(12);
-    left_chunk_map.set_vexpand(true);
-    {
-        let lb = left_buf.clone();
-        let ls = left_pane.scroll.clone();
-        let ch = chunks.clone();
-        left_chunk_map.set_draw_func(move |_area, cr, _w, h| {
-            draw_chunk_map(cr, h as f64, lb.line_count(), &ls, &ch.borrow(), Side::A);
-        });
-    }
-    // Click to jump
-    {
-        let gesture = GestureClick::new();
-        let ls = left_pane.scroll.clone();
-        let lm = left_chunk_map.clone();
-        gesture.connect_pressed(move |_, _, _x, y| {
-            let h = lm.height() as f64;
-            if h > 0.0 {
-                let adj = ls.vadjustment();
-                let target = (y / h) * adj.upper() - adj.page_size() / 2.0;
-                adj.set_value(target.max(0.0));
-            }
-        });
-        left_chunk_map.add_controller(gesture);
-    }
+    let left_chunk_map = create_chunk_map(&left_buf, &left_pane.scroll, &chunks, Side::A);
+    let right_chunk_map = create_chunk_map(&right_buf, &right_pane.scroll, &chunks, Side::B);
 
-    let right_chunk_map = DrawingArea::new();
-    right_chunk_map.set_content_width(12);
-    right_chunk_map.set_vexpand(true);
-    {
-        let rb = right_buf.clone();
-        let rs = right_pane.scroll.clone();
-        let ch = chunks.clone();
-        right_chunk_map.set_draw_func(move |_area, cr, _w, h| {
-            draw_chunk_map(cr, h as f64, rb.line_count(), &rs, &ch.borrow(), Side::B);
-        });
-    }
-    {
-        let gesture = GestureClick::new();
-        let rs = right_pane.scroll.clone();
-        let rm = right_chunk_map.clone();
-        gesture.connect_pressed(move |_, _, _x, y| {
-            let h = rm.height() as f64;
-            if h > 0.0 {
-                let adj = rs.vadjustment();
-                let target = (y / h) * adj.upper() - adj.page_size() / 2.0;
-                adj.set_value(target.max(0.0));
-            }
-        });
-        right_chunk_map.add_controller(gesture);
-    }
-
-    // Redraw chunk maps on scroll and buffer changes
-    {
+    // Redraw chunk maps on scroll
+    for scroll in [&left_pane.scroll, &right_pane.scroll] {
         let lcm = left_chunk_map.clone();
         let rcm = right_chunk_map.clone();
-        left_pane
-            .scroll
-            .vadjustment()
-            .connect_value_changed(move |_| {
-                lcm.queue_draw();
-                rcm.queue_draw();
-            });
-    }
-    {
-        let lcm = left_chunk_map.clone();
-        let rcm = right_chunk_map.clone();
-        right_pane
-            .scroll
-            .vadjustment()
-            .connect_value_changed(move |_| {
-                lcm.queue_draw();
-                rcm.queue_draw();
-            });
+        scroll.vadjustment().connect_value_changed(move |_| {
+            lcm.queue_draw();
+            rcm.queue_draw();
+        });
     }
 
     // Re-diff on any buffer change, and update all visuals when diff completes
@@ -1030,6 +952,12 @@ pub(super) fn build_diff_view(
 
     // Intercept Alt+Up/Down/Left/Right in the capture phase so sourceview5
     // doesn't consume them for its move-lines action.
+    static DIFF_KEYS: KeyBindings = KeyBindings {
+        alt_left: "copy-chunk-right-left",
+        alt_right: "copy-chunk-left-right",
+        extra_ctrl_shift: &[("export-patch", gtk4::gdk::Key::p, gtk4::gdk::Key::P)],
+        extra_ctrl: &[],
+    };
     for tv in [&left_pane.text_view, &right_pane.text_view] {
         let key_ctl = EventControllerKey::new();
         key_ctl.set_propagation_phase(gtk4::PropagationPhase::Capture);
@@ -1038,69 +966,13 @@ pub(super) fn build_diff_view(
         let lb = left_buf.clone();
         let rb = right_buf.clone();
         key_ctl.connect_key_pressed(move |_, key, _, mods| {
-            // Escape closes the find bar if visible
             if key == gtk4::gdk::Key::Escape && fr.is_child_revealed() {
                 fr.set_reveal_child(false);
                 clear_search_tags(&lb);
                 clear_search_tags(&rb);
                 return gtk4::glib::Propagation::Stop;
             }
-            let action_name = if mods.contains(gtk4::gdk::ModifierType::ALT_MASK) {
-                match key {
-                    k if k == gtk4::gdk::Key::Up => Some("prev-chunk"),
-                    k if k == gtk4::gdk::Key::Down => Some("next-chunk"),
-                    k if k == gtk4::gdk::Key::Left => Some("copy-chunk-right-left"),
-                    k if k == gtk4::gdk::Key::Right => Some("copy-chunk-left-right"),
-                    _ => None,
-                }
-            } else if has_primary_modifier(mods) {
-                if mods.contains(gtk4::gdk::ModifierType::SHIFT_MASK) {
-                    if key == gtk4::gdk::Key::p || key == gtk4::gdk::Key::P {
-                        Some("export-patch")
-                    } else if key == gtk4::gdk::Key::o || key == gtk4::gdk::Key::O {
-                        Some("open-externally")
-                    } else if key == gtk4::gdk::Key::s || key == gtk4::gdk::Key::S {
-                        Some("save-as")
-                    } else if key == gtk4::gdk::Key::l || key == gtk4::gdk::Key::L {
-                        Some("save-all")
-                    } else if cfg!(target_os = "macos")
-                        && (key == gtk4::gdk::Key::h || key == gtk4::gdk::Key::H)
-                    {
-                        Some("find-replace")
-                    } else {
-                        None
-                    }
-                } else if key == gtk4::gdk::Key::s || key == gtk4::gdk::Key::S {
-                    Some("save")
-                } else if key == gtk4::gdk::Key::r || key == gtk4::gdk::Key::R {
-                    Some("refresh")
-                } else if key == gtk4::gdk::Key::e || key == gtk4::gdk::Key::E {
-                    Some("prev-chunk")
-                } else if key == gtk4::gdk::Key::d || key == gtk4::gdk::Key::D {
-                    Some("next-chunk")
-                } else if key == gtk4::gdk::Key::f || key == gtk4::gdk::Key::F {
-                    Some("find")
-                } else if !cfg!(target_os = "macos")
-                    && (key == gtk4::gdk::Key::h || key == gtk4::gdk::Key::H)
-                {
-                    Some("find-replace")
-                } else if key == gtk4::gdk::Key::l || key == gtk4::gdk::Key::L {
-                    Some("go-to-line")
-                } else {
-                    None
-                }
-            } else if key == gtk4::gdk::Key::F3 {
-                if mods.contains(gtk4::gdk::ModifierType::SHIFT_MASK) {
-                    Some("find-prev")
-                } else {
-                    Some("find-next")
-                }
-            } else if key == gtk4::gdk::Key::F5 {
-                Some("refresh")
-            } else {
-                None
-            };
-            if let Some(name) = action_name {
+            if let Some(name) = map_key_to_action(key, mods, &DIFF_KEYS) {
                 if let Some(action) = ag.lookup_action(name) {
                     action
                         .downcast_ref::<gio::SimpleAction>()

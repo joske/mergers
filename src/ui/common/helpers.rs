@@ -511,3 +511,83 @@ pub fn move_to_trash(path: &Path) -> Result<(), String> {
             .map_err(|e| format!("{e}"))
     }
 }
+
+// ─── Key binding helpers ────────────────────────────────────────────────────
+
+pub struct KeyBindings {
+    pub alt_left: &'static str,
+    pub alt_right: &'static str,
+    pub extra_ctrl_shift: &'static [(&'static str, gtk4::gdk::Key, gtk4::gdk::Key)],
+    pub extra_ctrl: &'static [(&'static str, gtk4::gdk::Key, gtk4::gdk::Key)],
+}
+
+pub fn map_key_to_action(
+    key: gtk4::gdk::Key,
+    mods: gtk4::gdk::ModifierType,
+    bindings: &KeyBindings,
+) -> Option<&'static str> {
+    use gtk4::gdk::{Key, ModifierType};
+
+    if mods.contains(ModifierType::ALT_MASK) {
+        return match key {
+            k if k == Key::Up => Some("prev-chunk"),
+            k if k == Key::Down => Some("next-chunk"),
+            k if k == Key::Left => Some(bindings.alt_left),
+            k if k == Key::Right => Some(bindings.alt_right),
+            _ => None,
+        };
+    }
+    if has_primary_modifier(mods) {
+        if mods.contains(ModifierType::SHIFT_MASK) {
+            for &(name, lo, hi) in bindings.extra_ctrl_shift {
+                if key == lo || key == hi {
+                    return Some(name);
+                }
+            }
+            return if key == Key::o || key == Key::O {
+                Some("open-externally")
+            } else if key == Key::s || key == Key::S {
+                Some("save-as")
+            } else if key == Key::l || key == Key::L {
+                Some("save-all")
+            } else if cfg!(target_os = "macos") && (key == Key::h || key == Key::H) {
+                Some("find-replace")
+            } else {
+                None
+            };
+        }
+        for &(name, lo, hi) in bindings.extra_ctrl {
+            if key == lo || key == hi {
+                return Some(name);
+            }
+        }
+        return if key == Key::s || key == Key::S {
+            Some("save")
+        } else if key == Key::r || key == Key::R {
+            Some("refresh")
+        } else if key == Key::e || key == Key::E {
+            Some("prev-chunk")
+        } else if key == Key::d || key == Key::D {
+            Some("next-chunk")
+        } else if key == Key::f || key == Key::F {
+            Some("find")
+        } else if !cfg!(target_os = "macos") && (key == Key::h || key == Key::H) {
+            Some("find-replace")
+        } else if key == Key::l || key == Key::L {
+            Some("go-to-line")
+        } else {
+            None
+        };
+    }
+    if key == Key::F3 {
+        return if mods.contains(ModifierType::SHIFT_MASK) {
+            Some("find-prev")
+        } else {
+            Some("find-next")
+        };
+    }
+    if key == Key::F5 {
+        return Some("refresh");
+    }
+    None
+}
