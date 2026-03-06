@@ -1240,6 +1240,17 @@ pub(super) fn open_file_diff(
     right_dir: &str,
     settings: &Rc<RefCell<Settings>>,
 ) {
+    // Switch to existing tab if this file is already open
+    for tab in open_tabs.borrow().iter() {
+        if tab.rel_path() == rel_path {
+            let page = notebook.page_num(tab.widget());
+            if let Some(n) = page {
+                notebook.set_current_page(Some(n));
+            }
+            return;
+        }
+    }
+
     let left_path = Path::new(left_dir).join(rel_path);
     let right_path = Path::new(right_dir).join(rel_path);
 
