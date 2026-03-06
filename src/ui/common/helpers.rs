@@ -29,7 +29,9 @@ fn is_binary(bytes: &[u8]) -> bool {
 }
 
 pub fn find_window(widget: &impl IsA<gtk4::Widget>) -> Option<ApplicationWindow> {
-    widget.root().and_then(|r| r.downcast::<ApplicationWindow>().ok())
+    widget
+        .root()
+        .and_then(|r| r.downcast::<ApplicationWindow>().ok())
 }
 
 /// Read a file as text, returning content and whether it was binary.

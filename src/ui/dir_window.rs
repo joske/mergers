@@ -499,8 +499,20 @@ pub(super) fn build_dir_tab(
     let left_scroll_slot: Rc<RefCell<Option<ScrolledWindow>>> = Rc::new(RefCell::new(None));
     let right_scroll_slot: Rc<RefCell<Option<ScrolledWindow>>> = Rc::new(RefCell::new(None));
     for (own_view, other_view, own_scroll, other_scroll, is_left) in [
-        (&left_view, &right_view, &left_scroll_slot, &right_scroll_slot, true),
-        (&right_view, &left_view, &right_scroll_slot, &left_scroll_slot, false),
+        (
+            &left_view,
+            &right_view,
+            &left_scroll_slot,
+            &right_scroll_slot,
+            true,
+        ),
+        (
+            &right_view,
+            &left_view,
+            &right_scroll_slot,
+            &left_scroll_slot,
+            false,
+        ),
     ] {
         let fl = focused_left.clone();
         let ov = own_view.clone();
@@ -852,8 +864,7 @@ pub(super) fn build_dir_tab(
             rh.set_text(&right_text);
             rh.set_tooltip_text(Some(&*rd.borrow()));
             // Update window title
-            if let Some(win) = find_window(btn)
-            {
+            if let Some(win) = find_window(btn) {
                 let ln = Path::new(ld.borrow().as_str())
                     .file_name()
                     .map_or_else(|| ld.borrow().clone(), |n| n.to_string_lossy().into_owned());
@@ -882,8 +893,18 @@ pub(super) fn build_dir_tab(
     // Directory action group — used by both keyboard shortcuts and toolbar buttons
     let dir_action_group = gio::SimpleActionGroup::new();
     for (name, src_dir, dst_dir, only_status) in [
-        ("folder-copy-left", &right_dir, &left_dir, FileStatus::RightOnly),
-        ("folder-copy-right", &left_dir, &right_dir, FileStatus::LeftOnly),
+        (
+            "folder-copy-left",
+            &right_dir,
+            &left_dir,
+            FileStatus::RightOnly,
+        ),
+        (
+            "folder-copy-right",
+            &left_dir,
+            &right_dir,
+            FileStatus::LeftOnly,
+        ),
     ] {
         let action = gio::SimpleAction::new(name, None);
         let get_row = get_selected_row.clone();
@@ -1378,8 +1399,14 @@ pub(super) fn open_dir_comparison_tab(
     open_tabs: &Rc<RefCell<Vec<FileTab>>>,
     settings: &Rc<RefCell<Settings>>,
 ) {
-    let (dir_widget, dir_watcher, left_view, dir_title) =
-        build_dir_tab(left_dir, right_dir, &[], Rc::clone(settings), notebook, open_tabs);
+    let (dir_widget, dir_watcher, left_view, dir_title) = build_dir_tab(
+        left_dir,
+        right_dir,
+        &[],
+        Rc::clone(settings),
+        notebook,
+        open_tabs,
+    );
 
     let (tab_label_box, close_btn) = make_closeable_tab_label(&dir_title);
     let page_num = notebook.append_page(&dir_widget, Some(&tab_label_box));

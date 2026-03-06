@@ -1,6 +1,13 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+static DIFF_KEYS: KeyBindings = KeyBindings {
+    alt_left: "copy-chunk-right-left",
+    alt_right: "copy-chunk-left-right",
+    extra_ctrl_shift: &[("export-patch", gtk4::gdk::Key::p, gtk4::gdk::Key::P)],
+    extra_ctrl: &[],
+};
+
 // ─── Shared diff view construction ─────────────────────────────────────────
 
 type SwapCallback = Rc<RefCell<Option<Box<dyn Fn()>>>>;
@@ -952,12 +959,6 @@ pub(super) fn build_diff_view(
 
     // Intercept Alt+Up/Down/Left/Right in the capture phase so sourceview5
     // doesn't consume them for its move-lines action.
-    static DIFF_KEYS: KeyBindings = KeyBindings {
-        alt_left: "copy-chunk-right-left",
-        alt_right: "copy-chunk-left-right",
-        extra_ctrl_shift: &[("export-patch", gtk4::gdk::Key::p, gtk4::gdk::Key::P)],
-        extra_ctrl: &[],
-    };
     for tv in [&left_pane.text_view, &right_pane.text_view] {
         let key_ctl = EventControllerKey::new();
         key_ctl.set_propagation_phase(gtk4::PropagationPhase::Capture);

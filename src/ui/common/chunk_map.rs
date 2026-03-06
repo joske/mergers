@@ -14,8 +14,7 @@ pub fn draw_chunk_map(
         return;
     }
 
-    for rect in &diff_state::compute_chunk_map_rects(chunks, total_lines as usize, height, side)
-    {
+    for rect in &diff_state::compute_chunk_map_rects(chunks, total_lines as usize, height, side) {
         let (r, g, b) = match rect.tag {
             DiffTag::Replace => band_replace(),
             DiffTag::Delete | DiffTag::Insert => band_insert(),
@@ -64,7 +63,15 @@ pub fn create_chunk_map(
         let scroll = scroll.clone();
         let chunks = chunks.clone();
         map.set_draw_func(move |area, cr, _w, h| {
-            draw_chunk_map(area, cr, h as f64, buf.line_count(), &scroll, &chunks.borrow(), side);
+            draw_chunk_map(
+                area,
+                cr,
+                h as f64,
+                buf.line_count(),
+                &scroll,
+                &chunks.borrow(),
+                side,
+            );
         });
     }
     {

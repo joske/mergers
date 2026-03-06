@@ -164,17 +164,15 @@ fn sync_hscrolls(scrolls: &[&ScrolledWindow], syncing: &Rc<Cell<bool>>) {
             .map(|(_, s)| (*s).clone())
             .collect();
         let s = syncing.clone();
-        scrolls[i]
-            .hadjustment()
-            .connect_value_changed(move |adj| {
-                if !s.get() {
-                    s.set(true);
-                    for other in &others {
-                        other.hadjustment().set_value(adj.value());
-                    }
-                    s.set(false);
+        scrolls[i].hadjustment().connect_value_changed(move |adj| {
+            if !s.get() {
+                s.set(true);
+                for other in &others {
+                    other.hadjustment().set_value(adj.value());
                 }
-            });
+                s.set(false);
+            }
+        });
     }
 }
 

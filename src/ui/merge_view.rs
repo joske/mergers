@@ -1,6 +1,16 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+static MERGE_KEYS: KeyBindings = KeyBindings {
+    alt_left: "copy-chunk-right-middle",
+    alt_right: "copy-chunk-left-middle",
+    extra_ctrl_shift: &[],
+    extra_ctrl: &[
+        ("prev-conflict", gtk4::gdk::Key::j, gtk4::gdk::Key::J),
+        ("next-conflict", gtk4::gdk::Key::k, gtk4::gdk::Key::K),
+    ],
+};
+
 // ─── 3-way merge view ───────────────────────────────────────────────────────
 
 pub(super) struct MergeViewResult {
@@ -1889,7 +1899,9 @@ pub(super) fn build_merge_view(
             } else {
                 rsp.borrow().clone()
             };
-            open_externally(&path);
+            if !is_blank_path(&path) {
+                open_externally(&path);
+            }
         });
         action_group.add_action(&action);
     }
@@ -1976,15 +1988,6 @@ pub(super) fn build_merge_view(
     }
 
     // Capture-phase key handler for shortcuts sourceview would consume
-    static MERGE_KEYS: KeyBindings = KeyBindings {
-        alt_left: "copy-chunk-right-middle",
-        alt_right: "copy-chunk-left-middle",
-        extra_ctrl_shift: &[],
-        extra_ctrl: &[
-            ("prev-conflict", gtk4::gdk::Key::j, gtk4::gdk::Key::J),
-            ("next-conflict", gtk4::gdk::Key::k, gtk4::gdk::Key::K),
-        ],
-    };
     for tv in [
         &left_pane.text_view,
         &middle_pane.text_view,

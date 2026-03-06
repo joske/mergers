@@ -559,7 +559,12 @@ pub fn build_new_comparison_tab(
                                     && let Some(third_path) = third.path()
                                 {
                                     open_merge_comparison_tab(
-                                        &nb4, first_path, second_path, third_path, &tabs4, &st4,
+                                        &nb4,
+                                        first_path,
+                                        second_path,
+                                        third_path,
+                                        &tabs4,
+                                        &st4,
                                     );
                                     remove4();
                                 }
