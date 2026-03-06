@@ -1415,13 +1415,22 @@ pub(super) fn open_dir_comparison_tab(
 
     // Stop watcher when tab is removed
     {
-        let dw = dir_widget.clone();
+        let dw = dir_widget.downgrade();
         let wa = dir_watcher.alive.clone();
-        notebook.connect_page_removed(move |_, child, _| {
-            if *child == dw {
+        let handler_id: Rc<RefCell<Option<gtk4::glib::SignalHandlerId>>> =
+            Rc::new(RefCell::new(None));
+        let hid = handler_id.clone();
+        let id = notebook.connect_page_removed(move |nb, child, _| {
+            if let Some(w) = dw.upgrade()
+                && *child == w
+            {
                 wa.set(false);
+                if let Some(id) = hid.borrow_mut().take() {
+                    nb.disconnect(id);
+                }
             }
         });
+        handler_id.borrow_mut().replace(id);
     }
     {
         let nb = notebook.clone();

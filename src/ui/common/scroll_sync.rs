@@ -156,19 +156,20 @@ pub fn sync_vscroll(
 /// Wire horizontal scroll sync between N panes, sharing a syncing guard
 /// to prevent re-entrant events.
 fn sync_hscrolls(scrolls: &[&ScrolledWindow], syncing: &Rc<Cell<bool>>) {
-    for i in 0..scrolls.len() {
-        let others: Vec<ScrolledWindow> = scrolls
+    let adjs: Vec<gtk4::Adjustment> = scrolls.iter().map(|s| s.hadjustment()).collect();
+    for i in 0..adjs.len() {
+        let others: Vec<gtk4::Adjustment> = adjs
             .iter()
             .enumerate()
             .filter(|&(j, _)| j != i)
-            .map(|(_, s)| (*s).clone())
+            .map(|(_, a)| a.clone())
             .collect();
         let s = syncing.clone();
-        scrolls[i].hadjustment().connect_value_changed(move |adj| {
+        adjs[i].connect_value_changed(move |adj| {
             if !s.get() {
                 s.set(true);
                 for other in &others {
-                    other.hadjustment().set_value(adj.value());
+                    other.set_value(adj.value());
                 }
                 s.set(false);
             }
