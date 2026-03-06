@@ -1073,7 +1073,10 @@ pub fn make_diff_pane(
     let tooltip = if is_blank_path(file_path) {
         "Untitled".to_string()
     } else {
-        file_path.display().to_string()
+        std::fs::canonicalize(file_path)
+            .unwrap_or_else(|_| file_path.to_path_buf())
+            .display()
+            .to_string()
     };
     path_label.set_tooltip_text(Some(&tooltip));
     path_label.set_ellipsize(gtk4::pango::EllipsizeMode::Start);
