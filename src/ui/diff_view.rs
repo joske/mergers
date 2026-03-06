@@ -329,7 +329,10 @@ pub(super) fn build_diff_view(
         &action_group,
         &active_view,
         &left_pane.scroll,
-        &[left_buf.clone(), right_buf.clone()],
+        &[
+            (left_pane.text_view.clone(), left_buf.clone()),
+            (right_pane.text_view.clone(), right_buf.clone()),
+        ],
     );
     let find_revealer = find.revealer;
     let goto_entry = find.goto_entry;
@@ -1142,6 +1145,10 @@ pub(super) fn build_diff_view(
                         Some("save-as")
                     } else if key == gtk4::gdk::Key::l || key == gtk4::gdk::Key::L {
                         Some("save-all")
+                    } else if cfg!(target_os = "macos")
+                        && (key == gtk4::gdk::Key::h || key == gtk4::gdk::Key::H)
+                    {
+                        Some("find-replace")
                     } else {
                         None
                     }
@@ -1155,7 +1162,9 @@ pub(super) fn build_diff_view(
                     Some("next-chunk")
                 } else if key == gtk4::gdk::Key::f || key == gtk4::gdk::Key::F {
                     Some("find")
-                } else if key == gtk4::gdk::Key::h || key == gtk4::gdk::Key::H {
+                } else if !cfg!(target_os = "macos")
+                    && (key == gtk4::gdk::Key::h || key == gtk4::gdk::Key::H)
+                {
                     Some("find-replace")
                 } else if key == gtk4::gdk::Key::l || key == gtk4::gdk::Key::L {
                     Some("go-to-line")
@@ -1185,6 +1194,24 @@ pub(super) fn build_diff_view(
             gtk4::glib::Propagation::Proceed
         });
         tv.add_controller(key_ctl);
+    }
+
+    // ── Escape on the widget level closes find bar even when no pane has focus ──
+    {
+        let key_ctl = EventControllerKey::new();
+        let fr = find_revealer.clone();
+        let lb = left_buf.clone();
+        let rb = right_buf.clone();
+        key_ctl.connect_key_pressed(move |_, key, _, _| {
+            if key == gtk4::gdk::Key::Escape && fr.is_child_revealed() {
+                fr.set_reveal_child(false);
+                clear_search_tags(&lb);
+                clear_search_tags(&rb);
+                return gtk4::glib::Propagation::Stop;
+            }
+            gtk4::glib::Propagation::Proceed
+        });
+        widget.add_controller(key_ctl);
     }
 
     DiffViewResult {

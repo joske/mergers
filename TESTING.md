@@ -312,7 +312,7 @@
 | Ctrl+J | Previous conflict (merge only) |
 | Ctrl+K | Next conflict (merge only) |
 | Ctrl+F | Find |
-| Ctrl+H | Find + Replace |
+| Ctrl+H (Cmd+Shift+H on macOS) | Find + Replace |
 | F3 | Find next |
 | Shift+F3 | Find previous |
 | Ctrl+L | Go to line |

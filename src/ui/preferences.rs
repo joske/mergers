@@ -514,7 +514,14 @@ fn show_shortcuts_dialog(parent: &gtk4::Window) {
         "Search",
         &[
             (format!("{m}+F"), "Find"),
-            (format!("{m}+H"), "Find & Replace"),
+            (
+                if cfg!(target_os = "macos") {
+                    format!("{m}+Shift+H")
+                } else {
+                    format!("{m}+H")
+                },
+                "Find & Replace",
+            ),
             ("F3".into(), "Find next"),
             ("Shift+F3".into(), "Find previous"),
             (format!("{m}+L"), "Go to line"),

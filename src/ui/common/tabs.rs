@@ -801,7 +801,12 @@ pub fn build_app_window(
         set_platform_accels(&gtk_app, "diff.prev-chunk", &["<Alt>Up", "<Ctrl>e"]);
         set_platform_accels(&gtk_app, "diff.next-chunk", &["<Alt>Down", "<Ctrl>d"]);
         set_platform_accels(&gtk_app, "diff.find", &["<Ctrl>f"]);
-        set_platform_accels(&gtk_app, "diff.find-replace", &["<Ctrl>h"]);
+        if cfg!(target_os = "macos") {
+            // Cmd+H is the system "Hide" shortcut on macOS; use Cmd+Shift+H instead
+            gtk_app.set_accels_for_action("diff.find-replace", &["<Meta><Shift>h"]);
+        } else {
+            gtk_app.set_accels_for_action("diff.find-replace", &["<Ctrl>h"]);
+        }
         gtk_app.set_accels_for_action("diff.find-next", &["F3"]);
         gtk_app.set_accels_for_action("diff.find-prev", &["<Shift>F3"]);
         set_platform_accels(&gtk_app, "diff.go-to-line", &["<Ctrl>l"]);

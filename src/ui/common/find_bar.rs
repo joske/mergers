@@ -8,11 +8,14 @@ pub struct FindBar {
 
 /// Build the find/replace bar and goto-line entry, registering find/find-next/
 /// find-prev/find-replace/go-to-line actions on `action_group`.
+///
+/// `panes` lists every (`TextView`, `TextBuffer`) pair so that find-next/prev
+/// can cycle across panes when no more matches remain in the active one.
 pub fn build_find_bar(
     action_group: &gio::SimpleActionGroup,
     active_view: &Rc<RefCell<TextView>>,
     fallback_scroll: &ScrolledWindow,
-    buffers: &[TextBuffer],
+    panes: &[(TextView, TextBuffer)],
 ) -> FindBar {
     // ── Widget construction ─────────────────────────────────────────
     let find_entry = Entry::new();
@@ -67,8 +70,10 @@ pub fn build_find_bar(
     find_revealer.set_transition_type(gtk4::RevealerTransitionType::SlideUp);
 
     // ── Search logic: highlight matches in all buffers ───────────────
+    let buffers: Vec<TextBuffer> = panes.iter().map(|(_, b)| b.clone()).collect();
+    let all_panes: Vec<(TextView, TextBuffer)> = panes.to_vec();
     {
-        let bufs: Vec<TextBuffer> = buffers.to_vec();
+        let bufs = buffers.clone();
         let ml = match_label.clone();
         find_entry.connect_changed(move |e| {
             let needle = e.text().to_string();
@@ -86,56 +91,81 @@ pub fn build_find_bar(
         });
     }
 
+    // ── Shared cross-pane find helper ─────────────────────────────────
+    // Searches the active pane first; if no match, cycles to the next pane.
+    let do_find = {
+        let all = all_panes.clone();
+        let av = active_view.clone();
+        let fs = fallback_scroll.clone();
+        move |needle: &str, forward: bool| {
+            if needle.is_empty() {
+                return;
+            }
+            let current_tv = av.borrow().clone();
+            let current_buf = current_tv.buffer();
+
+            // Try to find in the current buffer first
+            let cursor = current_buf.iter_at_mark(&current_buf.get_insert());
+            if let Some((start, end)) = find_next_match(&current_buf, needle, &cursor, forward) {
+                current_buf.select_range(&start, &end);
+                let scroll = scroll_for_view(&current_tv, &fs);
+                scroll_to_line(&current_tv, &current_buf, start.line() as usize, &scroll);
+                return;
+            }
+
+            // Not found in current pane — cycle through other panes
+            let current_idx = all
+                .iter()
+                .position(|(tv, _)| *tv == current_tv)
+                .unwrap_or(0);
+            let n = all.len();
+            for offset in 1..n {
+                let idx = if forward {
+                    (current_idx + offset) % n
+                } else {
+                    (current_idx + n - offset) % n
+                };
+                let (ref tv, ref buf) = all[idx];
+                let from = if forward {
+                    buf.start_iter()
+                } else {
+                    buf.end_iter()
+                };
+                if let Some((start, end)) = find_next_match(buf, needle, &from, forward) {
+                    buf.select_range(&start, &end);
+                    *av.borrow_mut() = tv.clone();
+                    tv.grab_focus();
+                    let scroll = scroll_for_view(tv, &fs);
+                    scroll_to_line(tv, buf, start.line() as usize, &scroll);
+                    return;
+                }
+            }
+        }
+    };
+
     // ── Find next button ─────────────────────────────────────────────
     {
-        let av = active_view.clone();
         let fe = find_entry.clone();
-        let fs = fallback_scroll.clone();
+        let find = do_find.clone();
         find_next_btn.connect_clicked(move |_| {
-            let needle = fe.text().to_string();
-            let tv = av.borrow().clone();
-            let buf = tv.buffer();
-            let cursor = buf.iter_at_mark(&buf.get_insert());
-            if let Some((start, end)) = find_next_match(&buf, &needle, &cursor, true) {
-                buf.select_range(&start, &end);
-                let scroll = scroll_for_view(&tv, &fs);
-                scroll_to_line(&tv, &buf, start.line() as usize, &scroll);
-            }
+            find(&fe.text(), true);
         });
     }
 
     // ── Find prev button ─────────────────────────────────────────────
     {
-        let av = active_view.clone();
         let fe = find_entry.clone();
-        let fs = fallback_scroll.clone();
+        let find = do_find.clone();
         find_prev_btn.connect_clicked(move |_| {
-            let needle = fe.text().to_string();
-            let tv = av.borrow().clone();
-            let buf = tv.buffer();
-            let cursor = buf.iter_at_mark(&buf.get_insert());
-            if let Some((start, end)) = find_next_match(&buf, &needle, &cursor, false) {
-                buf.select_range(&start, &end);
-                let scroll = scroll_for_view(&tv, &fs);
-                scroll_to_line(&tv, &buf, start.line() as usize, &scroll);
-            }
+            find(&fe.text(), false);
         });
     }
 
     // ── Enter in find entry = find next ──────────────────────────────
     {
-        let av = active_view.clone();
-        let fs = fallback_scroll.clone();
+        let find = do_find.clone();
         find_entry.connect_activate(move |e| {
-            let needle = e.text().to_string();
-            let tv = av.borrow().clone();
-            let buf = tv.buffer();
-            let cursor = buf.iter_at_mark(&buf.get_insert());
-            if let Some((start, end)) = find_next_match(&buf, &needle, &cursor, true) {
-                buf.select_range(&start, &end);
-                let scroll = scroll_for_view(&tv, &fs);
-                scroll_to_line(&tv, &buf, start.line() as usize, &scroll);
-            }
+            find(&e.text(), true);
         });
     }
 
@@ -165,7 +195,7 @@ pub fn build_find_bar(
 
     // ── Replace all ──────────────────────────────────────────────────
     {
-        let bufs: Vec<TextBuffer> = buffers.to_vec();
+        let bufs = buffers.clone();
         let find_e = find_entry.clone();
         let repl_e = replace_entry.clone();
         replace_all_btn.connect_clicked(move |_| {
@@ -179,17 +209,29 @@ pub fn build_find_bar(
                 let text = buf
                     .text(&buf.start_iter(), &buf.end_iter(), false)
                     .to_string();
-                let mut new_text = String::with_capacity(text.len());
-                let mut remaining = text.as_str();
-                while let Some(pos) = remaining.to_lowercase().find(&needle_lower) {
-                    new_text.push_str(&remaining[..pos]);
-                    new_text.push_str(&replacement);
-                    remaining = &remaining[(pos + needle.len())..];
+                // Find all match positions (byte offsets) in reverse order so
+                // earlier replacements don't shift later offsets.
+                let text_lower = text.to_lowercase();
+                let mut positions: Vec<usize> = Vec::new();
+                let mut search_from = 0;
+                while let Some(pos) = text_lower[search_from..].find(&needle_lower) {
+                    positions.push(search_from + pos);
+                    search_from += pos + needle.len();
                 }
-                new_text.push_str(remaining);
-                if new_text != text {
-                    buf.set_text(&new_text);
+                if positions.is_empty() {
+                    continue;
                 }
+                buf.begin_user_action();
+                for &byte_pos in positions.iter().rev() {
+                    let char_start = text[..byte_pos].chars().count() as i32;
+                    let char_end =
+                        char_start + text[byte_pos..byte_pos + needle.len()].chars().count() as i32;
+                    let mut s = buf.iter_at_offset(char_start);
+                    let mut e = buf.iter_at_offset(char_end);
+                    buf.delete(&mut s, &mut e);
+                    buf.insert(&mut s, &replacement);
+                }
+                buf.end_user_action();
             }
         });
     }
@@ -197,7 +239,7 @@ pub fn build_find_bar(
     // ── Close find bar ───────────────────────────────────────────────
     {
         let fr = find_revealer.clone();
-        let bufs: Vec<TextBuffer> = buffers.to_vec();
+        let bufs = buffers.clone();
         find_close_btn.connect_clicked(move |_| {
             fr.set_reveal_child(false);
             for b in &bufs {
@@ -209,7 +251,7 @@ pub fn build_find_bar(
     // ── Escape / F3 in find and replace entries ──────────────────────
     for entry in [&find_entry, &replace_entry] {
         let fr = find_revealer.clone();
-        let bufs: Vec<TextBuffer> = buffers.to_vec();
+        let bufs = buffers.clone();
         let fnb = find_next_btn.clone();
         let fpb = find_prev_btn.clone();
         let key_ctl = EventControllerKey::new();
@@ -301,37 +343,19 @@ pub fn build_find_bar(
     }
     {
         let action = gio::SimpleAction::new("find-next", None);
-        let av = active_view.clone();
         let fe = find_entry.clone();
-        let fs = fallback_scroll.clone();
+        let find = do_find.clone();
         action.connect_activate(move |_, _| {
-            let needle = fe.text().to_string();
-            let tv = av.borrow().clone();
-            let buf = tv.buffer();
-            let cursor = buf.iter_at_mark(&buf.get_insert());
-            if let Some((start, end)) = find_next_match(&buf, &needle, &cursor, true) {
-                buf.select_range(&start, &end);
-                let scroll = scroll_for_view(&tv, &fs);
-                scroll_to_line(&tv, &buf, start.line() as usize, &scroll);
-            }
+            find(&fe.text(), true);
         });
         action_group.add_action(&action);
     }
     {
         let action = gio::SimpleAction::new("find-prev", None);
-        let av = active_view.clone();
         let fe = find_entry.clone();
-        let fs = fallback_scroll.clone();
+        let find = do_find.clone();
         action.connect_activate(move |_, _| {
-            let needle = fe.text().to_string();
-            let tv = av.borrow().clone();
-            let buf = tv.buffer();
-            let cursor = buf.iter_at_mark(&buf.get_insert());
-            if let Some((start, end)) = find_next_match(&buf, &needle, &cursor, false) {
-                buf.select_range(&start, &end);
-                let scroll = scroll_for_view(&tv, &fs);
-                scroll_to_line(&tv, &buf, start.line() as usize, &scroll);
-            }
+            find(&fe.text(), false);
         });
         action_group.add_action(&action);
     }
