@@ -1033,8 +1033,12 @@ pub(super) fn build_merge_view(
 
     toolbar.append(&undo_redo_box);
     toolbar.append(&nav_box);
+    chunk_label.set_width_chars(16);
+    chunk_label.set_xalign(0.0);
     toolbar.append(&chunk_label);
     toolbar.append(&conflict_nav_box);
+    conflict_label.set_width_chars(16);
+    conflict_label.set_xalign(0.0);
     toolbar.append(&conflict_label);
     toolbar.append(&goto_entry);
     toolbar.append(&filter_box);
@@ -1196,133 +1200,13 @@ pub(super) fn build_merge_view(
         }
     };
 
-    // Prev chunk
-    {
-        let lch = left_chunks.clone();
-        let rch = right_chunks.clone();
-        let cur = current_chunk.clone();
-        let ltv = left_pane.text_view.clone();
-        let lb = left_buf.clone();
-        let l_scroll = left_pane.scroll.clone();
-        let mtv = middle_pane.text_view.clone();
-        let mb = middle_buf.clone();
-        let ms = middle_pane.scroll.clone();
-        let rtv = right_pane.text_view.clone();
-        let rb = right_buf.clone();
-        let r_scroll = right_pane.scroll.clone();
-        let lbl = chunk_label.clone();
-        let lf = left_pane.filler_overlay.clone();
-        let mf = middle_pane.filler_overlay.clone();
-        let rf = right_pane.filler_overlay.clone();
-        let nav = navigate_merge_chunk;
-        let upd = update_merge_label;
-        let sens = merge_nav_sensitivity;
-        let av = active_view.clone();
-        let st = settings.clone();
-        let pb = prev_btn.clone();
-        let nb = next_btn.clone();
-        let ng = navigating.clone();
-        prev_btn.connect_clicked(move |_| {
-            nav(
-                &lch.borrow(),
-                &rch.borrow(),
-                &cur,
-                &ng,
-                -1,
-                &ltv,
-                &lb,
-                &l_scroll,
-                &mtv,
-                &mb,
-                &ms,
-                &rtv,
-                &rb,
-                &r_scroll,
-                &lf,
-                &mf,
-                &rf,
-                &av.borrow(),
-                st.borrow().wrap_around_navigation,
-            );
-            upd(&lbl, &lch.borrow(), &rch.borrow(), cur.get());
-            sens(
-                &pb,
-                &nb,
-                &lch.borrow(),
-                &rch.borrow(),
-                &av.borrow(),
-                &ltv,
-                &rtv,
-                st.borrow().wrap_around_navigation,
-            );
-            let focused_tv = av.borrow().clone();
-            focused_tv.grab_focus();
-        });
-    }
-
-    // Next chunk
-    {
-        let lch = left_chunks.clone();
-        let rch = right_chunks.clone();
-        let cur = current_chunk.clone();
-        let ltv = left_pane.text_view.clone();
-        let lb = left_buf.clone();
-        let l_scroll = left_pane.scroll.clone();
-        let mtv = middle_pane.text_view.clone();
-        let mb = middle_buf.clone();
-        let ms = middle_pane.scroll.clone();
-        let rtv = right_pane.text_view.clone();
-        let rb = right_buf.clone();
-        let r_scroll = right_pane.scroll.clone();
-        let lbl = chunk_label.clone();
-        let lf = left_pane.filler_overlay.clone();
-        let mf = middle_pane.filler_overlay.clone();
-        let rf = right_pane.filler_overlay.clone();
-        let nav = navigate_merge_chunk;
-        let upd = update_merge_label;
-        let sens = merge_nav_sensitivity;
-        let av = active_view.clone();
-        let st = settings.clone();
-        let pb = prev_btn.clone();
-        let nb = next_btn.clone();
-        let ng = navigating.clone();
-        next_btn.connect_clicked(move |_| {
-            nav(
-                &lch.borrow(),
-                &rch.borrow(),
-                &cur,
-                &ng,
-                1,
-                &ltv,
-                &lb,
-                &l_scroll,
-                &mtv,
-                &mb,
-                &ms,
-                &rtv,
-                &rb,
-                &r_scroll,
-                &lf,
-                &mf,
-                &rf,
-                &av.borrow(),
-                st.borrow().wrap_around_navigation,
-            );
-            upd(&lbl, &lch.borrow(), &rch.borrow(), cur.get());
-            sens(
-                &pb,
-                &nb,
-                &lch.borrow(),
-                &rch.borrow(),
-                &av.borrow(),
-                &ltv,
-                &rtv,
-                st.borrow().wrap_around_navigation,
-            );
-            let focused_tv = av.borrow().clone();
-            focused_tv.grab_focus();
-        });
-    }
+    // Prev/next chunk – delegate to GActions
+    prev_btn.connect_clicked(|btn| {
+        btn.activate_action("diff.prev-chunk", None).ok();
+    });
+    next_btn.connect_clicked(|btn| {
+        btn.activate_action("diff.next-chunk", None).ok();
+    });
 
     // Navigate conflict helper — jumps between `<<<<<<<` markers in middle buf,
     // and syncs left/right panes to the corresponding line.
@@ -1421,97 +1305,13 @@ pub(super) fn build_merge_view(
             nb.set_sensitive(has_next);
         };
 
-    // Prev conflict
-    {
-        let cur = current_conflict.clone();
-        let mtv = middle_pane.text_view.clone();
-        let mb = middle_buf.clone();
-        let ms = middle_pane.scroll.clone();
-        let ltv = left_pane.text_view.clone();
-        let lb = left_buf.clone();
-        let ls = left_pane.scroll.clone();
-        let rtv = right_pane.text_view.clone();
-        let rb = right_buf.clone();
-        let rs = right_pane.scroll.clone();
-        let lch = left_chunks.clone();
-        let rch = right_chunks.clone();
-        let lbl = conflict_label.clone();
-        let nav = navigate_conflict;
-        let upd = update_conflict_label;
-        let csens = conflict_nav_sensitivity;
-        let av = active_view.clone();
-        let st = settings.clone();
-        let pcb = prev_conflict_btn.clone();
-        let ncb = next_conflict_btn.clone();
-        prev_conflict_btn.connect_clicked(move |_| {
-            nav(
-                &cur,
-                -1,
-                &mtv,
-                &mb,
-                &ms,
-                &ltv,
-                &lb,
-                &ls,
-                &rtv,
-                &rb,
-                &rs,
-                &lch,
-                &rch,
-                st.borrow().wrap_around_navigation,
-            );
-            upd(&lbl, &mb, cur.get());
-            csens(&pcb, &ncb, &mb, &mtv, st.borrow().wrap_around_navigation);
-            let focused_tv = av.borrow().clone();
-            focused_tv.grab_focus();
-        });
-    }
-
-    // Next conflict
-    {
-        let cur = current_conflict.clone();
-        let mtv = middle_pane.text_view.clone();
-        let mb = middle_buf.clone();
-        let ms = middle_pane.scroll.clone();
-        let ltv = left_pane.text_view.clone();
-        let lb = left_buf.clone();
-        let ls = left_pane.scroll.clone();
-        let rtv = right_pane.text_view.clone();
-        let rb = right_buf.clone();
-        let rs = right_pane.scroll.clone();
-        let lch = left_chunks.clone();
-        let rch = right_chunks.clone();
-        let lbl = conflict_label.clone();
-        let nav = navigate_conflict;
-        let upd = update_conflict_label;
-        let csens = conflict_nav_sensitivity;
-        let av = active_view.clone();
-        let st = settings.clone();
-        let pcb = prev_conflict_btn.clone();
-        let ncb = next_conflict_btn.clone();
-        next_conflict_btn.connect_clicked(move |_| {
-            nav(
-                &cur,
-                1,
-                &mtv,
-                &mb,
-                &ms,
-                &ltv,
-                &lb,
-                &ls,
-                &rtv,
-                &rb,
-                &rs,
-                &lch,
-                &rch,
-                st.borrow().wrap_around_navigation,
-            );
-            upd(&lbl, &mb, cur.get());
-            csens(&pcb, &ncb, &mb, &mtv, st.borrow().wrap_around_navigation);
-            let focused_tv = av.borrow().clone();
-            focused_tv.grab_focus();
-        });
-    }
+    // Prev/next conflict – delegate to GActions
+    prev_conflict_btn.connect_clicked(|btn| {
+        btn.activate_action("diff.prev-conflict", None).ok();
+    });
+    next_conflict_btn.connect_clicked(|btn| {
+        btn.activate_action("diff.next-conflict", None).ok();
+    });
 
     // ── Chunk maps for merge view ────────────────────────────────
     let left_chunk_map = DrawingArea::new();
@@ -2113,6 +1913,8 @@ pub(super) fn build_merge_view(
                 &rtv,
                 st.borrow().wrap_around_navigation,
             );
+            let focused_tv = av.borrow().clone();
+            focused_tv.grab_focus();
         });
         action_group.add_action(&action);
     }
@@ -2172,6 +1974,8 @@ pub(super) fn build_merge_view(
                 &rtv,
                 st.borrow().wrap_around_navigation,
             );
+            let focused_tv = av.borrow().clone();
+            focused_tv.grab_focus();
         });
         action_group.add_action(&action);
     }
@@ -2193,6 +1997,7 @@ pub(super) fn build_merge_view(
         let st = settings.clone();
         let pcb = prev_conflict_btn.clone();
         let ncb = next_conflict_btn.clone();
+        let av = active_view.clone();
         action.connect_activate(move |_, _| {
             navigate_conflict(
                 &cur,
@@ -2212,6 +2017,8 @@ pub(super) fn build_merge_view(
             );
             update_conflict_label(&lbl, &mb, cur.get());
             conflict_nav_sensitivity(&pcb, &ncb, &mb, &mtv, st.borrow().wrap_around_navigation);
+            let focused_tv = av.borrow().clone();
+            focused_tv.grab_focus();
         });
         action_group.add_action(&action);
     }
@@ -2233,6 +2040,7 @@ pub(super) fn build_merge_view(
         let st = settings.clone();
         let pcb = prev_conflict_btn.clone();
         let ncb = next_conflict_btn.clone();
+        let av = active_view.clone();
         action.connect_activate(move |_, _| {
             navigate_conflict(
                 &cur,
@@ -2252,6 +2060,8 @@ pub(super) fn build_merge_view(
             );
             update_conflict_label(&lbl, &mb, cur.get());
             conflict_nav_sensitivity(&pcb, &ncb, &mb, &mtv, st.borrow().wrap_around_navigation);
+            let focused_tv = av.borrow().clone();
+            focused_tv.grab_focus();
         });
         action_group.add_action(&action);
     }

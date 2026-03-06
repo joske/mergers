@@ -423,99 +423,13 @@ pub(super) fn build_diff_view(
         });
     }
 
-    // Prev chunk
-    {
-        let ch = chunks.clone();
-        let cur = current_chunk.clone();
-        let ltv = left_pane.text_view.clone();
-        let rtv = right_pane.text_view.clone();
-        let lb = left_buf.clone();
-        let rb = right_buf.clone();
-        let ls = left_pane.scroll.clone();
-        let rs = right_pane.scroll.clone();
-        let lbl = chunk_label.clone();
-        let lf = left_pane.filler_overlay.clone();
-        let rf = right_pane.filler_overlay.clone();
-        let av = active_view.clone();
-        let st = settings.clone();
-        let pb = prev_btn.clone();
-        let nb = next_btn.clone();
-        prev_btn.connect_clicked(move |_| {
-            navigate_chunk(
-                &ch.borrow(),
-                &cur,
-                -1,
-                &ltv,
-                &lb,
-                &ls,
-                &rtv,
-                &rb,
-                &rs,
-                &av.borrow(),
-                st.borrow().wrap_around_navigation,
-            );
-            update_chunk_label(&lbl, &ch.borrow(), cur.get());
-            update_chunk_nav_sensitivity(
-                &pb,
-                &nb,
-                &ch.borrow(),
-                &av.borrow(),
-                &rtv,
-                st.borrow().wrap_around_navigation,
-            );
-            lf.queue_draw();
-            rf.queue_draw();
-            let focused_tv = av.borrow().clone();
-            focused_tv.grab_focus();
-        });
-    }
-
-    // Next chunk
-    {
-        let ch = chunks.clone();
-        let cur = current_chunk.clone();
-        let ltv = left_pane.text_view.clone();
-        let rtv = right_pane.text_view.clone();
-        let lb = left_buf.clone();
-        let rb = right_buf.clone();
-        let ls = left_pane.scroll.clone();
-        let rs = right_pane.scroll.clone();
-        let lbl = chunk_label.clone();
-        let lf = left_pane.filler_overlay.clone();
-        let rf = right_pane.filler_overlay.clone();
-        let av = active_view.clone();
-        let st = settings.clone();
-        let pb = prev_btn.clone();
-        let nb = next_btn.clone();
-        next_btn.connect_clicked(move |_| {
-            navigate_chunk(
-                &ch.borrow(),
-                &cur,
-                1,
-                &ltv,
-                &lb,
-                &ls,
-                &rtv,
-                &rb,
-                &rs,
-                &av.borrow(),
-                st.borrow().wrap_around_navigation,
-            );
-            update_chunk_label(&lbl, &ch.borrow(), cur.get());
-            update_chunk_nav_sensitivity(
-                &pb,
-                &nb,
-                &ch.borrow(),
-                &av.borrow(),
-                &rtv,
-                st.borrow().wrap_around_navigation,
-            );
-            lf.queue_draw();
-            rf.queue_draw();
-            let focused_tv = av.borrow().clone();
-            focused_tv.grab_focus();
-        });
-    }
+    // Prev/next chunk – delegate to GActions
+    prev_btn.connect_clicked(|btn| {
+        btn.activate_action("diff.prev-chunk", None).ok();
+    });
+    next_btn.connect_clicked(|btn| {
+        btn.activate_action("diff.next-chunk", None).ok();
+    });
 
     // ── Chunk maps (overview strips) ─────────────────────────────
     let left_chunk_map = DrawingArea::new();
@@ -856,6 +770,8 @@ pub(super) fn build_diff_view(
             );
             lf.queue_draw();
             rf.queue_draw();
+            let focused_tv = av.borrow().clone();
+            focused_tv.grab_focus();
         });
         action_group.add_action(&action);
     }
@@ -901,6 +817,8 @@ pub(super) fn build_diff_view(
             );
             lf.queue_draw();
             rf.queue_draw();
+            let focused_tv = av.borrow().clone();
+            focused_tv.grab_focus();
         });
         action_group.add_action(&action);
     }
