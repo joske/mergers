@@ -486,3 +486,28 @@ pub fn shortened_path(full: &Path) -> String {
     let tail: std::path::PathBuf = components[components.len() - 2..].iter().collect();
     format!("\u{2026}/{}", tail.display())
 }
+
+/// Move a file or directory to the system trash.
+///
+/// On macOS, uses the native `trash` command which correctly moves items to
+/// Finder's Trash. On other platforms, uses GIO's trash support.
+pub fn move_to_trash(path: &Path) -> Result<(), String> {
+    if cfg!(target_os = "macos") {
+        let status = std::process::Command::new("trash")
+            .arg(path)
+            .status()
+            .map_err(|e| format!("Failed to run trash command: {e}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "trash command failed with exit code {}",
+                status.code().unwrap_or(-1)
+            ))
+        }
+    } else {
+        gio::File::for_path(path)
+            .trash(gio::Cancellable::NONE)
+            .map_err(|e| format!("{e}"))
+    }
+}

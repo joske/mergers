@@ -1049,7 +1049,7 @@ pub(super) fn build_dir_tab(
                         "The file will be moved to the system trash.",
                         "Trash",
                         move || {
-                            if let Err(e) = gio::File::for_path(&p).trash(gio::Cancellable::NONE) {
+                            if let Err(e) = move_to_trash(&p) {
                                 eprintln!("Trash failed: {e}");
                             }
                             reload();

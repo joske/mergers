@@ -544,8 +544,7 @@ pub(super) fn build_vcs_window(
                         "Trash",
                         move || {
                             let path = rr.join(&rel);
-                            if let Err(e) = gio::File::for_path(&path).trash(gio::Cancellable::NONE)
-                            {
+                            if let Err(e) = move_to_trash(&path) {
                                 eprintln!("Trash failed: {e}");
                             }
                             r();
