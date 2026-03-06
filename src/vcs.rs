@@ -10,6 +10,7 @@ pub enum VcsStatus {
     Deleted,
     Renamed,
     Untracked,
+    Conflict,
 }
 
 #[derive(Debug, Clone)]
@@ -92,6 +93,7 @@ pub fn parse_porcelain_nul(raw: &[u8]) -> Vec<VcsEntry> {
 
         let status = match xy {
             "??" => VcsStatus::Untracked,
+            _ if xy.contains('U') || xy == "AA" || xy == "DD" => VcsStatus::Conflict,
             _ if xy.starts_with('R') => VcsStatus::Renamed,
             _ if xy.starts_with('D') || xy.ends_with('D') => VcsStatus::Deleted,
             _ if xy.starts_with('A') => VcsStatus::Added,
@@ -127,6 +129,21 @@ pub fn parse_porcelain_nul(raw: &[u8]) -> Vec<VcsEntry> {
 #[must_use]
 pub fn head_content(repo_root: &Path, rel_path: &str) -> Option<String> {
     let arg = format!("HEAD:{rel_path}");
+    let output = Command::new("git")
+        .args(["-C", &repo_root.to_string_lossy(), "show", &arg])
+        .output()
+        .ok()?;
+    if output.status.success() {
+        Some(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        None
+    }
+}
+
+/// Get the content of a file at a specific merge stage (1=base, 2=ours, 3=theirs).
+#[must_use]
+pub fn stage_content(repo_root: &Path, rel_path: &str, stage: u8) -> Option<String> {
+    let arg = format!(":{stage}:{rel_path}");
     let output = Command::new("git")
         .args(["-C", &repo_root.to_string_lossy(), "show", &arg])
         .output()
@@ -257,6 +274,28 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].status, VcsStatus::Modified);
         assert_eq!(entries[0].rel_path, "docs/a -> b/readme.md");
+    }
+
+    #[test]
+    fn test_parse_nul_conflict_uu() {
+        let entries = parse_porcelain_nul(b"UU conflicting.rs\0");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].status, VcsStatus::Conflict);
+        assert_eq!(entries[0].rel_path, "conflicting.rs");
+    }
+
+    #[test]
+    fn test_parse_nul_conflict_aa() {
+        let entries = parse_porcelain_nul(b"AA both_added.rs\0");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].status, VcsStatus::Conflict);
+    }
+
+    #[test]
+    fn test_parse_nul_conflict_du() {
+        let entries = parse_porcelain_nul(b"DU deleted_by_us.rs\0");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].status, VcsStatus::Conflict);
     }
 
     #[test]

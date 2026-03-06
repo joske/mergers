@@ -102,6 +102,7 @@ const CSS: &str = r"
 .diff-changed { color: #729fcf; font-weight: bold; }
 .diff-deleted { color: #f57900; }
 .diff-inserted { color: #73d216; }
+.diff-conflict { color: #ef2929; font-weight: bold; }
 .diff-missing { color: #888a85; font-style: italic; }
 .info-bar { background: #3584e4; padding: 8px 12px; }
 .info-bar label { color: white; }
