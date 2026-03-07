@@ -645,10 +645,23 @@ pub(super) fn build_dir_tab(
     left_header.set_tooltip_text(Some(&*left_dir.borrow()));
     left_header.set_ellipsize(gtk4::pango::EllipsizeMode::Start);
     left_header.set_hexpand(true);
-    left_header.set_margin_start(6);
-    left_header.set_margin_end(6);
-    left_header.set_margin_top(4);
-    left_header.set_margin_bottom(4);
+    let left_copy_btn = Button::from_icon_name("edit-copy-symbolic");
+    left_copy_btn.set_has_frame(false);
+    left_copy_btn.set_tooltip_text(Some("Copy path"));
+    {
+        let ld = left_dir.clone();
+        left_copy_btn.connect_clicked(move |btn| {
+            btn.clipboard().set_text(&ld.borrow());
+        });
+    }
+    let left_header_box = GtkBox::new(Orientation::Horizontal, 0);
+    left_header_box.set_margin_start(6);
+    left_header_box.set_margin_end(2);
+    left_header_box.set_margin_top(4);
+    left_header_box.set_margin_bottom(4);
+    left_header_box.append(&left_header);
+    left_header_box.append(&left_copy_btn);
+
     let right_header_text = match *right_label_override.borrow() {
         Some(ref l) => l.clone(),
         None => shortened_path(Path::new(&*right_dir.borrow())),
@@ -657,17 +670,29 @@ pub(super) fn build_dir_tab(
     right_header.set_tooltip_text(Some(&*right_dir.borrow()));
     right_header.set_ellipsize(gtk4::pango::EllipsizeMode::Start);
     right_header.set_hexpand(true);
-    right_header.set_margin_start(6);
-    right_header.set_margin_end(6);
-    right_header.set_margin_top(4);
-    right_header.set_margin_bottom(4);
+    let right_copy_btn = Button::from_icon_name("edit-copy-symbolic");
+    right_copy_btn.set_has_frame(false);
+    right_copy_btn.set_tooltip_text(Some("Copy path"));
+    {
+        let rd = right_dir.clone();
+        right_copy_btn.connect_clicked(move |btn| {
+            btn.clipboard().set_text(&rd.borrow());
+        });
+    }
+    let right_header_box = GtkBox::new(Orientation::Horizontal, 0);
+    right_header_box.set_margin_start(6);
+    right_header_box.set_margin_end(2);
+    right_header_box.set_margin_top(4);
+    right_header_box.set_margin_bottom(4);
+    right_header_box.append(&right_header);
+    right_header_box.append(&right_copy_btn);
 
     let left_pane_box = GtkBox::new(Orientation::Vertical, 0);
-    left_pane_box.append(&left_header);
+    left_pane_box.append(&left_header_box);
     left_scroll.set_vexpand(true);
     left_pane_box.append(&left_scroll);
     let right_pane_box = GtkBox::new(Orientation::Vertical, 0);
-    right_pane_box.append(&right_header);
+    right_pane_box.append(&right_header_box);
     right_scroll.set_vexpand(true);
     right_pane_box.append(&right_scroll);
 

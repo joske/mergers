@@ -129,6 +129,8 @@
 - [ ] Tree view with expandable directories
 - [ ] Columns: Name (with icon), Size, Modification time
 - [ ] Directory headers above each pane with full path as tooltip
+- [ ] Copy path button next to each header: copies full absolute path to clipboard
+- [ ] Copy path after swap: copies the swapped (current) path, not the original
 - [ ] Status colors: blue (different), orange (left-only), green (right-only), dim italic (missing side)
 
 ### Navigation
