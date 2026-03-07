@@ -1001,19 +1001,8 @@ pub(super) fn build_dir_tab(
         action.connect_activate(move |_, _| {
             if let Some(raw) = get_row() {
                 let info = DirRowInfo::decode(&raw);
-                let lp = Path::new(ld.borrow().as_str()).join(&info.rel_path);
-                let rp = Path::new(rd.borrow().as_str()).join(&info.rel_path);
-                let path = match info.status {
-                    FileStatus::LeftOnly => lp,
-                    FileStatus::RightOnly => rp,
-                    FileStatus::Different | FileStatus::Same => {
-                        if fl.get() {
-                            lp
-                        } else {
-                            rp
-                        }
-                    }
-                };
+                let dir = if fl.get() { &ld } else { &rd };
+                let path = Path::new(dir.borrow().as_str()).join(&info.rel_path);
                 let abs = path.canonicalize().unwrap_or(path);
                 open_externally(&abs);
             }
@@ -1026,7 +1015,11 @@ pub(super) fn build_dir_tab(
         let action = gio::SimpleAction::new("folder-collapse-all", None);
         let tm = tree_model.clone();
         action.connect_activate(move |_, _| {
-            for i in 0..tm.n_items() {
+            // Collapse in reverse so removing children doesn't shift
+            // indices we haven't visited yet.
+            let mut i = tm.n_items();
+            while i > 0 {
+                i -= 1;
                 if let Some(item) = tm.item(i)
                     && let Ok(row) = item.downcast::<TreeListRow>()
                     && row.is_expanded()
@@ -1209,13 +1202,29 @@ pub(super) fn build_dir_tab(
             .and_downcast::<gio::SimpleAction>()
             .unwrap();
 
-        let setup_dir_ctx = |view: &ColumnView, popover: PopoverMenu| {
+        let act_del = dir_action_group
+            .lookup_action("folder-delete")
+            .and_downcast::<gio::SimpleAction>()
+            .unwrap();
+        let act_ext = dir_action_group
+            .lookup_action("folder-open-externally")
+            .and_downcast::<gio::SimpleAction>()
+            .unwrap();
+        let act_path = dir_action_group
+            .lookup_action("folder-copy-path")
+            .and_downcast::<gio::SimpleAction>()
+            .unwrap();
+
+        let setup_dir_ctx = |view: &ColumnView, popover: PopoverMenu, is_left: bool| {
             let gesture = GestureClick::new();
             gesture.set_button(3);
             let get_row = get_selected_row.clone();
             let ao = act_open.clone();
             let al = act_left.clone();
             let ar = act_right.clone();
+            let ad = act_del.clone();
+            let ae = act_ext.clone();
+            let ap = act_path.clone();
             let pop = popover;
             let sel = dir_sel.clone();
             let tm = tree_model.clone();
@@ -1228,23 +1237,33 @@ pub(super) fn build_dir_tab(
                     let info = DirRowInfo::decode(&raw);
                     let is_dir = info.is_dir;
                     let status = info.status;
+                    let exists_on_this_side = match status {
+                        FileStatus::LeftOnly => is_left,
+                        FileStatus::RightOnly => !is_left,
+                        _ => true,
+                    };
                     ao.set_enabled(
                         !is_dir && (status == FileStatus::Different || status == FileStatus::Same),
                     );
                     al.set_enabled(
-                        status == FileStatus::RightOnly || status == FileStatus::Different,
+                        exists_on_this_side
+                            && (status == FileStatus::RightOnly || status == FileStatus::Different),
                     );
                     ar.set_enabled(
-                        status == FileStatus::LeftOnly || status == FileStatus::Different,
+                        exists_on_this_side
+                            && (status == FileStatus::LeftOnly || status == FileStatus::Different),
                     );
+                    ad.set_enabled(exists_on_this_side);
+                    ae.set_enabled(!is_dir && exists_on_this_side);
+                    ap.set_enabled(exists_on_this_side);
                     pop.set_pointing_to(Some(&gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
                     pop.popup();
                 }
             });
             view.add_controller(gesture);
         };
-        setup_dir_ctx(&left_view, dir_popover_l);
-        setup_dir_ctx(&right_view, dir_popover_r);
+        setup_dir_ctx(&left_view, dir_popover_l, true);
+        setup_dir_ctx(&right_view, dir_popover_r, false);
     }
 
     // Shared activate logic — used by both Enter key and double-click
