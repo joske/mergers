@@ -353,13 +353,17 @@ fn make_name_factory(is_left: bool) -> SignalListItemFactory {
 }
 
 /// Size / Mtime column: plain label at `field_idx` from encoded row.
-fn make_field_factory(is_left: bool, field_idx: usize) -> SignalListItemFactory {
+fn make_field_factory(
+    is_left: bool,
+    field_idx: usize,
+    align: gtk4::Align,
+) -> SignalListItemFactory {
     let factory = SignalListItemFactory::new();
 
-    factory.connect_setup(|_, list_item| {
+    factory.connect_setup(move |_, list_item| {
         let item = list_item.downcast_ref::<ListItem>().unwrap();
         let label = Label::new(None);
-        label.set_halign(gtk4::Align::End);
+        label.set_halign(align);
         item.set_child(Some(&label));
     });
 
@@ -471,12 +475,17 @@ pub(super) fn build_dir_tab(
         let col = ColumnViewColumn::new(Some("Name"), Some(make_name_factory(true)));
         col.set_expand(true);
         left_view.append_column(&col);
-        let col = ColumnViewColumn::new(Some("Size"), Some(make_field_factory(true, 4)));
+        let col = ColumnViewColumn::new(
+            Some("Size"),
+            Some(make_field_factory(true, 4, gtk4::Align::End)),
+        );
         col.set_fixed_width(80);
         left_view.append_column(&col);
-        let col =
-            ColumnViewColumn::new(Some("Modification time"), Some(make_field_factory(true, 5)));
-        col.set_fixed_width(180);
+        let col = ColumnViewColumn::new(
+            Some("Modification time"),
+            Some(make_field_factory(true, 5, gtk4::Align::Start)),
+        );
+        col.set_fixed_width(200);
         left_view.append_column(&col);
     }
 
@@ -488,14 +497,17 @@ pub(super) fn build_dir_tab(
         let col = ColumnViewColumn::new(Some("Name"), Some(make_name_factory(false)));
         col.set_expand(true);
         right_view.append_column(&col);
-        let col = ColumnViewColumn::new(Some("Size"), Some(make_field_factory(false, 6)));
+        let col = ColumnViewColumn::new(
+            Some("Size"),
+            Some(make_field_factory(false, 6, gtk4::Align::End)),
+        );
         col.set_fixed_width(80);
         right_view.append_column(&col);
         let col = ColumnViewColumn::new(
             Some("Modification time"),
-            Some(make_field_factory(false, 7)),
+            Some(make_field_factory(false, 7, gtk4::Align::Start)),
         );
-        col.set_fixed_width(180);
+        col.set_fixed_width(200);
         right_view.append_column(&col);
     }
 
