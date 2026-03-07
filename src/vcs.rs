@@ -17,6 +17,7 @@ pub enum VcsStatus {
 pub struct VcsEntry {
     pub rel_path: String,
     pub status: VcsStatus,
+    pub extra: String,
 }
 
 /// Check if a directory is part of a Git repository.
@@ -119,7 +120,25 @@ pub fn parse_porcelain_nul(raw: &[u8]) -> Vec<VcsEntry> {
             path
         };
 
-        entries.push(VcsEntry { rel_path, status });
+        let x_byte = xy.as_bytes()[0];
+        let y_byte = xy.as_bytes()[1];
+        let extra = if status != VcsStatus::Conflict
+            && x_byte != b' '
+            && x_byte != b'?'
+        {
+            if y_byte != b' ' && y_byte != b'?' {
+                "Partially staged".to_string()
+            } else {
+                "Staged".to_string()
+            }
+        } else {
+            String::new()
+        };
+        entries.push(VcsEntry {
+            rel_path,
+            status,
+            extra,
+        });
     }
 
     entries
@@ -174,6 +193,19 @@ pub fn stage_file(repo_root: &Path, rel_path: &str) -> bool {
         .is_ok_and(|s| s.success())
 }
 
+pub fn unstage_file(repo_root: &Path, rel_path: &str) -> bool {
+    Command::new("git")
+        .args([
+            "-C",
+            &repo_root.to_string_lossy(),
+            "restore",
+            "--staged",
+            rel_path,
+        ])
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,6 +223,22 @@ mod tests {
         let entries = parse_porcelain_nul(b"M  src/main.rs\0");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].status, VcsStatus::Modified);
+        assert_eq!(entries[0].extra, "Staged");
+    }
+
+    #[test]
+    fn test_parse_nul_partially_staged() {
+        let entries = parse_porcelain_nul(b"MM src/main.rs\0");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].status, VcsStatus::Modified);
+        assert_eq!(entries[0].extra, "Partially staged");
+    }
+
+    #[test]
+    fn test_parse_nul_unstaged_not_staged() {
+        let entries = parse_porcelain_nul(b" M src/main.rs\0");
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].extra.is_empty());
     }
 
     #[test]
@@ -290,6 +338,7 @@ mod tests {
         let entries = parse_porcelain_nul(b"DU deleted_by_us.rs\0");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].status, VcsStatus::Conflict);
+        assert!(entries[0].extra.is_empty());
     }
 
     #[test]

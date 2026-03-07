@@ -251,8 +251,10 @@
 
 ### Display
 - [ ] Window title: "mergers -- reponame (git)"
-- [ ] ColumnView: Status and File columns
+- [ ] ColumnView: Status, File, and Extra columns
 - [ ] Status colors: Modified/Renamed = blue, Added/Untracked = green, Deleted = orange
+- [ ] Extra column: "Staged" for fully staged, "Partially staged" for staged+unstaged
+- [ ] Conflict files: Extra column empty (not falsely "Staged")
 - [ ] Repo path label and changed file count
 
 ### Opening Diffs
@@ -266,7 +268,9 @@
 - [ ] Right-click selects clicked row
 - [ ] "Open Diff": opens diff (disabled for Untracked)
 - [ ] "Discard Changes": runs `git checkout --` with confirmation (disabled for Untracked)
-- [ ] "Stage": runs `git add`
+- [ ] "Stage": runs `git add` (disabled when already staged)
+- [ ] "Stage" on conflicted file: confirmation dialog warning it marks conflict resolved
+- [ ] "Unstage": runs `git restore --staged` (enabled only when staged)
 - [ ] "Trash": moves to trash with confirmation (Untracked only)
 
 ### File Watcher
