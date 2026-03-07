@@ -67,7 +67,8 @@
 - [ ] Escape closes find bar from source pane (not just from find entry)
 - [ ] Replace: replaces current selection if it matches
 - [ ] Replace All: replaces in both buffers
-- [ ] Close (X / Escape): hides bar, clears highlights
+- [ ] Close (X / Escape): hides bar, clears highlights, returns focus to pane
+- [ ] After closing find bar, Ctrl+F / Ctrl+H work immediately
 
 ### Save
 - [ ] Ctrl+S: saves focused pane; button goes insensitive

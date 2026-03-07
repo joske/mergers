@@ -244,11 +244,14 @@ pub fn build_find_bar(
     {
         let fr = find_revealer.clone();
         let bufs = buffers.clone();
+        let av = active_view.clone();
         find_close_btn.connect_clicked(move |_| {
             fr.set_reveal_child(false);
             for b in &bufs {
                 clear_search_tags(b);
             }
+            let tv = av.borrow().clone();
+            tv.grab_focus();
         });
     }
 
@@ -256,6 +259,7 @@ pub fn build_find_bar(
     for entry in [&find_entry, &replace_entry] {
         let fr = find_revealer.clone();
         let bufs = buffers.clone();
+        let av = active_view.clone();
         let fnb = find_next_btn.clone();
         let fpb = find_prev_btn.clone();
         let key_ctl = EventControllerKey::new();
@@ -265,6 +269,8 @@ pub fn build_find_bar(
                 for b in &bufs {
                     clear_search_tags(b);
                 }
+                let tv = av.borrow().clone();
+                tv.grab_focus();
                 return gtk4::glib::Propagation::Stop;
             }
             if key == gtk4::gdk::Key::F3 {
