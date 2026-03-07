@@ -145,6 +145,8 @@
 - [ ] Copy to left (Alt+Left): copies right to left; confirms if overwriting
 - [ ] Copy to right (Alt+Right): copies left to right; confirms if overwriting
 - [ ] Delete (Delete key): trashes selected file with confirmation
+- [ ] Collapse all: collapses every expanded directory row
+- [ ] Expand all: expands every directory row
 - [ ] Swap panes: rescans, updates headers and window title
 - [ ] Preferences (Ctrl+,)
 
@@ -153,7 +155,9 @@
 - [ ] Right-click targets correct row: select row A, right-click row B, action operates on B (not A)
 - [ ] "Open Diff": opens diff tab (disabled for directories)
 - [ ] "Copy to Left" / "Copy to Right": enabled for appropriate statuses
-- [ ] "Delete": always available
+- [ ] "Delete": enabled only when file exists on focused side
+- [ ] "Open Externally" / "Copy File Path": enabled only when file exists on focused side
+- [ ] Missing-side file: Copy, Delete, Open Externally, Copy Path all disabled
 
 ### Notebook Tabs
 - [ ] Directory tab labeled with "dir1 — dir2"
@@ -182,6 +186,7 @@
 - [ ] Hide hidden files off: dotfiles shown in tree
 
 ### Edge Cases
+- [ ] Collapse all with missing-side files expanded: no crash
 - [ ] Deeply nested directory trees
 - [ ] Copy directory recursively: all nested files copied
 - [ ] Dir -> file tab -> swap -> edit -> save dialog shows correct filename

@@ -404,8 +404,18 @@ pub(super) fn build_dir_tab(
         Rc::new(RefCell::new(labels.first().cloned()));
     let right_label_override: Rc<RefCell<Option<String>>> =
         Rc::new(RefCell::new(labels.get(1).cloned()));
-    let left_dir = Rc::new(RefCell::new(left_dir.to_string_lossy().into_owned()));
-    let right_dir = Rc::new(RefCell::new(right_dir.to_string_lossy().into_owned()));
+    let left_dir = Rc::new(RefCell::new(
+        std::fs::canonicalize(&left_dir)
+            .unwrap_or(left_dir)
+            .to_string_lossy()
+            .into_owned(),
+    ));
+    let right_dir = Rc::new(RefCell::new(
+        std::fs::canonicalize(&right_dir)
+            .unwrap_or(right_dir)
+            .to_string_lossy()
+            .into_owned(),
+    ));
 
     // Build tree data (Rc<RefCell<…>> so the watcher callback can rebuild)
     let children_map = Rc::new(RefCell::new(HashMap::new()));
@@ -685,6 +695,16 @@ pub(super) fn build_dir_tab(
     dir_toolbar.set_margin_bottom(4);
     let dir_swap_btn = Button::from_icon_name("object-flip-horizontal-symbolic");
     dir_swap_btn.set_tooltip_text(Some("Swap panes"));
+
+    let collapse_btn = Button::from_icon_name("format-indent-less-symbolic");
+    collapse_btn.set_tooltip_text(Some("Collapse all"));
+    let expand_btn = Button::from_icon_name("format-indent-more-symbolic");
+    expand_btn.set_tooltip_text(Some("Expand all"));
+    let tree_box = GtkBox::new(Orientation::Horizontal, 0);
+    tree_box.add_css_class("linked");
+    tree_box.append(&collapse_btn);
+    tree_box.append(&expand_btn);
+
     let dir_prefs_btn = Button::from_icon_name("preferences-system-symbolic");
     dir_prefs_btn.set_tooltip_text(Some(&format!("Preferences ({}+,)", primary_key_name())));
     dir_prefs_btn.set_action_name(Some("win.prefs"));
@@ -692,6 +712,7 @@ pub(super) fn build_dir_tab(
     dir_toolbar.append(&dir_copy_box);
     dir_toolbar.append(&delete_btn);
     dir_toolbar.append(&dir_swap_btn);
+    dir_toolbar.append(&tree_box);
     dir_toolbar.append(&dir_prefs_btn);
 
     // Helper: rescan directories and refresh the tree model (async)
@@ -1109,6 +1130,18 @@ pub(super) fn build_dir_tab(
         let dag = dir_action_group.clone();
         delete_btn.connect_clicked(move |_| {
             dag.activate_action("folder-delete", None);
+        });
+    }
+    {
+        let dag = dir_action_group.clone();
+        collapse_btn.connect_clicked(move |_| {
+            dag.activate_action("folder-collapse-all", None);
+        });
+    }
+    {
+        let dag = dir_action_group.clone();
+        expand_btn.connect_clicked(move |_| {
+            dag.activate_action("folder-expand-all", None);
         });
     }
 
