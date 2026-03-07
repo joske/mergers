@@ -15,17 +15,17 @@ MERGERS_BIN = os.environ.get(
 FIXTURES = os.path.join(os.path.dirname(__file__), "../fixtures")
 
 
-def find_app(name="mergers", retries=5):
-    """Find the application in the AT-SPI tree, retrying on failure."""
+def find_app(name="mergers", retries=10):
+    """Find the application in the AT-SPI tree, polling until it appears."""
     for i in range(retries):
         try:
             app = dogtail.tree.root.application(name)
-            doDelay(1)  # Let the AT-SPI tree populate
+            doDelay(0.5)  # Brief settle time for AT-SPI tree
             return app
         except Exception:
             if i == retries - 1:
                 raise
-            doDelay(1)
+            doDelay(0.5)
     return None
 
 
@@ -43,6 +43,18 @@ def wait_for_label(app, predicate, timeout=5, interval=0.5):
                 continue
         doDelay(interval)
     return None
+
+
+def find_labels(app):
+    """Return text of all visible labels."""
+    labels = app.findChildren(lambda n: n.roleName == "label" and n.showing)
+    texts = []
+    for lbl in labels:
+        try:
+            texts.append(lbl.text or lbl.name or "")
+        except Exception:
+            pass
+    return texts
 
 
 def send_keys_until(app, key_combo, pid, predicate, retries=3, delay=1):
@@ -81,32 +93,42 @@ def _send_keys_impl(key_combo, pid):
     subprocess.run(["xdotool", "key", key_combo], check=True)
 
 
+def _launch_and_wait(*args):
+    """Launch mergers with args, poll for AT-SPI readiness, return (proc, app)."""
+    proc = subprocess.Popen(
+        [MERGERS_BIN, *args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    app = find_app()
+    return proc, app
+
+
+def _kill_proc(proc):
+    """Terminate a process gracefully, then force-kill if needed."""
+    proc.send_signal(signal.SIGTERM)
+    try:
+        proc.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=2)
+    time.sleep(0.5)  # Let AT-SPI deregister
+
+
 @pytest.fixture
 def app_process():
-    """Launch mergers and yield the process. Kill on teardown."""
+    """Launch mergers per test. Use for tests that need unique state."""
     processes = []
 
     def _launch(*args):
-        proc = subprocess.Popen(
-            [MERGERS_BIN, *args],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
+        proc, _ = _launch_and_wait(*args)
         processes.append(proc)
-        time.sleep(3)  # Wait for GTK to initialize
         return proc
 
     yield _launch
 
     for proc in processes:
-        proc.send_signal(signal.SIGTERM)
-        try:
-            proc.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=2)
-    # Give AT-SPI time to deregister the app before the next test
-    time.sleep(1)
+        _kill_proc(proc)
 
 
 @pytest.fixture
@@ -115,3 +137,38 @@ def fixture_path():
     def _path(name):
         return os.path.join(FIXTURES, name)
     return _path
+
+
+# ---------------------------------------------------------------------------
+# Module-scoped shared fixtures for read-only test batching
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def shared_diff_app():
+    """One mergers instance for left.txt vs right.txt, shared across a module."""
+    left = os.path.join(FIXTURES, "left.txt")
+    right = os.path.join(FIXTURES, "right.txt")
+    proc, app = _launch_and_wait(left, right)
+    yield proc, app
+    _kill_proc(proc)
+
+
+@pytest.fixture(scope="module")
+def shared_dir_app():
+    """One mergers instance for left_dir vs right_dir, shared across a module."""
+    left = os.path.join(FIXTURES, "left_dir")
+    right = os.path.join(FIXTURES, "right_dir")
+    proc, app = _launch_and_wait(left, right)
+    yield proc, app
+    _kill_proc(proc)
+
+
+@pytest.fixture(scope="module")
+def shared_merge_app():
+    """One mergers instance for 3-way merge, shared across a module."""
+    left = os.path.join(FIXTURES, "left.txt")
+    base = os.path.join(FIXTURES, "base.txt")
+    right = os.path.join(FIXTURES, "right.txt")
+    proc, app = _launch_and_wait(left, base, right)
+    yield proc, app
+    _kill_proc(proc)

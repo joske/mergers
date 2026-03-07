@@ -6,22 +6,7 @@ import tempfile
 
 from dogtail.utils import doDelay
 
-from conftest import find_app, send_keys
-
-
-def _find_labels(app):
-    """Return text of all visible labels."""
-    labels = app.findChildren(lambda n: n.roleName == "label" and n.showing)
-    texts = []
-    for lbl in labels:
-        try:
-            texts.append(lbl.text or lbl.name or "")
-        except Exception:
-            pass
-    return texts
-
-
-FIXTURES = os.path.join(os.path.dirname(__file__), "../fixtures")
+from conftest import find_app, find_labels, send_keys, FIXTURES
 
 
 def _copy_fixture(name, dest_dir):
@@ -138,6 +123,6 @@ def test_refresh_reloads_from_disk(app_process):
 
         # Optionally check if the new content appears in labels or text views.
         # The chunk count may have changed since the file is now very different.
-        labels = _find_labels(app)
+        labels = find_labels(app)
         # Just verify the app is still responsive
         assert labels is not None, "App became unresponsive after refresh"

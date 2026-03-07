@@ -5,7 +5,7 @@ import tempfile
 
 from dogtail.utils import doDelay
 
-from conftest import find_app, send_keys
+from conftest import find_app, find_labels, send_keys
 
 
 def _init_repo(repo):
@@ -27,17 +27,6 @@ def _git(repo, *args):
         check=True, capture_output=True,
     )
 
-
-def _find_labels(app):
-    """Return text of all visible labels."""
-    labels = app.findChildren(lambda n: n.roleName == "label" and n.showing)
-    texts = []
-    for lbl in labels:
-        try:
-            texts.append(lbl.text or lbl.name or "")
-        except Exception:
-            pass
-    return texts
 
 
 def test_vcs_window_title_contains_repo_name_and_git(app_process):
@@ -86,7 +75,7 @@ def test_vcs_double_click_opens_diff_tab(app_process):
         doDelay(2)
 
         # Verify the file is listed
-        labels = _find_labels(app)
+        labels = find_labels(app)
         assert any("hello.txt" in t for t in labels), (
             f"Expected 'hello.txt' in labels: {labels}"
         )
@@ -97,7 +86,7 @@ def test_vcs_double_click_opens_diff_tab(app_process):
 
         # After opening, there should be a new tab with diff content.
         # The diff tab will show additional labels (file names in pane headers).
-        labels_after = _find_labels(app)
+        labels_after = find_labels(app)
         # A diff tab for a modified file shows "changes" or chunk info
         has_diff_indicators = (
             any("changes" in t.lower() for t in labels_after)
@@ -133,7 +122,7 @@ def test_vcs_renamed_file_shows_renamed_status(app_process):
         app = find_app()
         doDelay(2)
 
-        labels = _find_labels(app)
+        labels = find_labels(app)
         assert any("new_name.txt" in t for t in labels), (
             f"Expected 'new_name.txt' in labels: {labels}"
         )

@@ -5,7 +5,7 @@ import tempfile
 
 from dogtail.utils import doDelay
 
-from conftest import find_app, wait_for_label
+from conftest import find_app, find_labels, wait_for_label
 
 
 def _init_repo(repo):
@@ -27,17 +27,6 @@ def _git(repo, *args):
         check=True, capture_output=True,
     )
 
-
-def _find_labels(app):
-    """Return text of all visible labels."""
-    labels = app.findChildren(lambda n: n.roleName == "label" and n.showing)
-    texts = []
-    for lbl in labels:
-        try:
-            texts.append(lbl.text or lbl.name or "")
-        except Exception:
-            pass
-    return texts
 
 
 def test_vcs_window_opens(app_process):
@@ -74,7 +63,7 @@ def test_vcs_shows_modified_file(app_process):
         app_process(repo)
         app = find_app()
         doDelay(2)
-        labels = _find_labels(app)
+        labels = find_labels(app)
         assert any("hello.txt" in t for t in labels), \
             f"Expected 'hello.txt' in labels: {labels}"
         assert any("Modified" in t for t in labels), \
@@ -99,7 +88,7 @@ def test_vcs_shows_untracked_file(app_process):
         app_process(repo)
         app = find_app()
         doDelay(2)
-        labels = _find_labels(app)
+        labels = find_labels(app)
         assert any("newfile.txt" in t for t in labels), \
             f"Expected 'newfile.txt' in labels: {labels}"
         assert any("Untracked" in t for t in labels), \
@@ -123,7 +112,7 @@ def test_vcs_shows_added_file(app_process):
         app_process(repo)
         app = find_app()
         doDelay(2)
-        labels = _find_labels(app)
+        labels = find_labels(app)
         assert any("added.txt" in t for t in labels), \
             f"Expected 'added.txt' in labels: {labels}"
         assert any("Added" in t for t in labels), \
@@ -144,7 +133,7 @@ def test_vcs_shows_deleted_file(app_process):
         app_process(repo)
         app = find_app()
         doDelay(2)
-        labels = _find_labels(app)
+        labels = find_labels(app)
         assert any("doomed.txt" in t for t in labels), \
             f"Expected 'doomed.txt' in labels: {labels}"
         assert any("Deleted" in t for t in labels), \
@@ -167,7 +156,7 @@ def test_vcs_shows_staged_extra(app_process):
         app_process(repo)
         app = find_app()
         doDelay(2)
-        labels = _find_labels(app)
+        labels = find_labels(app)
         assert any("staged.txt" in t for t in labels), \
             f"Expected 'staged.txt' in labels: {labels}"
         assert any("Staged" == t for t in labels), \
@@ -194,7 +183,7 @@ def test_vcs_shows_partially_staged(app_process):
         app_process(repo)
         app = find_app()
         doDelay(2)
-        labels = _find_labels(app)
+        labels = find_labels(app)
         assert any("partial.txt" in t for t in labels), \
             f"Expected 'partial.txt' in labels: {labels}"
         assert any("Partially staged" in t for t in labels), \
@@ -224,7 +213,7 @@ def test_vcs_multiple_statuses(app_process):
         app_process(repo)
         app = find_app()
         doDelay(2)
-        labels = _find_labels(app)
+        labels = find_labels(app)
         assert any("keep.txt" in t for t in labels), \
             f"Expected 'keep.txt' in labels: {labels}"
         assert any("remove.txt" in t for t in labels), \
@@ -269,7 +258,7 @@ def test_vcs_conflict_file(app_process):
         app_process(repo)
         app = find_app()
         doDelay(2)
-        labels = _find_labels(app)
+        labels = find_labels(app)
         assert any("conflict.txt" in t for t in labels), \
             f"Expected 'conflict.txt' in labels: {labels}"
         assert any("Conflict" in t for t in labels), \
