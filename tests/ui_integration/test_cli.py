@@ -73,3 +73,29 @@ def test_help_flag():
     assert "usage" in stdout.lower() or "paths" in stdout.lower(), (
         f"Expected usage/help text, got: {stdout}"
     )
+
+
+def test_file_plus_dir_mix_exits_nonzero(fixture_path):
+    """Passing a file and a directory should exit with non-zero status."""
+    result = subprocess.run(
+        [MERGERS_BIN, fixture_path("left.txt"), fixture_path("left_dir")],
+        capture_output=True,
+        timeout=10,
+    )
+    assert result.returncode != 0, (
+        f"Expected non-zero exit for file+dir mix, got {result.returncode}"
+    )
+
+
+def test_non_git_dir_exits_nonzero():
+    """A single non-git directory should exit with non-zero status."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmpdir:
+        result = subprocess.run(
+            [MERGERS_BIN, tmpdir],
+            capture_output=True,
+            timeout=10,
+        )
+        assert result.returncode != 0, (
+            f"Expected non-zero exit for non-git dir, got {result.returncode}"
+        )

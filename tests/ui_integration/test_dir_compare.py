@@ -45,6 +45,29 @@ def test_dir_shows_only_right_file(shared_dir_app):
         f"Expected 'only_right.txt' in labels: {labels}"
 
 
+def test_dir_tab_label_contains_dir_names(shared_dir_app):
+    """Directory tab should be labeled with both dir names."""
+    _, app = shared_dir_app
+    # Tab labels may be in page tab names rather than regular labels
+    tabs = app.findChildren(lambda n: n.roleName == "page tab" and n.showing)
+    tab_names = [t.name for t in tabs]
+    labels = find_labels(app)
+    all_text = tab_names + labels
+    assert any("left_dir" in t for t in all_text), \
+        f"Expected 'left_dir' in tab/labels: {all_text}"
+
+
+def test_dir_has_subdir_row(shared_dir_app):
+    """Subdirectories should be shown in the tree."""
+    _, app = shared_dir_app
+    # Look for "subdir" in any child element name or label
+    all_children = app.findChildren(lambda n: n.showing and n.name and "subdir" in n.name)
+    labels = find_labels(app)
+    has_subdir = len(all_children) > 0 or any("subdir" in t for t in labels)
+    assert has_subdir, \
+        f"Expected 'subdir' somewhere in the tree. Labels: {labels}"
+
+
 def test_dir_double_click_opens_tab(shared_dir_app):
     """Enter on a file row should open a diff tab."""
     proc, app = shared_dir_app
@@ -132,3 +155,13 @@ def test_dir_same_file_not_opened_twice(shared_dir_app):
     # Clean up: close file tab, go back to dir tab
     send_keys("ctrl+w", proc.pid)
     doDelay(1)
+
+
+def test_dir_shows_same_file_not_listed(shared_dir_app):
+    """Files identical in both dirs should not be shown (filtered out)."""
+    _, app = shared_dir_app
+    labels = find_labels(app)
+    # same.txt exists in both dirs with identical content
+    same_labels = [t for t in labels if t.strip() == "same.txt"]
+    assert len(same_labels) == 0, \
+        f"Expected 'same.txt' to be filtered out, but found in labels: {labels}"

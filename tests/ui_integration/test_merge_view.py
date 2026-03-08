@@ -47,3 +47,40 @@ def test_merge_chunk_navigation(shared_merge_app):
     )
     assert chunk_text is not None, \
         f"Expected chunk navigation label after Ctrl+D. Labels: {find_labels(app)}"
+
+
+def test_merge_left_right_panes_readonly(shared_merge_app):
+    """Left and right panes should not have save buttons (only middle does)."""
+    _, app = shared_merge_app
+    save_buttons = app.findChildren(
+        lambda n: n.roleName == "push button" and "Save" in n.name and n.showing
+    )
+    # Only middle pane has a save button
+    assert len(save_buttons) == 1, \
+        f"Expected exactly 1 save button (middle), found {len(save_buttons)}"
+
+
+def test_merge_undo_redo_buttons_exist(shared_merge_app):
+    """Merge view should have undo and redo buttons."""
+    _, app = shared_merge_app
+    undo = app.findChild(
+        lambda n: n.roleName == "push button" and "Undo" in n.name and n.showing
+    )
+    redo = app.findChild(
+        lambda n: n.roleName == "push button" and "Redo" in n.name and n.showing
+    )
+    assert undo is not None, "Undo button not found in merge view"
+    assert redo is not None, "Redo button not found in merge view"
+
+
+def test_merge_blanks_spaces_toggles_exist(shared_merge_app):
+    """Merge view should have Blanks and Spaces toggle buttons."""
+    _, app = shared_merge_app
+    blanks = app.findChild(
+        lambda n: n.roleName == "toggle button" and "Blank" in n.name and n.showing
+    )
+    spaces = app.findChild(
+        lambda n: n.roleName == "toggle button" and "Space" in n.name and n.showing
+    )
+    assert blanks is not None, "Blanks toggle not found in merge view"
+    assert spaces is not None, "Spaces toggle not found in merge view"

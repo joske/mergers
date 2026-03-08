@@ -1,4 +1,7 @@
 """File diff tests that need their own app instance (unique args or state)."""
+import os
+import tempfile
+
 from dogtail.utils import doDelay
 
 from conftest import find_app, find_labels, send_keys, wait_for_label
@@ -163,3 +166,93 @@ def test_no_wrap_navigation_by_default(app_process, fixture_path):
     labels = find_labels(app)
     assert any("change" in t.lower() for t in labels), \
         f"Expected chunk label to remain: {labels}"
+
+
+def test_ctrl_h_opens_find_replace_bar(app_process, fixture_path):
+    """Ctrl+H should open the find+replace bar."""
+    proc = app_process(fixture_path("left.txt"), fixture_path("right.txt"))
+    app = find_app()
+    doDelay(1)
+
+    send_keys("ctrl+h", proc.pid)
+    doDelay(1)
+
+    entries = app.findChildren(
+        lambda n: n.roleName == "text" and n.showing
+    )
+    # Find+replace bar adds at least 2 entries beyond the source views
+    assert len(entries) >= 4, \
+        f"Expected find+replace entries (>=4 text widgets), found {len(entries)}"
+
+
+def test_empty_file_vs_nonempty(app_process):
+    """Comparing an empty file with a non-empty file should show all-insert chunks."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        empty = os.path.join(tmpdir, "empty.txt")
+        nonempty = os.path.join(tmpdir, "nonempty.txt")
+        with open(empty, "w") as f:
+            pass  # empty
+        with open(nonempty, "w") as f:
+            f.write("line 1\nline 2\nline 3\n")
+
+        proc = app_process(empty, nonempty)
+        app = find_app()
+        doDelay(1)
+        labels = find_labels(app)
+        # Should show at least 1 change
+        assert any("change" in t.lower() for t in labels), \
+            f"Expected change label for empty vs nonempty: {labels}"
+
+
+def test_whitespace_only_diff_with_spaces_toggle(app_process):
+    """Files differing only in whitespace + Spaces toggle = no changes."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        f1 = os.path.join(tmpdir, "a.txt")
+        f2 = os.path.join(tmpdir, "b.txt")
+        with open(f1, "w") as f:
+            f.write("hello world\n")
+        with open(f2, "w") as f:
+            f.write("hello  world\n")  # extra space
+
+        proc = app_process(f1, f2)
+        app = find_app()
+        doDelay(1)
+
+        # Toggle Spaces on
+        spaces_btn = app.findChild(
+            lambda n: n.roleName == "toggle button" and "Space" in n.name and n.showing
+        )
+        assert spaces_btn is not None, "Spaces toggle not found"
+        spaces_btn.do_action(0)
+        doDelay(1)
+
+        labels = find_labels(app)
+        assert any("no changes" in t.lower() or "identical" in t.lower() for t in labels), \
+            f"Expected 'No changes' with spaces toggle on: {labels}"
+
+
+def test_blank_lines_diff_with_blanks_toggle(app_process):
+    """Files differing only in blank lines + Blanks toggle = no changes."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        f1 = os.path.join(tmpdir, "a.txt")
+        f2 = os.path.join(tmpdir, "b.txt")
+        with open(f1, "w") as f:
+            f.write("hello\nworld\n")
+        with open(f2, "w") as f:
+            f.write("hello\n\nworld\n")  # extra blank line
+
+        proc = app_process(f1, f2)
+        app = find_app()
+        doDelay(1)
+
+        # Toggle Blanks on
+        blanks_btn = app.findChild(
+            lambda n: n.roleName == "toggle button" and "Blank" in n.name and n.showing
+        )
+        assert blanks_btn is not None, "Blanks toggle not found"
+        blanks_btn.do_action(0)
+        doDelay(1)
+
+        labels = find_labels(app)
+        assert any("no changes" in t.lower() or "identical" in t.lower() for t in labels), \
+            f"Expected 'No changes' with blanks toggle on: {labels}"

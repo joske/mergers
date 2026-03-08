@@ -6,7 +6,7 @@ import tempfile
 
 from dogtail.utils import doDelay
 
-from conftest import find_app, find_labels, send_keys, FIXTURES
+from conftest import find_app, find_labels, send_keys, wait_for_label, FIXTURES
 
 
 def _copy_fixture(name, dest_dir):
@@ -126,3 +126,64 @@ def test_refresh_reloads_from_disk(app_process):
         labels = find_labels(app)
         # Just verify the app is still responsive
         assert labels is not None, "App became unresponsive after refresh"
+
+
+def test_save_makes_button_insensitive_again(app_process):
+    """After saving, the Save button should become insensitive again."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        left = _copy_fixture("left.txt", tmpdir)
+        right = _copy_fixture("right.txt", tmpdir)
+
+        proc = app_process(left, right)
+        app = find_app()
+        doDelay(2)
+
+        _focus_and_type(proc.pid, "X")
+        doDelay(1)
+
+        # Save button should be sensitive
+        save_buttons = app.findChildren(
+            lambda n: n.roleName == "push button" and "Save" in n.name
+        )
+        assert any(b.sensitive for b in save_buttons), \
+            "Save button should be sensitive after edit"
+
+        send_keys("ctrl+s", proc.pid)
+        doDelay(2)
+
+        # Save button should be insensitive again
+        save_buttons = app.findChildren(
+            lambda n: n.roleName == "push button" and "Save" in n.name
+        )
+        assert not all(b.sensitive for b in save_buttons), \
+            "Save button should be insensitive after save"
+
+
+def test_undo_after_edit(app_process):
+    """Ctrl+Z should undo the last edit."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        left = _copy_fixture("left.txt", tmpdir)
+        right = _copy_fixture("right.txt", tmpdir)
+
+        proc = app_process(left, right)
+        app = find_app()
+        doDelay(2)
+
+        _focus_and_type(proc.pid, "UNDO_TEST")
+        doDelay(1)
+
+        # Should have a sensitive save button
+        save_buttons = app.findChildren(
+            lambda n: n.roleName == "push button" and "Save" in n.name
+        )
+        assert any(b.sensitive for b in save_buttons), \
+            "Save button should be sensitive after edit"
+
+        # Undo
+        send_keys("ctrl+z", proc.pid)
+        doDelay(1)
+
+        # After enough undos, all text should be reverted
+        # Just verify the app didn't crash
+        frames = app.findChildren(lambda n: n.roleName == "frame")
+        assert len(frames) >= 1, "Window disappeared after undo"

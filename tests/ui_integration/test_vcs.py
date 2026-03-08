@@ -278,3 +278,72 @@ def test_vcs_empty_repo_no_crash(app_process):
         doDelay(1)
         windows = app.findChildren(lambda n: n.roleName == "frame")
         assert len(windows) >= 1, "No VCS window found for empty repo"
+
+
+def test_vcs_shows_changes_tab(app_process):
+    """VCS window should have a 'Changes' tab."""
+    with tempfile.TemporaryDirectory() as repo:
+        _init_repo(repo)
+        filepath = os.path.join(repo, "file.txt")
+        with open(filepath, "w") as f:
+            f.write("original\n")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "init")
+        with open(filepath, "w") as f:
+            f.write("modified\n")
+
+        app_process(repo)
+        app = find_app()
+        doDelay(2)
+
+        tabs = app.findChildren(lambda n: n.roleName == "page tab" and n.showing)
+        tab_names = [t.name for t in tabs]
+        assert any("Changes" in n or "change" in n.lower() for n in tab_names), \
+            f"Expected 'Changes' tab, got tabs: {tab_names}"
+
+
+def test_vcs_changed_file_count_label(app_process):
+    """VCS window should show a changed file count."""
+    with tempfile.TemporaryDirectory() as repo:
+        _init_repo(repo)
+        for name in ["a.txt", "b.txt"]:
+            with open(os.path.join(repo, name), "w") as f:
+                f.write(f"{name}\n")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "init")
+        # Modify both files
+        for name in ["a.txt", "b.txt"]:
+            with open(os.path.join(repo, name), "w") as f:
+                f.write(f"{name} modified\n")
+
+        app_process(repo)
+        app = find_app()
+        doDelay(2)
+
+        labels = find_labels(app)
+        # Should show "2" somewhere in a count label
+        assert any("2" in t for t in labels), \
+            f"Expected file count with '2' in labels: {labels}"
+
+
+def test_vcs_subdirectory_file_shows_path(app_process):
+    """A modified file in a subdirectory should show its relative path."""
+    with tempfile.TemporaryDirectory() as repo:
+        _init_repo(repo)
+        subdir = os.path.join(repo, "src")
+        os.makedirs(subdir)
+        filepath = os.path.join(subdir, "main.rs")
+        with open(filepath, "w") as f:
+            f.write("fn main() {}\n")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "init")
+        with open(filepath, "w") as f:
+            f.write("fn main() { println!(\"hello\"); }\n")
+
+        app_process(repo)
+        app = find_app()
+        doDelay(2)
+
+        labels = find_labels(app)
+        assert any("main.rs" in t for t in labels), \
+            f"Expected 'main.rs' in labels: {labels}"

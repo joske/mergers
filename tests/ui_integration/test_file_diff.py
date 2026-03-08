@@ -117,5 +117,62 @@ def test_spaces_toggle(shared_diff_app):
     wait_for_label(app, lambda t: "changes" in t.lower(), timeout=2)
 
 
+# -- Swap panes idempotency (reversible) ------------------------------------
+
+def test_swap_panes_twice_returns_to_original(shared_diff_app):
+    """Swapping panes twice should return to the original state."""
+    _, app = shared_diff_app
+    labels_before = find_labels(app)
+    path_labels_before = [t for t in labels_before if "fixtures/" in t]
+
+    swap_btn = app.findChild(
+        lambda n: n.roleName == "push button" and n.name == "Swap panes"
+    )
+    swap_btn.do_action(0)
+    wait_for_label(app, lambda t: "fixtures/" in t, timeout=2)
+    swap_btn.do_action(0)
+    wait_for_label(app, lambda t: "fixtures/" in t, timeout=2)
+
+    labels_after = find_labels(app)
+    path_labels_after = [t for t in labels_after if "fixtures/" in t]
+    assert path_labels_after == path_labels_before, \
+        f"Expected labels restored after double swap: {path_labels_before} vs {path_labels_after}"
+
+
+def test_two_source_views_visible(shared_diff_app):
+    """A 2-way diff should have exactly 2 visible text panes."""
+    _, app = shared_diff_app
+    text_views = app.findChildren(lambda n: n.roleName == "text" and n.showing)
+    assert len(text_views) == 2, \
+        f"Expected 2 text panes, found {len(text_views)}"
+
+
+def test_undo_button_exists(shared_diff_app):
+    """Undo button should be present in the toolbar."""
+    _, app = shared_diff_app
+    undo = app.findChild(
+        lambda n: n.roleName == "push button" and "Undo" in n.name and n.showing
+    )
+    assert undo is not None, "Undo button not found"
+
+
+def test_redo_button_exists(shared_diff_app):
+    """Redo button should be present in the toolbar."""
+    _, app = shared_diff_app
+    redo = app.findChild(
+        lambda n: n.roleName == "push button" and "Redo" in n.name and n.showing
+    )
+    assert redo is not None, "Redo button not found"
+
+
+def test_preferences_button_exists(shared_diff_app):
+    """Preferences button should be present in the toolbar."""
+    _, app = shared_diff_app
+    prefs = app.findChild(
+        lambda n: n.roleName == "push button" and "Preferences" in n.name and n.showing
+    )
+    assert prefs is not None, "Preferences button not found"
+
+
 # -- Keyboard shortcut tests need their own instance (focus-dependent) ------
 # See test_file_diff_unique.py for: ctrl_f, escape, ctrl_l, ctrl_d, wrap nav
