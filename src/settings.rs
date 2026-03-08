@@ -18,6 +18,9 @@ pub struct Settings {
     pub ignore_blank_lines: bool,
     pub ignore_whitespace: bool,
     pub dir_filters: Vec<String>,
+    pub window_width: i32,
+    pub window_height: i32,
+    pub window_maximized: bool,
 }
 
 impl Default for Settings {
@@ -46,6 +49,9 @@ impl Default for Settings {
                 "node_modules".into(),
                 ".DS_Store".into(),
             ],
+            window_width: 900,
+            window_height: 600,
+            window_maximized: false,
         }
     }
 }
@@ -129,6 +135,9 @@ mod tests {
         assert_eq!(original.ignore_blank_lines, parsed.ignore_blank_lines);
         assert_eq!(original.ignore_whitespace, parsed.ignore_whitespace);
         assert_eq!(original.dir_filters, parsed.dir_filters);
+        assert_eq!(original.window_width, parsed.window_width);
+        assert_eq!(original.window_height, parsed.window_height);
+        assert_eq!(original.window_maximized, parsed.window_maximized);
     }
 
     #[test]
