@@ -552,11 +552,11 @@ pub fn map_key_to_action(
 
     if mods.contains(ModifierType::ALT_MASK) {
         if mods.contains(ModifierType::SHIFT_MASK) {
-            return match key {
-                k if k == Key::Left => Some(bindings.alt_shift_left),
-                k if k == Key::Right => Some(bindings.alt_shift_right),
-                _ => None,
-            };
+            match key {
+                k if k == Key::Left => return Some(bindings.alt_shift_left),
+                k if k == Key::Right => return Some(bindings.alt_shift_right),
+                _ => {} // Fall through to normal Alt mappings
+            }
         }
         return match key {
             k if k == Key::Up => Some("prev-chunk"),

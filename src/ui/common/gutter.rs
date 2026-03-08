@@ -411,6 +411,9 @@ pub fn copy_chunk(
 
 /// Delete a chunk's text from the buffer (Meld's "delete change").
 pub fn delete_chunk(buf: &TextBuffer, start: usize, end: usize) {
+    if start >= end {
+        return;
+    }
     let mut start_iter = buf.iter_at_line(start as i32).unwrap_or(buf.start_iter());
 
     let mut end_iter = if (end as i32) < buf.line_count() {
