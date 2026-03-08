@@ -164,11 +164,13 @@ mod tests {
 
     #[test]
     fn test_window_state_roundtrip() {
-        let mut s = Settings::default();
-        s.window_width = 1200;
-        s.window_height = 800;
-        s.window_maximized = true;
-        s.window_fullscreen = true;
+        let s = Settings {
+            window_width: 1200,
+            window_height: 800,
+            window_maximized: true,
+            window_fullscreen: true,
+            ..Settings::default()
+        };
         let toml_str = toml::to_string_pretty(&s).unwrap();
         let parsed: Settings = toml::from_str(&toml_str).unwrap();
         assert_eq!(parsed.window_width, 1200);
