@@ -154,6 +154,45 @@ mod tests {
     }
 
     #[test]
+    fn test_window_state_defaults() {
+        let s = Settings::default();
+        assert_eq!(s.window_width, 900);
+        assert_eq!(s.window_height, 600);
+        assert!(!s.window_maximized);
+        assert!(!s.window_fullscreen);
+    }
+
+    #[test]
+    fn test_window_state_roundtrip() {
+        let mut s = Settings::default();
+        s.window_width = 1200;
+        s.window_height = 800;
+        s.window_maximized = true;
+        s.window_fullscreen = true;
+        let toml_str = toml::to_string_pretty(&s).unwrap();
+        let parsed: Settings = toml::from_str(&toml_str).unwrap();
+        assert_eq!(parsed.window_width, 1200);
+        assert_eq!(parsed.window_height, 800);
+        assert!(parsed.window_maximized);
+        assert!(parsed.window_fullscreen);
+    }
+
+    #[test]
+    fn test_old_config_without_window_fields() {
+        let toml_str = r#"
+font = "Monospace 11"
+tab_width = 8
+"#;
+        let s: Settings = toml::from_str(toml_str).unwrap();
+        assert_eq!(s.tab_width, 8);
+        // Window fields get defaults when absent
+        assert_eq!(s.window_width, 900);
+        assert_eq!(s.window_height, 600);
+        assert!(!s.window_maximized);
+        assert!(!s.window_fullscreen);
+    }
+
+    #[test]
     fn test_config_path_has_mergers() {
         let path = Settings::config_path();
         let path_str = path.to_string_lossy();

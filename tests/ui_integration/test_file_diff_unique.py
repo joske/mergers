@@ -350,3 +350,40 @@ def test_f11_toggles_fullscreen(app_process, fixture_path):
 
     frames = app.findChildren(lambda n: n.roleName == "frame")
     assert len(frames) >= 1, "Window disappeared after second F11"
+
+
+# -- Window state persistence test ------------------------------------------
+
+def test_window_size_saved_to_settings(app_process, fixture_path):
+    """Closing the window should persist width/height to settings.toml."""
+    import time
+    config_dir = os.path.join(
+        os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")),
+        "mergers",
+    )
+    settings_path = os.path.join(config_dir, "settings.toml")
+
+    # Remove any stale settings so we can verify a fresh write
+    if os.path.exists(settings_path):
+        os.remove(settings_path)
+
+    proc = app_process(fixture_path("left.txt"), fixture_path("right.txt"))
+    find_app()
+    doDelay(1)
+
+    # Close via Ctrl+W so the GTK close-request handler fires
+    send_keys("ctrl+w", proc.pid)
+    # Wait for the process to exit and settings to be written
+    try:
+        proc.wait(timeout=5)
+    except Exception:
+        pass
+    time.sleep(0.5)
+
+    assert os.path.exists(settings_path), \
+        f"settings.toml not found at {settings_path}"
+    contents = open(settings_path).read()
+    assert "window_width" in contents, \
+        f"window_width not saved in settings.toml: {contents[:200]}"
+    assert "window_height" in contents, \
+        f"window_height not saved in settings.toml: {contents[:200]}"
