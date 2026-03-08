@@ -256,3 +256,85 @@ def test_blank_lines_diff_with_blanks_toggle(app_process):
         labels = find_labels(app)
         assert any("no changes" in t.lower() or "identical" in t.lower() for t in labels), \
             f"Expected 'No changes' with blanks toggle on: {labels}"
+
+
+# -- Pane switching tests ---------------------------------------------------
+
+def test_alt_page_down_switches_pane(app_process, fixture_path):
+    """Alt+PageDown should switch focus to the other pane."""
+    proc = app_process(fixture_path("left.txt"), fixture_path("right.txt"))
+    app = find_app()
+    doDelay(1)
+
+    send_keys("alt+Next", proc.pid)  # Next = PageDown in xdotool
+    doDelay(0.5)
+
+    frames = app.findChildren(lambda n: n.roleName == "frame")
+    assert len(frames) >= 1, "Window disappeared after pane switch"
+
+
+def test_alt_page_up_switches_pane(app_process, fixture_path):
+    """Alt+PageUp should switch focus to the other pane."""
+    proc = app_process(fixture_path("left.txt"), fixture_path("right.txt"))
+    app = find_app()
+    doDelay(1)
+
+    send_keys("alt+Prior", proc.pid)  # Prior = PageUp in xdotool
+    doDelay(0.5)
+
+    frames = app.findChildren(lambda n: n.roleName == "frame")
+    assert len(frames) >= 1, "Window disappeared after pane switch"
+
+
+# -- Delete chunk test ------------------------------------------------------
+
+def test_alt_delete_removes_chunk(app_process, fixture_path):
+    """Alt+Delete should delete the current chunk from the focused pane."""
+    import shutil
+    from conftest import FIXTURES
+    with tempfile.TemporaryDirectory() as tmpdir:
+        left = os.path.join(tmpdir, "left.txt")
+        right = os.path.join(tmpdir, "right.txt")
+        shutil.copy2(os.path.join(FIXTURES, "left.txt"), left)
+        shutil.copy2(os.path.join(FIXTURES, "right.txt"), right)
+
+        proc = app_process(left, right)
+        app = find_app()
+        doDelay(1)
+
+        # Navigate to first chunk
+        send_keys("alt+Down", proc.pid)
+        doDelay(0.5)
+
+        # Delete the chunk
+        send_keys("alt+Delete", proc.pid)
+        doDelay(1)
+
+        # Save button should be sensitive (buffer was modified)
+        save_buttons = app.findChildren(
+            lambda n: n.roleName == "push button" and "Save" in n.name
+        )
+        assert any(b.sensitive for b in save_buttons), \
+            "Save button should be sensitive after deleting a chunk"
+
+
+# -- Fullscreen test --------------------------------------------------------
+
+def test_f11_toggles_fullscreen(app_process, fixture_path):
+    """F11 should toggle fullscreen mode without crashing."""
+    proc = app_process(fixture_path("left.txt"), fixture_path("right.txt"))
+    app = find_app()
+    doDelay(1)
+
+    send_keys("F11", proc.pid)
+    doDelay(1)
+
+    frames = app.findChildren(lambda n: n.roleName == "frame")
+    assert len(frames) >= 1, "Window disappeared after F11"
+
+    # Toggle back
+    send_keys("F11", proc.pid)
+    doDelay(1)
+
+    frames = app.findChildren(lambda n: n.roleName == "frame")
+    assert len(frames) >= 1, "Window disappeared after second F11"

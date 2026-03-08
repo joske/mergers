@@ -104,6 +104,25 @@
 - [ ] Alt+Left/Right with no current chunk: nothing happens
 - [ ] In file diff tab opened from dir window: Alt+Left/Right copies chunks, does NOT trigger dir file copy
 
+### Chunk Pull (Alt+Shift+Left / Alt+Shift+Right)
+- [x] Alt+Shift+Right: pulls content from right pane into focused pane
+- [x] Alt+Shift+Left: pulls content from left pane into focused pane
+- [ ] Pull when focused on the same side as pull direction: no-op
+
+### Delete Change (Alt+Delete)
+- [x] Alt+Delete: deletes the current chunk's text from the focused pane
+- [ ] Alt+Delete with no current chunk: nothing happens
+- [ ] Alt+Delete at end of buffer: removes preceding newline too
+
+### Pane Switching (Alt+PageUp / Alt+PageDown)
+- [x] Alt+PageDown: switches focus to next pane (wraps around)
+- [x] Alt+PageUp: switches focus to previous pane (wraps around)
+- [ ] In 3-way merge: cycles left→middle→right→left
+
+### Fullscreen (F11)
+- [x] F11: toggles fullscreen mode
+- [x] F11 again: exits fullscreen
+
 ### Edge Cases
 - [ ] Identical files: "Files are identical" info bar; edit one side -> bar disappears; undo -> reappears
 - [ ] Binary files: info bar, panes read-only, patch button disabled, swap/nav/blanks/spaces/undo/redo buttons disabled
@@ -329,6 +348,12 @@
 | F3 | Find next |
 | Shift+F3 | Find previous |
 | Ctrl+L | Go to line |
+| Alt+PageUp | Previous pane |
+| Alt+PageDown | Next pane |
+| Alt+Shift+Left | Pull chunk from left |
+| Alt+Shift+Right | Pull chunk from right |
+| Alt+Delete | Delete current chunk |
+| F11 | Toggle fullscreen |
 | Ctrl+Shift+P | Export patch (file diff only) |
 | Alt+Left | Copy chunk right→left (file diff) / Copy file to left (dir) |
 | Alt+Right | Copy chunk left→right (file diff) / Copy file to right (dir) |
