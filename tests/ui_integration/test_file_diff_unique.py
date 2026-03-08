@@ -380,7 +380,11 @@ def test_window_size_saved_to_settings(fixture_path, tmp_path, monkeypatch):
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
         proc.send_signal(signal.SIGTERM)
-        proc.wait(timeout=3)
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2)
     time.sleep(0.5)
 
     assert proc.returncode is not None, "Process did not exit after close"
