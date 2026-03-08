@@ -107,23 +107,23 @@ Items marked ✅ are covered by automated UI integration tests (`tests/ui_integr
 - [ ] In file diff tab opened from dir window: Alt+Left/Right copies chunks, does NOT trigger dir file copy
 
 ### Chunk Pull (Alt+Shift+Left / Alt+Shift+Right)
-- [x] Alt+Shift+Right: pulls content from right pane into focused pane
-- [x] Alt+Shift+Left: pulls content from left pane into focused pane
+- [ ] Alt+Shift+Right: pulls content from right pane into focused pane
+- [ ] Alt+Shift+Left: pulls content from left pane into focused pane
 - [ ] Pull when focused on the same side as pull direction: no-op
 
 ### Delete Change (Alt+Delete)
-- [x] Alt+Delete: deletes the current chunk's text from the focused pane
+- [x] ✅ Alt+Delete: deletes the current chunk's text from the focused pane
 - [ ] Alt+Delete with no current chunk: nothing happens
 - [ ] Alt+Delete at end of buffer: removes preceding newline too
 
 ### Pane Switching (Alt+PageUp / Alt+PageDown)
-- [x] Alt+PageDown: switches focus to next pane (wraps around)
-- [x] Alt+PageUp: switches focus to previous pane (wraps around)
+- [x] ✅ Alt+PageDown: switches focus to next pane (wraps around)
+- [x] ✅ Alt+PageUp: switches focus to previous pane (wraps around)
 - [ ] In 3-way merge: cycles left→middle→right→left
 
 ### Fullscreen (F11)
-- [x] F11: toggles fullscreen mode
-- [x] F11 again: exits fullscreen
+- [x] ✅ F11: toggles fullscreen mode
+- [x] ✅ F11 again: exits fullscreen
 
 ### Edge Cases
 - [x] ✅ Identical files: "Files are identical" info bar; edit one side -> bar disappears; undo -> reappears

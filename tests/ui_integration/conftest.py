@@ -108,14 +108,15 @@ def focus_and_type(pid, text):
         subprocess.check_output(["xdotool", "search", "--pid", str(pid)])
         .decode().strip().splitlines()
     )
-    if wids:
-        for wid in wids:
-            result = subprocess.run(
-                ["xdotool", "windowfocus", "--sync", wid],
-                capture_output=True,
-            )
-            if result.returncode == 0:
-                break
+    if not wids:
+        raise RuntimeError(f"No X11 windows found for pid {pid}")
+    for wid in wids:
+        result = subprocess.run(
+            ["xdotool", "windowfocus", "--sync", wid],
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            break
     time.sleep(0.3)
     subprocess.run(["xdotool", "type", "--delay", "50", text], check=True)
 
