@@ -537,6 +537,8 @@ pub fn move_to_trash(path: &Path) -> Result<(), String> {
 pub struct KeyBindings {
     pub alt_left: &'static str,
     pub alt_right: &'static str,
+    pub alt_shift_left: &'static str,
+    pub alt_shift_right: &'static str,
     pub extra_ctrl_shift: &'static [(&'static str, gtk4::gdk::Key, gtk4::gdk::Key)],
     pub extra_ctrl: &'static [(&'static str, gtk4::gdk::Key, gtk4::gdk::Key)],
 }
@@ -549,11 +551,21 @@ pub fn map_key_to_action(
     use gtk4::gdk::{Key, ModifierType};
 
     if mods.contains(ModifierType::ALT_MASK) {
+        if mods.contains(ModifierType::SHIFT_MASK) {
+            match key {
+                k if k == Key::Left => return Some(bindings.alt_shift_left),
+                k if k == Key::Right => return Some(bindings.alt_shift_right),
+                _ => {} // Fall through to normal Alt mappings
+            }
+        }
         return match key {
             k if k == Key::Up => Some("prev-chunk"),
             k if k == Key::Down => Some("next-chunk"),
             k if k == Key::Left => Some(bindings.alt_left),
             k if k == Key::Right => Some(bindings.alt_right),
+            k if k == Key::Page_Up => Some("prev-pane"),
+            k if k == Key::Page_Down => Some("next-pane"),
+            k if k == Key::Delete || k == Key::KP_Delete => Some("delete-chunk"),
             _ => None,
         };
     }

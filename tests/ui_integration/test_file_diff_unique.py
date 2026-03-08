@@ -4,7 +4,7 @@ import tempfile
 
 from dogtail.utils import doDelay
 
-from conftest import find_app, find_labels, send_keys, wait_for_label
+from conftest import copy_fixture, find_app, find_labels, send_keys, wait_for_label
 
 
 def test_three_way_merge_opens(app_process, fixture_path):
@@ -256,3 +256,97 @@ def test_blank_lines_diff_with_blanks_toggle(app_process):
         labels = find_labels(app)
         assert any("no changes" in t.lower() or "identical" in t.lower() for t in labels), \
             f"Expected 'No changes' with blanks toggle on: {labels}"
+
+
+# -- Pane switching tests ---------------------------------------------------
+
+def _focused_text_index(app):
+    """Return the index of the focused text widget among visible ones, or -1."""
+    texts = app.findChildren(lambda n: n.roleName == "text" and n.showing)
+    for i, t in enumerate(texts):
+        try:
+            if t.focused:
+                return i
+        except Exception:
+            pass
+    return -1
+
+
+def test_alt_page_down_switches_pane(app_process, fixture_path):
+    """Alt+PageDown should switch focus to the other pane."""
+    proc = app_process(fixture_path("left.txt"), fixture_path("right.txt"))
+    app = find_app()
+    doDelay(1)
+
+    before = _focused_text_index(app)
+    send_keys("alt+Next", proc.pid)  # Next = PageDown in xdotool
+    doDelay(0.5)
+    after = _focused_text_index(app)
+
+    assert after != before or after == -1, \
+        f"Focus did not change after Alt+PageDown: before={before}, after={after}"
+
+
+def test_alt_page_up_switches_pane(app_process, fixture_path):
+    """Alt+PageUp should switch focus to the other pane."""
+    proc = app_process(fixture_path("left.txt"), fixture_path("right.txt"))
+    app = find_app()
+    doDelay(1)
+
+    before = _focused_text_index(app)
+    send_keys("alt+Prior", proc.pid)  # Prior = PageUp in xdotool
+    doDelay(0.5)
+    after = _focused_text_index(app)
+
+    assert after != before or after == -1, \
+        f"Focus did not change after Alt+PageUp: before={before}, after={after}"
+
+
+# -- Delete chunk test ------------------------------------------------------
+
+def test_alt_delete_removes_chunk(app_process, fixture_path):
+    """Alt+Delete should delete the current chunk from the focused pane."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        left = copy_fixture("left.txt", tmpdir)
+        right = copy_fixture("right.txt", tmpdir)
+
+        proc = app_process(left, right)
+        app = find_app()
+        doDelay(1)
+
+        # Navigate to first chunk
+        send_keys("alt+Down", proc.pid)
+        doDelay(0.5)
+
+        # Delete the chunk
+        send_keys("alt+Delete", proc.pid)
+        doDelay(1)
+
+        # Save button should be sensitive (buffer was modified)
+        save_buttons = app.findChildren(
+            lambda n: n.roleName == "push button" and "Save" in n.name
+        )
+        assert any(b.sensitive for b in save_buttons), \
+            "Save button should be sensitive after deleting a chunk"
+
+
+# -- Fullscreen test --------------------------------------------------------
+
+def test_f11_toggles_fullscreen(app_process, fixture_path):
+    """F11 should toggle fullscreen mode without crashing."""
+    proc = app_process(fixture_path("left.txt"), fixture_path("right.txt"))
+    app = find_app()
+    doDelay(1)
+
+    send_keys("F11", proc.pid)
+    doDelay(1)
+
+    frames = app.findChildren(lambda n: n.roleName == "frame")
+    assert len(frames) >= 1, "Window disappeared after F11"
+
+    # Toggle back
+    send_keys("F11", proc.pid)
+    doDelay(1)
+
+    frames = app.findChildren(lambda n: n.roleName == "frame")
+    assert len(frames) >= 1, "Window disappeared after second F11"

@@ -655,6 +655,18 @@ pub fn build_app_window(
         });
         win_actions.add_action(&action);
     }
+    {
+        let action = gio::SimpleAction::new("fullscreen", None);
+        let w = window.clone();
+        action.connect_activate(move |_, _| {
+            if w.is_fullscreen() {
+                w.unfullscreen();
+            } else {
+                w.fullscreen();
+            }
+        });
+        win_actions.add_action(&action);
+    }
     add_tab_navigation_actions(&win_actions, &notebook);
     window.insert_action_group("win", Some(&win_actions));
     add_tab_navigation_keys(&window);
@@ -693,6 +705,12 @@ pub fn build_app_window(
         set_platform_accels(&gtk_app, "win.prefs", &["<Ctrl>comma"]);
         set_platform_accels(&gtk_app, "win.close-tab", &["<Ctrl>w"]);
         set_platform_accels(&gtk_app, "win.new-comparison", &["<Ctrl>n"]);
+        gtk_app.set_accels_for_action("diff.prev-pane", &["<Alt>Page_Up"]);
+        gtk_app.set_accels_for_action("diff.next-pane", &["<Alt>Page_Down"]);
+        gtk_app.set_accels_for_action("diff.pull-chunk-from-left", &["<Alt><Shift>Left"]);
+        gtk_app.set_accels_for_action("diff.pull-chunk-from-right", &["<Alt><Shift>Right"]);
+        gtk_app.set_accels_for_action("diff.delete-chunk", &["<Alt>Delete"]);
+        gtk_app.set_accels_for_action("win.fullscreen", &["F11"]);
     }
 
     AppWindow {

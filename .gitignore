@@ -18,4 +18,5 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
+docs/plans/
 .claude/

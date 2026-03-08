@@ -409,6 +409,34 @@ pub fn copy_chunk(
     }
 }
 
+/// Delete a chunk's text from the buffer (Meld's "delete change").
+pub fn delete_chunk(buf: &TextBuffer, start: usize, end: usize) {
+    if start >= end {
+        return;
+    }
+    let mut start_iter = buf.iter_at_line(start as i32).unwrap_or(buf.start_iter());
+
+    let mut end_iter = if (end as i32) < buf.line_count() {
+        buf.iter_at_line(end as i32).unwrap_or(buf.end_iter())
+    } else {
+        // Chunk at end of buffer — also remove preceding newline
+        if start > 0 {
+            start_iter = buf
+                .iter_at_line(start as i32 - 1)
+                .unwrap_or(buf.start_iter());
+            if !start_iter.ends_line() {
+                start_iter.forward_to_line_end();
+            }
+        }
+        buf.end_iter()
+    };
+
+    buf.begin_user_action();
+    buf.delete(&mut start_iter, &mut end_iter);
+    buf.end_user_action();
+    buf.place_cursor(&start_iter);
+}
+
 pub fn refresh_diff(
     left_buf: &TextBuffer,
     right_buf: &TextBuffer,
