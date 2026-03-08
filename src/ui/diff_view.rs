@@ -4,6 +4,8 @@ use super::*;
 static DIFF_KEYS: KeyBindings = KeyBindings {
     alt_left: "copy-chunk-right-left",
     alt_right: "copy-chunk-left-right",
+    alt_shift_left: "pull-chunk-from-left",
+    alt_shift_right: "pull-chunk-from-right",
     extra_ctrl_shift: &[("export-patch", gtk4::gdk::Key::p, gtk4::gdk::Key::P)],
     extra_ctrl: &[],
 };
@@ -838,6 +840,38 @@ pub(super) fn build_diff_view(
                 if let Some(c) = snapshot.get(idx) {
                     copy_chunk(&lb, c.start_a, c.end_a, &rb, c.start_b, c.end_b);
                 }
+            }
+        });
+        action_group.add_action(&action);
+    }
+    // Alt+PageUp: switch to previous pane (wraps)
+    {
+        let action = gio::SimpleAction::new("prev-pane", None);
+        let av = active_view.clone();
+        let ltv = left_pane.text_view.clone();
+        let rtv = right_pane.text_view.clone();
+        action.connect_activate(move |_, _| {
+            let active = av.borrow().clone();
+            if active == ltv {
+                rtv.grab_focus();
+            } else {
+                ltv.grab_focus();
+            }
+        });
+        action_group.add_action(&action);
+    }
+    // Alt+PageDown: switch to next pane (wraps)
+    {
+        let action = gio::SimpleAction::new("next-pane", None);
+        let av = active_view.clone();
+        let ltv = left_pane.text_view.clone();
+        let rtv = right_pane.text_view.clone();
+        action.connect_activate(move |_, _| {
+            let active = av.borrow().clone();
+            if active == ltv {
+                rtv.grab_focus();
+            } else {
+                ltv.grab_focus();
             }
         });
         action_group.add_action(&action);

@@ -4,6 +4,8 @@ use super::*;
 static MERGE_KEYS: KeyBindings = KeyBindings {
     alt_left: "copy-chunk-right-middle",
     alt_right: "copy-chunk-left-middle",
+    alt_shift_left: "pull-chunk-from-left",
+    alt_shift_right: "pull-chunk-from-right",
     extra_ctrl_shift: &[],
     extra_ctrl: &[
         ("prev-conflict", gtk4::gdk::Key::j, gtk4::gdk::Key::J),
@@ -1996,6 +1998,44 @@ pub(super) fn build_merge_view(
                     copy_chunk(&lb, mc.start_a, mc.end_a, &mb, mc.start_b, mc.end_b);
                     return;
                 }
+            }
+        });
+        action_group.add_action(&action);
+    }
+    // Alt+PageUp: switch to previous pane (wraps: left->right->middle->left)
+    {
+        let action = gio::SimpleAction::new("prev-pane", None);
+        let av = active_view.clone();
+        let ltv = left_pane.text_view.clone();
+        let mtv = middle_pane.text_view.clone();
+        let rtv = right_pane.text_view.clone();
+        action.connect_activate(move |_, _| {
+            let active = av.borrow().clone();
+            if active == ltv {
+                rtv.grab_focus();
+            } else if active == mtv {
+                ltv.grab_focus();
+            } else {
+                mtv.grab_focus();
+            }
+        });
+        action_group.add_action(&action);
+    }
+    // Alt+PageDown: switch to next pane (wraps: left->middle->right->left)
+    {
+        let action = gio::SimpleAction::new("next-pane", None);
+        let av = active_view.clone();
+        let ltv = left_pane.text_view.clone();
+        let mtv = middle_pane.text_view.clone();
+        let rtv = right_pane.text_view.clone();
+        action.connect_activate(move |_, _| {
+            let active = av.borrow().clone();
+            if active == ltv {
+                mtv.grab_focus();
+            } else if active == mtv {
+                rtv.grab_focus();
+            } else {
+                ltv.grab_focus();
             }
         });
         action_group.add_action(&action);
