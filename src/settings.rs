@@ -21,6 +21,7 @@ pub struct Settings {
     pub window_width: i32,
     pub window_height: i32,
     pub window_maximized: bool,
+    pub window_fullscreen: bool,
 }
 
 impl Default for Settings {
@@ -52,6 +53,7 @@ impl Default for Settings {
             window_width: 900,
             window_height: 600,
             window_maximized: false,
+            window_fullscreen: false,
         }
     }
 }
@@ -138,6 +140,7 @@ mod tests {
         assert_eq!(original.window_width, parsed.window_width);
         assert_eq!(original.window_height, parsed.window_height);
         assert_eq!(original.window_maximized, parsed.window_maximized);
+        assert_eq!(original.window_fullscreen, parsed.window_fullscreen);
     }
 
     #[test]

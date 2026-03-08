@@ -613,9 +613,14 @@ pub fn build_app_window(
 
     let open_tabs: Rc<RefCell<Vec<FileTab>>> = Rc::new(RefCell::new(Vec::new()));
 
-    let (win_w, win_h, win_max) = {
+    let (win_w, win_h, win_max, win_fs) = {
         let s = settings.borrow();
-        (s.window_width, s.window_height, s.window_maximized)
+        (
+            s.window_width,
+            s.window_height,
+            s.window_maximized,
+            s.window_fullscreen,
+        )
     };
     let window = ApplicationWindow::builder()
         .application(app)
@@ -624,7 +629,9 @@ pub fn build_app_window(
         .default_height(if win_h > 0 { win_h } else { default_height })
         .child(&notebook)
         .build();
-    if win_max {
+    if win_fs {
+        window.fullscreen();
+    } else if win_max {
         window.maximize();
     }
 
@@ -686,6 +693,7 @@ pub fn build_app_window(
             // Persist window size (only when not maximized/fullscreen) and state
             let mut s = st.borrow_mut();
             s.window_maximized = w.is_maximized();
+            s.window_fullscreen = w.is_fullscreen();
             if !w.is_maximized() && !w.is_fullscreen() {
                 let (width, height) = (w.width(), w.height());
                 if width > 0 && height > 0 {
