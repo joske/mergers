@@ -1,45 +1,17 @@
 """Tests for editing and saving in file diff window via dogtail AT-SPI."""
 import os
-import shutil
-import subprocess
 import tempfile
 
 from dogtail.utils import doDelay
 
-from conftest import find_app, find_labels, send_keys, wait_for_label, FIXTURES
-
-
-def _copy_fixture(name, dest_dir):
-    """Copy a fixture file into dest_dir and return the new path."""
-    src = os.path.join(FIXTURES, name)
-    dst = os.path.join(dest_dir, name)
-    shutil.copy2(src, dst)
-    return dst
-
-
-def _focus_and_type(pid, text):
-    """Focus the application window and type text via xdotool."""
-    wids = (
-        subprocess.check_output(["xdotool", "search", "--pid", str(pid)])
-        .decode().strip().splitlines()
-    )
-    if wids:
-        for wid in wids:
-            result = subprocess.run(
-                ["xdotool", "windowfocus", "--sync", wid],
-                capture_output=True,
-            )
-            if result.returncode == 0:
-                break
-    doDelay(0.3)
-    subprocess.run(["xdotool", "type", "--delay", "50", text], check=True)
+from conftest import copy_fixture, find_app, find_labels, focus_and_type, send_keys
 
 
 def test_edit_makes_save_sensitive(app_process):
     """Typing text should make a Save button sensitive."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        left = _copy_fixture("left.txt", tmpdir)
-        right = _copy_fixture("right.txt", tmpdir)
+        left = copy_fixture("left.txt", tmpdir)
+        right = copy_fixture("right.txt", tmpdir)
 
         proc = app_process(left, right)
         app = find_app()
@@ -55,7 +27,7 @@ def test_edit_makes_save_sensitive(app_process):
         )
 
         # Type some text into the focused text view
-        _focus_and_type(proc.pid, "hello")
+        focus_and_type(proc.pid, "hello")
         doDelay(1)
 
         # Now at least one Save button should be sensitive
@@ -70,8 +42,8 @@ def test_edit_makes_save_sensitive(app_process):
 def test_save_writes_to_disk(app_process):
     """Typing text and pressing Ctrl+S should save changes to disk."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        left = _copy_fixture("left.txt", tmpdir)
-        right = _copy_fixture("right.txt", tmpdir)
+        left = copy_fixture("left.txt", tmpdir)
+        right = copy_fixture("right.txt", tmpdir)
 
         original_left = open(left).read()
 
@@ -80,7 +52,7 @@ def test_save_writes_to_disk(app_process):
         doDelay(2)
 
         # Type some text
-        _focus_and_type(proc.pid, "EDITED")
+        focus_and_type(proc.pid, "EDITED")
         doDelay(1)
 
         # Save with Ctrl+S
@@ -101,8 +73,8 @@ def test_save_writes_to_disk(app_process):
 def test_refresh_reloads_from_disk(app_process):
     """Externally modifying a file and pressing Ctrl+R should reload content."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        left = _copy_fixture("left.txt", tmpdir)
-        right = _copy_fixture("right.txt", tmpdir)
+        left = copy_fixture("left.txt", tmpdir)
+        right = copy_fixture("right.txt", tmpdir)
 
         proc = app_process(left, right)
         app = find_app()
@@ -131,14 +103,14 @@ def test_refresh_reloads_from_disk(app_process):
 def test_save_makes_button_insensitive_again(app_process):
     """After saving, the Save button should become insensitive again."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        left = _copy_fixture("left.txt", tmpdir)
-        right = _copy_fixture("right.txt", tmpdir)
+        left = copy_fixture("left.txt", tmpdir)
+        right = copy_fixture("right.txt", tmpdir)
 
         proc = app_process(left, right)
         app = find_app()
         doDelay(2)
 
-        _focus_and_type(proc.pid, "X")
+        focus_and_type(proc.pid, "X")
         doDelay(1)
 
         # Save button should be sensitive
@@ -162,14 +134,14 @@ def test_save_makes_button_insensitive_again(app_process):
 def test_undo_after_edit(app_process):
     """Ctrl+Z should undo the last edit."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        left = _copy_fixture("left.txt", tmpdir)
-        right = _copy_fixture("right.txt", tmpdir)
+        left = copy_fixture("left.txt", tmpdir)
+        right = copy_fixture("right.txt", tmpdir)
 
         proc = app_process(left, right)
         app = find_app()
         doDelay(2)
 
-        _focus_and_type(proc.pid, "UNDO_TEST")
+        focus_and_type(proc.pid, "UNDO_TEST")
         doDelay(1)
 
         # Should have a sensitive save button

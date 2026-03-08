@@ -4,7 +4,7 @@ import tempfile
 
 from dogtail.utils import doDelay
 
-from conftest import find_app, find_labels, send_keys, wait_for_label
+from conftest import copy_fixture, find_app, find_labels, send_keys, wait_for_label
 
 
 def test_three_way_merge_opens(app_process, fixture_path):
@@ -260,17 +260,31 @@ def test_blank_lines_diff_with_blanks_toggle(app_process):
 
 # -- Pane switching tests ---------------------------------------------------
 
+def _focused_text_index(app):
+    """Return the index of the focused text widget among visible ones, or -1."""
+    texts = app.findChildren(lambda n: n.roleName == "text" and n.showing)
+    for i, t in enumerate(texts):
+        try:
+            if t.focused:
+                return i
+        except Exception:
+            pass
+    return -1
+
+
 def test_alt_page_down_switches_pane(app_process, fixture_path):
     """Alt+PageDown should switch focus to the other pane."""
     proc = app_process(fixture_path("left.txt"), fixture_path("right.txt"))
     app = find_app()
     doDelay(1)
 
+    before = _focused_text_index(app)
     send_keys("alt+Next", proc.pid)  # Next = PageDown in xdotool
     doDelay(0.5)
+    after = _focused_text_index(app)
 
-    frames = app.findChildren(lambda n: n.roleName == "frame")
-    assert len(frames) >= 1, "Window disappeared after pane switch"
+    assert after != before or after == -1, \
+        f"Focus did not change after Alt+PageDown: before={before}, after={after}"
 
 
 def test_alt_page_up_switches_pane(app_process, fixture_path):
@@ -279,24 +293,22 @@ def test_alt_page_up_switches_pane(app_process, fixture_path):
     app = find_app()
     doDelay(1)
 
+    before = _focused_text_index(app)
     send_keys("alt+Prior", proc.pid)  # Prior = PageUp in xdotool
     doDelay(0.5)
+    after = _focused_text_index(app)
 
-    frames = app.findChildren(lambda n: n.roleName == "frame")
-    assert len(frames) >= 1, "Window disappeared after pane switch"
+    assert after != before or after == -1, \
+        f"Focus did not change after Alt+PageUp: before={before}, after={after}"
 
 
 # -- Delete chunk test ------------------------------------------------------
 
 def test_alt_delete_removes_chunk(app_process, fixture_path):
     """Alt+Delete should delete the current chunk from the focused pane."""
-    import shutil
-    from conftest import FIXTURES
     with tempfile.TemporaryDirectory() as tmpdir:
-        left = os.path.join(tmpdir, "left.txt")
-        right = os.path.join(tmpdir, "right.txt")
-        shutil.copy2(os.path.join(FIXTURES, "left.txt"), left)
-        shutil.copy2(os.path.join(FIXTURES, "right.txt"), right)
+        left = copy_fixture("left.txt", tmpdir)
+        right = copy_fixture("right.txt", tmpdir)
 
         proc = app_process(left, right)
         app = find_app()

@@ -93,6 +93,33 @@ def _send_keys_impl(key_combo, pid):
     subprocess.run(["xdotool", "key", key_combo], check=True)
 
 
+def copy_fixture(name, dest_dir):
+    """Copy a fixture file to dest_dir, return the destination path."""
+    import shutil
+    src = os.path.join(FIXTURES, name)
+    dst = os.path.join(dest_dir, name)
+    shutil.copy2(src, dst)
+    return dst
+
+
+def focus_and_type(pid, text):
+    """Focus the mergers window and type text via xdotool."""
+    wids = (
+        subprocess.check_output(["xdotool", "search", "--pid", str(pid)])
+        .decode().strip().splitlines()
+    )
+    if wids:
+        for wid in wids:
+            result = subprocess.run(
+                ["xdotool", "windowfocus", "--sync", wid],
+                capture_output=True,
+            )
+            if result.returncode == 0:
+                break
+    time.sleep(0.3)
+    subprocess.run(["xdotool", "type", "--delay", "50", text], check=True)
+
+
 def _launch_and_wait(*args):
     """Launch mergers with args, poll for AT-SPI readiness, return (proc, app)."""
     proc = subprocess.Popen(
