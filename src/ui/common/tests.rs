@@ -402,3 +402,90 @@ fn all_colour_pairs_differ() {
     assert_ne!(light, dark);
     IS_DARK_SCHEME.with(|c| c.set(false));
 }
+
+// ── map_key_to_action ──────────────────────────────────────
+
+const TEST_BINDINGS: KeyBindings = KeyBindings {
+    alt_left: "copy-right-to-left",
+    alt_right: "copy-left-to-right",
+    alt_shift_left: "pull-chunk-from-left",
+    alt_shift_right: "pull-chunk-from-right",
+    extra_ctrl_shift: &[],
+    extra_ctrl: &[],
+};
+
+#[test]
+fn key_alt_shift_left_maps_to_pull() {
+    use gtk4::gdk::{Key, ModifierType};
+    let mods = ModifierType::ALT_MASK | ModifierType::SHIFT_MASK;
+    assert_eq!(
+        map_key_to_action(Key::Left, mods, &TEST_BINDINGS),
+        Some("pull-chunk-from-left"),
+    );
+}
+
+#[test]
+fn key_alt_shift_right_maps_to_pull() {
+    use gtk4::gdk::{Key, ModifierType};
+    let mods = ModifierType::ALT_MASK | ModifierType::SHIFT_MASK;
+    assert_eq!(
+        map_key_to_action(Key::Right, mods, &TEST_BINDINGS),
+        Some("pull-chunk-from-right"),
+    );
+}
+
+#[test]
+fn key_alt_shift_down_falls_through_to_next_chunk() {
+    use gtk4::gdk::{Key, ModifierType};
+    let mods = ModifierType::ALT_MASK | ModifierType::SHIFT_MASK;
+    assert_eq!(
+        map_key_to_action(Key::Down, mods, &TEST_BINDINGS),
+        Some("next-chunk"),
+    );
+}
+
+#[test]
+fn key_alt_shift_up_falls_through_to_prev_chunk() {
+    use gtk4::gdk::{Key, ModifierType};
+    let mods = ModifierType::ALT_MASK | ModifierType::SHIFT_MASK;
+    assert_eq!(
+        map_key_to_action(Key::Up, mods, &TEST_BINDINGS),
+        Some("prev-chunk"),
+    );
+}
+
+#[test]
+fn key_alt_down_maps_to_next_chunk() {
+    use gtk4::gdk::{Key, ModifierType};
+    assert_eq!(
+        map_key_to_action(Key::Down, ModifierType::ALT_MASK, &TEST_BINDINGS),
+        Some("next-chunk"),
+    );
+}
+
+#[test]
+fn key_alt_page_down_maps_to_next_pane() {
+    use gtk4::gdk::{Key, ModifierType};
+    assert_eq!(
+        map_key_to_action(Key::Page_Down, ModifierType::ALT_MASK, &TEST_BINDINGS),
+        Some("next-pane"),
+    );
+}
+
+#[test]
+fn key_alt_delete_maps_to_delete_chunk() {
+    use gtk4::gdk::{Key, ModifierType};
+    assert_eq!(
+        map_key_to_action(Key::Delete, ModifierType::ALT_MASK, &TEST_BINDINGS),
+        Some("delete-chunk"),
+    );
+}
+
+#[test]
+fn key_no_modifiers_returns_none() {
+    use gtk4::gdk::{Key, ModifierType};
+    assert_eq!(
+        map_key_to_action(Key::Down, ModifierType::empty(), &TEST_BINDINGS),
+        None,
+    );
+}
