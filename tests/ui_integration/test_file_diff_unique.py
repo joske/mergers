@@ -354,32 +354,36 @@ def test_f11_toggles_fullscreen(app_process, fixture_path):
 
 # -- Window state persistence test ------------------------------------------
 
-def test_window_size_saved_to_settings(app_process, fixture_path):
+def test_window_size_saved_to_settings(fixture_path, tmp_path, monkeypatch):
     """Closing the window should persist width/height to settings.toml."""
+    import signal
+    import subprocess
     import time
-    config_dir = os.path.join(
-        os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")),
-        "mergers",
+    from conftest import MERGERS_BIN
+
+    # Use temp config dir so we don't touch real user settings
+    config_root = str(tmp_path / "config")
+    monkeypatch.setenv("XDG_CONFIG_HOME", config_root)
+    settings_path = os.path.join(config_root, "mergers", "settings.toml")
+
+    proc = subprocess.Popen(
+        [MERGERS_BIN, fixture_path("left.txt"), fixture_path("right.txt")],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
-    settings_path = os.path.join(config_dir, "settings.toml")
-
-    # Remove any stale settings so we can verify a fresh write
-    if os.path.exists(settings_path):
-        os.remove(settings_path)
-
-    proc = app_process(fixture_path("left.txt"), fixture_path("right.txt"))
     find_app()
     doDelay(1)
 
     # Close via Ctrl+W so the GTK close-request handler fires
     send_keys("ctrl+w", proc.pid)
-    # Wait for the process to exit and settings to be written
     try:
         proc.wait(timeout=5)
-    except Exception:
-        pass
+    except subprocess.TimeoutExpired:
+        proc.send_signal(signal.SIGTERM)
+        proc.wait(timeout=3)
     time.sleep(0.5)
 
+    assert proc.returncode is not None, "Process did not exit after close"
     assert os.path.exists(settings_path), \
         f"settings.toml not found at {settings_path}"
     contents = open(settings_path).read()

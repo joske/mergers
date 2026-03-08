@@ -690,20 +690,22 @@ pub fn build_app_window(
         let st = settings.clone();
         let tabs = open_tabs.clone();
         window.connect_close_request(move |w| {
-            // Persist window size (only when not maximized/fullscreen) and state
-            let mut s = st.borrow_mut();
-            s.window_maximized = w.is_maximized();
-            s.window_fullscreen = w.is_fullscreen();
-            if !w.is_maximized() && !w.is_fullscreen() {
-                let (width, height) = (w.width(), w.height());
-                if width > 0 && height > 0 {
-                    s.window_width = width;
-                    s.window_height = height;
+            let result = handle_notebook_close_request(w, &tabs);
+            // Only persist when the window is actually closing
+            if result == gtk4::glib::Propagation::Proceed {
+                let mut s = st.borrow_mut();
+                s.window_maximized = w.is_maximized();
+                s.window_fullscreen = w.is_fullscreen();
+                if !w.is_maximized() && !w.is_fullscreen() {
+                    let (width, height) = (w.width(), w.height());
+                    if width > 0 && height > 0 {
+                        s.window_width = width;
+                        s.window_height = height;
+                    }
                 }
+                s.save();
             }
-            s.save();
-            drop(s);
-            handle_notebook_close_request(w, &tabs)
+            result
         });
     }
 

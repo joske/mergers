@@ -50,8 +50,8 @@ impl Default for Settings {
                 "node_modules".into(),
                 ".DS_Store".into(),
             ],
-            window_width: 900,
-            window_height: 600,
+            window_width: 0,
+            window_height: 0,
             window_maximized: false,
             window_fullscreen: false,
         }
@@ -156,8 +156,8 @@ mod tests {
     #[test]
     fn test_window_state_defaults() {
         let s = Settings::default();
-        assert_eq!(s.window_width, 900);
-        assert_eq!(s.window_height, 600);
+        assert_eq!(s.window_width, 0);
+        assert_eq!(s.window_height, 0);
         assert!(!s.window_maximized);
         assert!(!s.window_fullscreen);
     }
@@ -187,9 +187,9 @@ tab_width = 8
 "#;
         let s: Settings = toml::from_str(toml_str).unwrap();
         assert_eq!(s.tab_width, 8);
-        // Window fields get defaults when absent
-        assert_eq!(s.window_width, 900);
-        assert_eq!(s.window_height, 600);
+        // Window fields get defaults (0 = unset) when absent
+        assert_eq!(s.window_width, 0);
+        assert_eq!(s.window_height, 0);
         assert!(!s.window_maximized);
         assert!(!s.window_fullscreen);
     }
