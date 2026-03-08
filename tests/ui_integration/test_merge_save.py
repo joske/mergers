@@ -1,5 +1,4 @@
 """Merge save test — needs its own app instance with writable temp files."""
-import os
 import tempfile
 
 from dogtail.utils import doDelay
@@ -13,8 +12,6 @@ def test_merge_ctrl_s_saves_middle(app_process):
         left = copy_fixture("left.txt", tmpdir)
         base = copy_fixture("base.txt", tmpdir)
         right = copy_fixture("right.txt", tmpdir)
-
-        original_base = open(base).read()
 
         proc = app_process(left, base, right)
         app = find_app()
