@@ -2041,6 +2041,112 @@ pub(super) fn build_merge_view(
         action_group.add_action(&action);
     }
 
+    // Alt+Shift+Right: pull from right into middle
+    {
+        let action = gio::SimpleAction::new("pull-chunk-from-right", None);
+        let av = active_view.clone();
+        let mtv = middle_pane.text_view.clone();
+        let rch = right_chunks.clone();
+        let lch = left_chunks.clone();
+        let mb = middle_buf.clone();
+        let rb = right_buf.clone();
+        action.connect_activate(move |_, _| {
+            let active = av.borrow().clone();
+            if active != mtv {
+                return; // Only middle pane can receive pulls
+            }
+            let cursor_line = {
+                let buf = mtv.buffer();
+                let iter = buf.iter_at_mark(&buf.get_insert());
+                iter.line() as usize
+            };
+            let merged = merged_gutter_chunks(&rch.borrow(), &lch.borrow(), Side::B);
+            for (mc, _) in &merged {
+                if mc.tag == DiffTag::Equal {
+                    continue;
+                }
+                if cursor_line >= mc.start_a && cursor_line < mc.end_a.max(mc.start_a + 1) {
+                    copy_chunk(&rb, mc.start_b, mc.end_b, &mb, mc.start_a, mc.end_a);
+                    return;
+                }
+            }
+        });
+        action_group.add_action(&action);
+    }
+    // Alt+Shift+Left: pull from left into middle
+    {
+        let action = gio::SimpleAction::new("pull-chunk-from-left", None);
+        let av = active_view.clone();
+        let mtv = middle_pane.text_view.clone();
+        let lch = left_chunks.clone();
+        let rch = right_chunks.clone();
+        let mb = middle_buf.clone();
+        let lb = left_buf.clone();
+        action.connect_activate(move |_, _| {
+            let active = av.borrow().clone();
+            if active != mtv {
+                return;
+            }
+            let cursor_line = {
+                let buf = mtv.buffer();
+                let iter = buf.iter_at_mark(&buf.get_insert());
+                iter.line() as usize
+            };
+            let merged = merged_gutter_chunks(&lch.borrow(), &rch.borrow(), Side::A);
+            for (mc, _) in &merged {
+                if mc.tag == DiffTag::Equal {
+                    continue;
+                }
+                if cursor_line >= mc.start_b && cursor_line < mc.end_b.max(mc.start_b + 1) {
+                    copy_chunk(&lb, mc.start_a, mc.end_a, &mb, mc.start_b, mc.end_b);
+                    return;
+                }
+            }
+        });
+        action_group.add_action(&action);
+    }
+    // Alt+Delete: delete current chunk from middle pane
+    {
+        let action = gio::SimpleAction::new("delete-chunk", None);
+        let av = active_view.clone();
+        let mtv = middle_pane.text_view.clone();
+        let lch = left_chunks.clone();
+        let rch = right_chunks.clone();
+        let mb = middle_buf.clone();
+        action.connect_activate(move |_, _| {
+            let active = av.borrow().clone();
+            if active != mtv {
+                return; // Only middle pane supports delete
+            }
+            let cursor_line = {
+                let buf = mtv.buffer();
+                let iter = buf.iter_at_mark(&buf.get_insert());
+                iter.line() as usize
+            };
+            // Check left_chunks (middle = B side)
+            for mc in lch.borrow().iter() {
+                if mc.tag == DiffTag::Equal {
+                    continue;
+                }
+                if cursor_line >= mc.start_b && cursor_line < mc.end_b.max(mc.start_b + 1) {
+                    delete_chunk(&mb, mc.start_b, mc.end_b);
+                    return;
+                }
+            }
+            // Check right_chunks (middle = A side)
+            for mc in rch.borrow().iter() {
+                if mc.tag == DiffTag::Equal {
+                    continue;
+                }
+                if cursor_line >= mc.start_a && cursor_line < mc.end_a.max(mc.start_a + 1) {
+                    delete_chunk(&mb, mc.start_a, mc.end_a);
+                    return;
+                }
+            }
+        });
+        action_group.add_action(&action);
+    }
+
     // Capture-phase key handler for shortcuts sourceview would consume
     for tv in [
         &left_pane.text_view,

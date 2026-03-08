@@ -877,6 +877,79 @@ pub(super) fn build_diff_view(
         action_group.add_action(&action);
     }
 
+    // Alt+Shift+Right: pull chunk from right into focused pane
+    {
+        let action = gio::SimpleAction::new("pull-chunk-from-right", None);
+        let av = active_view.clone();
+        let ltv = left_pane.text_view.clone();
+        let ch = chunks.clone();
+        let cur = current_chunk.clone();
+        let lb = left_buf.clone();
+        let rb = right_buf.clone();
+        action.connect_activate(move |_, _| {
+            if let Some(idx) = cur.get() {
+                let snapshot = ch.borrow();
+                if let Some(c) = snapshot.get(idx) {
+                    let active = av.borrow().clone();
+                    if active == ltv {
+                        // Focused on left: pull right content into left
+                        copy_chunk(&rb, c.start_b, c.end_b, &lb, c.start_a, c.end_a);
+                    }
+                    // If focused on right: pulling from right is a no-op
+                }
+            }
+        });
+        action_group.add_action(&action);
+    }
+    // Alt+Shift+Left: pull chunk from left into focused pane
+    {
+        let action = gio::SimpleAction::new("pull-chunk-from-left", None);
+        let av = active_view.clone();
+        let ltv = left_pane.text_view.clone();
+        let ch = chunks.clone();
+        let cur = current_chunk.clone();
+        let lb = left_buf.clone();
+        let rb = right_buf.clone();
+        action.connect_activate(move |_, _| {
+            if let Some(idx) = cur.get() {
+                let snapshot = ch.borrow();
+                if let Some(c) = snapshot.get(idx) {
+                    let active = av.borrow().clone();
+                    if active != ltv {
+                        // Focused on right: pull left content into right
+                        copy_chunk(&lb, c.start_a, c.end_a, &rb, c.start_b, c.end_b);
+                    }
+                    // If focused on left: pulling from left is a no-op
+                }
+            }
+        });
+        action_group.add_action(&action);
+    }
+    // Alt+Delete: delete current chunk from focused pane
+    {
+        let action = gio::SimpleAction::new("delete-chunk", None);
+        let av = active_view.clone();
+        let ltv = left_pane.text_view.clone();
+        let ch = chunks.clone();
+        let cur = current_chunk.clone();
+        let lb = left_buf.clone();
+        let rb = right_buf.clone();
+        action.connect_activate(move |_, _| {
+            if let Some(idx) = cur.get() {
+                let snapshot = ch.borrow();
+                if let Some(c) = snapshot.get(idx) {
+                    let active = av.borrow().clone();
+                    if active == ltv {
+                        delete_chunk(&lb, c.start_a, c.end_a);
+                    } else {
+                        delete_chunk(&rb, c.start_b, c.end_b);
+                    }
+                }
+            }
+        });
+        action_group.add_action(&action);
+    }
+
     // Ctrl+S: save the focused pane
     {
         let action = gio::SimpleAction::new("save", None);
