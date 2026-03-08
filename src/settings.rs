@@ -18,6 +18,10 @@ pub struct Settings {
     pub ignore_blank_lines: bool,
     pub ignore_whitespace: bool,
     pub dir_filters: Vec<String>,
+    pub window_width: i32,
+    pub window_height: i32,
+    pub window_maximized: bool,
+    pub window_fullscreen: bool,
 }
 
 impl Default for Settings {
@@ -46,6 +50,10 @@ impl Default for Settings {
                 "node_modules".into(),
                 ".DS_Store".into(),
             ],
+            window_width: 0,
+            window_height: 0,
+            window_maximized: false,
+            window_fullscreen: false,
         }
     }
 }
@@ -129,6 +137,10 @@ mod tests {
         assert_eq!(original.ignore_blank_lines, parsed.ignore_blank_lines);
         assert_eq!(original.ignore_whitespace, parsed.ignore_whitespace);
         assert_eq!(original.dir_filters, parsed.dir_filters);
+        assert_eq!(original.window_width, parsed.window_width);
+        assert_eq!(original.window_height, parsed.window_height);
+        assert_eq!(original.window_maximized, parsed.window_maximized);
+        assert_eq!(original.window_fullscreen, parsed.window_fullscreen);
     }
 
     #[test]
@@ -139,6 +151,47 @@ mod tests {
         // Other fields should get defaults
         assert_eq!(s.tab_width, 4);
         assert!(s.show_line_numbers);
+    }
+
+    #[test]
+    fn test_window_state_defaults() {
+        let s = Settings::default();
+        assert_eq!(s.window_width, 0);
+        assert_eq!(s.window_height, 0);
+        assert!(!s.window_maximized);
+        assert!(!s.window_fullscreen);
+    }
+
+    #[test]
+    fn test_window_state_roundtrip() {
+        let s = Settings {
+            window_width: 1200,
+            window_height: 800,
+            window_maximized: true,
+            window_fullscreen: true,
+            ..Settings::default()
+        };
+        let toml_str = toml::to_string_pretty(&s).unwrap();
+        let parsed: Settings = toml::from_str(&toml_str).unwrap();
+        assert_eq!(parsed.window_width, 1200);
+        assert_eq!(parsed.window_height, 800);
+        assert!(parsed.window_maximized);
+        assert!(parsed.window_fullscreen);
+    }
+
+    #[test]
+    fn test_old_config_without_window_fields() {
+        let toml_str = r#"
+font = "Monospace 11"
+tab_width = 8
+"#;
+        let s: Settings = toml::from_str(toml_str).unwrap();
+        assert_eq!(s.tab_width, 8);
+        // Window fields get defaults (0 = unset) when absent
+        assert_eq!(s.window_width, 0);
+        assert_eq!(s.window_height, 0);
+        assert!(!s.window_maximized);
+        assert!(!s.window_fullscreen);
     }
 
     #[test]

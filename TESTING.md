@@ -326,6 +326,15 @@ Items marked ✅ are covered by automated UI integration tests (`tests/ui_integr
 - [ ] Escape closes preferences dialog
 - [ ] Close button at bottom closes preferences dialog
 
+## Window State Persistence
+
+- [x] ✅ Window size saved to `settings.toml` on close
+- [ ] Window maximized state restored on relaunch
+- [ ] Window fullscreen state restored on relaunch (macOS green button)
+- [ ] Per-window default sizes: VCS=700×500, merge=1200×600, file diff=900×600, dir=900×600
+- [ ] Old configs without window fields get sentinel defaults (0 = use per-window default)
+- [ ] Size only saved when not maximized/fullscreen (avoids saving inflated dimensions)
+
 ## Dark Mode
 
 - [ ] Linux/GNOME: auto-detects system dark mode

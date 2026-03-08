@@ -350,3 +350,48 @@ def test_f11_toggles_fullscreen(app_process, fixture_path):
 
     frames = app.findChildren(lambda n: n.roleName == "frame")
     assert len(frames) >= 1, "Window disappeared after second F11"
+
+
+# -- Window state persistence test ------------------------------------------
+
+def test_window_size_saved_to_settings(fixture_path, tmp_path, monkeypatch):
+    """Closing the window should persist width/height to settings.toml."""
+    import signal
+    import subprocess
+    import time
+    from conftest import MERGERS_BIN
+
+    # Use temp config dir so we don't touch real user settings
+    config_root = str(tmp_path / "config")
+    monkeypatch.setenv("XDG_CONFIG_HOME", config_root)
+    settings_path = os.path.join(config_root, "mergers", "settings.toml")
+
+    proc = subprocess.Popen(
+        [MERGERS_BIN, fixture_path("left.txt"), fixture_path("right.txt")],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    find_app()
+    doDelay(1)
+
+    # Close via Ctrl+W so the GTK close-request handler fires
+    send_keys("ctrl+w", proc.pid)
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.send_signal(signal.SIGTERM)
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2)
+    time.sleep(0.5)
+
+    assert proc.returncode is not None, "Process did not exit after close"
+    assert os.path.exists(settings_path), \
+        f"settings.toml not found at {settings_path}"
+    contents = open(settings_path).read()
+    assert "window_width" in contents, \
+        f"window_width not saved in settings.toml: {contents[:200]}"
+    assert "window_height" in contents, \
+        f"window_height not saved in settings.toml: {contents[:200]}"

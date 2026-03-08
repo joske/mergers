@@ -613,13 +613,27 @@ pub fn build_app_window(
 
     let open_tabs: Rc<RefCell<Vec<FileTab>>> = Rc::new(RefCell::new(Vec::new()));
 
+    let (win_w, win_h, win_max, win_fs) = {
+        let s = settings.borrow();
+        (
+            s.window_width,
+            s.window_height,
+            s.window_maximized,
+            s.window_fullscreen,
+        )
+    };
     let window = ApplicationWindow::builder()
         .application(app)
         .title("Mergers")
-        .default_width(default_width)
-        .default_height(default_height)
+        .default_width(if win_w > 0 { win_w } else { default_width })
+        .default_height(if win_h > 0 { win_h } else { default_height })
         .child(&notebook)
         .build();
+    if win_fs {
+        window.fullscreen();
+    } else if win_max {
+        window.maximize();
+    }
 
     // ── Win actions ──────────────────────────────────────────────────
     let win_actions = gio::SimpleActionGroup::new();
@@ -671,10 +685,28 @@ pub fn build_app_window(
     window.insert_action_group("win", Some(&win_actions));
     add_tab_navigation_keys(&window);
 
-    // ── Unsaved-changes guard ────────────────────────────────────────
+    // ── Save window state on close ──────────────────────────────────
     {
+        let st = settings.clone();
         let tabs = open_tabs.clone();
-        window.connect_close_request(move |w| handle_notebook_close_request(w, &tabs));
+        window.connect_close_request(move |w| {
+            let result = handle_notebook_close_request(w, &tabs);
+            // Only persist when the window is actually closing
+            if result == gtk4::glib::Propagation::Proceed {
+                let mut s = st.borrow_mut();
+                s.window_maximized = w.is_maximized();
+                s.window_fullscreen = w.is_fullscreen();
+                if !w.is_maximized() && !w.is_fullscreen() {
+                    let (width, height) = (w.width(), w.height());
+                    if width > 0 && height > 0 {
+                        s.window_width = width;
+                        s.window_height = height;
+                    }
+                }
+                s.save();
+            }
+            result
+        });
     }
 
     // ── Keyboard accelerators (superset of all window types) ─────────
