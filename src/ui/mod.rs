@@ -111,8 +111,8 @@ const CSS: &str = r"
 .find-bar { background: alpha(@theme_bg_color, 0.95); border-top: 1px solid @borders; padding: 4px 6px; }
 .find-bar entry { min-height: 28px; }
 .goto-entry { min-height: 28px; }
-.dir-pane-focused { border: 2px solid @accent_color; border-radius: 4px; }
-.dir-pane-inactive { border: 2px solid alpha(@borders, 0.5); border-radius: 4px; }
+.pane-focused { border: 2px solid @accent_color; border-radius: 4px; }
+.pane-inactive { border: 2px solid alpha(@borders, 0.5); border-radius: 4px; }
 ";
 
 const SEP: char = '\x1f';

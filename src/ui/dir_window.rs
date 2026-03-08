@@ -557,12 +557,12 @@ pub(super) fn build_dir_tab(
             ov.set_opacity(1.0);
             otv.set_opacity(0.55);
             if let Some(sw) = os.borrow().as_ref() {
-                sw.add_css_class("dir-pane-focused");
-                sw.remove_css_class("dir-pane-inactive");
+                sw.add_css_class("pane-focused");
+                sw.remove_css_class("pane-inactive");
             }
             if let Some(sw) = ots.borrow().as_ref() {
-                sw.remove_css_class("dir-pane-focused");
-                sw.add_css_class("dir-pane-inactive");
+                sw.remove_css_class("pane-focused");
+                sw.add_css_class("pane-inactive");
             }
             let pos = sel.selected();
             let vadj = ov
@@ -624,8 +624,8 @@ pub(super) fn build_dir_tab(
         .build();
 
     // Set initial focus border classes and populate slots for the handlers above.
-    left_scroll.add_css_class("dir-pane-focused");
-    right_scroll.add_css_class("dir-pane-inactive");
+    left_scroll.add_css_class("pane-focused");
+    right_scroll.add_css_class("pane-inactive");
     *left_scroll_slot.borrow_mut() = Some(left_scroll.clone());
     *right_scroll_slot.borrow_mut() = Some(right_scroll.clone());
 

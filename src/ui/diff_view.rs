@@ -87,21 +87,35 @@ pub(super) fn build_diff_view(
 
     // Track which text view was last focused (for undo/redo, find, go-to-line)
     let active_view: Rc<RefCell<TextView>> = Rc::new(RefCell::new(left_pane.text_view.clone()));
+    left_pane.scroll.add_css_class("pane-focused");
+    right_pane.scroll.add_css_class("pane-inactive");
     {
         let av = active_view.clone();
         let tv = left_pane.text_view.clone();
+        let ls = left_pane.scroll.clone();
+        let rs = right_pane.scroll.clone();
         let fc = EventControllerFocus::new();
         fc.connect_enter(move |_| {
             *av.borrow_mut() = tv.clone();
+            ls.add_css_class("pane-focused");
+            ls.remove_css_class("pane-inactive");
+            rs.remove_css_class("pane-focused");
+            rs.add_css_class("pane-inactive");
         });
         left_pane.text_view.add_controller(fc);
     }
     {
         let av = active_view.clone();
         let tv = right_pane.text_view.clone();
+        let ls = left_pane.scroll.clone();
+        let rs = right_pane.scroll.clone();
         let fc = EventControllerFocus::new();
         fc.connect_enter(move |_| {
             *av.borrow_mut() = tv.clone();
+            rs.add_css_class("pane-focused");
+            rs.remove_css_class("pane-inactive");
+            ls.remove_css_class("pane-focused");
+            ls.add_css_class("pane-inactive");
         });
         right_pane.text_view.add_controller(fc);
     }

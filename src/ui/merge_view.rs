@@ -273,16 +273,37 @@ pub(super) fn build_merge_view(
 
     // Track which text view was last focused
     let active_view: Rc<RefCell<TextView>> = Rc::new(RefCell::new(middle_pane.text_view.clone()));
-    for tv in [
+    let all_scrolls = [
+        left_pane.scroll.clone(),
+        middle_pane.scroll.clone(),
+        right_pane.scroll.clone(),
+    ];
+    middle_pane.scroll.add_css_class("pane-focused");
+    left_pane.scroll.add_css_class("pane-inactive");
+    right_pane.scroll.add_css_class("pane-inactive");
+    for (i, tv) in [
         &left_pane.text_view,
         &middle_pane.text_view,
         &right_pane.text_view,
-    ] {
+    ]
+    .iter()
+    .enumerate()
+    {
         let av = active_view.clone();
-        let t = tv.clone();
+        let t = (*tv).clone();
+        let scrolls = all_scrolls.clone();
         let fc = EventControllerFocus::new();
         fc.connect_enter(move |_| {
             *av.borrow_mut() = t.clone();
+            for (j, sw) in scrolls.iter().enumerate() {
+                if j == i {
+                    sw.add_css_class("pane-focused");
+                    sw.remove_css_class("pane-inactive");
+                } else {
+                    sw.remove_css_class("pane-focused");
+                    sw.add_css_class("pane-inactive");
+                }
+            }
         });
         tv.add_controller(fc);
     }
