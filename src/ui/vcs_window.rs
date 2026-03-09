@@ -452,10 +452,15 @@ pub(super) fn build_vcs_window(
     toolbar.set_margin_top(4);
     toolbar.set_margin_bottom(4);
 
+    let branch_name = crate::vcs::current_branch(&repo_root);
+
     let repo_label = Label::new(Some(&repo_root.to_string_lossy()));
     repo_label.set_halign(gtk4::Align::Start);
     repo_label.set_hexpand(true);
     repo_label.add_css_class("dim-label");
+
+    let branch_label = Label::new(Some(branch_name.as_deref().unwrap_or("git")));
+    branch_label.add_css_class("dim-label");
 
     let count_label = Label::new(Some(&format!(
         "{} changed file{}",
@@ -472,6 +477,7 @@ pub(super) fn build_vcs_window(
     prefs_btn.set_action_name(Some("win.prefs"));
 
     toolbar.append(&repo_label);
+    toolbar.append(&branch_label);
     toolbar.append(&count_label);
     toolbar.append(&refresh_btn);
     toolbar.append(&prefs_btn);
@@ -493,7 +499,8 @@ pub(super) fn build_vcs_window(
         notebook,
         open_tabs,
     } = build_app_window(app, &settings, 700, 500, true);
-    window.set_title(Some(&format!("mergers — {repo_name} (git)")));
+    let branch_display = branch_name.as_deref().unwrap_or("git");
+    window.set_title(Some(&format!("mergers — {repo_name} ({branch_display})")));
 
     // Open selected item helper (shared by double-click and Enter key)
     let open_selected = {
