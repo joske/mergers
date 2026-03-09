@@ -1,4 +1,5 @@
 use std::{
+    fs,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -205,6 +206,71 @@ pub fn unstage_file(repo_root: &Path, rel_path: &str) -> bool {
         .is_ok_and(|s| s.success())
 }
 
+/// Get the name of the current Git branch.
+#[must_use]
+pub fn current_branch(repo_root: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .args([
+            "-C",
+            &repo_root.to_string_lossy(),
+            "branch",
+            "--show-current",
+        ])
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if name.is_empty() { None } else { Some(name) }
+    } else {
+        None
+    }
+}
+
+/// List files that are staged for commit.
+#[must_use]
+pub fn staged_files(repo_root: &Path) -> Vec<String> {
+    let output = match Command::new("git")
+        .args([
+            "-C",
+            &repo_root.to_string_lossy(),
+            "diff",
+            "--cached",
+            "--name-only",
+        ])
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return Vec::new(),
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+/// Create a commit with the given message.
+#[must_use]
+pub fn commit(repo_root: &Path, message: &str) -> bool {
+    Command::new("git")
+        .args(["-C", &repo_root.to_string_lossy(), "commit", "-m", message])
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// Read a pre-filled commit message (e.g. `.git/MERGE_MSG`) if one exists.
+#[must_use]
+pub fn commit_message_prefill(repo_root: &Path) -> Option<String> {
+    let path = repo_root.join(".git").join("MERGE_MSG");
+    let content = fs::read_to_string(path).ok()?;
+    let trimmed = content.trim().to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -346,5 +412,27 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].status, VcsStatus::Renamed);
         assert_eq!(entries[0].rel_path, "new name.rs");
+    }
+
+    #[test]
+    fn test_current_branch_returns_some_in_repo() {
+        // We're running inside the mergers repo, so there should be a branch.
+        let root = repo_root(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
+        assert!(current_branch(&root).is_some());
+    }
+
+    #[test]
+    fn test_staged_files_returns_vec() {
+        let root = repo_root(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
+        // Should not panic; result may be empty or non-empty.
+        let _ = staged_files(&root);
+    }
+
+    #[test]
+    fn test_commit_message_prefill_no_merge() {
+        let root = repo_root(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
+        // Outside of a merge, MERGE_MSG shouldn't exist.
+        // This just verifies it doesn't panic.
+        let _ = commit_message_prefill(&root);
     }
 }
