@@ -11,6 +11,7 @@ pub fn encode_vcs_row(status: &crate::vcs::VcsStatus, rel_path: &str, extra: &st
         crate::vcs::VcsStatus::Renamed => "R",
         crate::vcs::VcsStatus::Untracked => "U",
         crate::vcs::VcsStatus::Conflict => "C",
+        crate::vcs::VcsStatus::Ignored => "I",
     };
     format!("{code}{SEP}{rel_path}{SEP}{extra}")
 }
@@ -32,6 +33,7 @@ pub fn vcs_status_info(code: &str) -> (&'static str, &'static str) {
         "R" => ("Renamed", "diff-changed"),
         "U" => ("Untracked", "diff-inserted"),
         "C" => ("Conflict", "diff-conflict"),
+        "I" => ("Ignored", "dim-label"),
         _ => ("", ""),
     }
 }
@@ -140,6 +142,7 @@ fn make_vcs_status_factory() -> SignalListItemFactory {
             "diff-deleted",
             "diff-inserted",
             "diff-conflict",
+            "dim-label",
         ] {
             label.remove_css_class(cls);
         }
@@ -181,6 +184,7 @@ fn make_vcs_path_factory() -> SignalListItemFactory {
             "diff-deleted",
             "diff-inserted",
             "diff-conflict",
+            "dim-label",
         ] {
             label.remove_css_class(cls);
         }
@@ -469,6 +473,13 @@ pub(super) fn build_vcs_window(
     )));
     count_label.add_css_class("chunk-label");
 
+    let filter_modified = ToggleButton::with_label("Modified");
+    filter_modified.set_active(true);
+    let filter_untracked = ToggleButton::with_label("Untracked");
+    filter_untracked.set_active(true);
+    let filter_ignored = ToggleButton::with_label("Ignored");
+    filter_ignored.set_active(false);
+
     let refresh_btn = Button::from_icon_name("view-refresh-symbolic");
     refresh_btn.set_tooltip_text(Some("Refresh"));
 
@@ -479,6 +490,9 @@ pub(super) fn build_vcs_window(
     toolbar.append(&repo_label);
     toolbar.append(&branch_label);
     toolbar.append(&count_label);
+    toolbar.append(&filter_modified);
+    toolbar.append(&filter_untracked);
+    toolbar.append(&filter_ignored);
     toolbar.append(&refresh_btn);
     toolbar.append(&prefs_btn);
 
@@ -547,16 +561,35 @@ pub(super) fn build_vcs_window(
         view.add_controller(key_ctl);
     }
 
-    // Refresh handler
-    let refresh: Rc<dyn Fn()> = {
+    // Apply-filters handler (replaces old refresh)
+    let apply_filters: Rc<dyn Fn()> = {
         let rr = repo_root.clone();
         let st_ref = store.clone();
         let cl = count_label.clone();
         let le = last_encoded.clone();
+        let fm = filter_modified.clone();
+        let fu = filter_untracked.clone();
+        let fi = filter_ignored.clone();
         Rc::new(move || {
-            let entries = crate::vcs::changed_files(&rr);
+            let entries = if fi.is_active() {
+                crate::vcs::changed_files_with_ignored(&rr)
+            } else {
+                crate::vcs::changed_files(&rr)
+            };
+            let show_modified = fm.is_active();
+            let show_untracked = fu.is_active();
+            let show_ignored = fi.is_active();
             let new_encoded: Vec<String> = entries
                 .iter()
+                .filter(|e| match e.status {
+                    crate::vcs::VcsStatus::Modified
+                    | crate::vcs::VcsStatus::Renamed
+                    | crate::vcs::VcsStatus::Deleted
+                    | crate::vcs::VcsStatus::Added
+                    | crate::vcs::VcsStatus::Conflict => show_modified,
+                    crate::vcs::VcsStatus::Untracked => show_untracked,
+                    crate::vcs::VcsStatus::Ignored => show_ignored,
+                })
                 .map(|e| encode_vcs_row(&e.status, &e.rel_path, &e.extra))
                 .collect();
             if new_encoded == *le.borrow() {
@@ -567,20 +600,32 @@ pub(super) fn build_vcs_window(
             for encoded in &new_encoded {
                 st_ref.append(&StringObject::new(encoded));
             }
+            let count = new_encoded.len();
             cl.set_label(&format!(
-                "{} changed file{}",
-                entries.len(),
-                if entries.len() == 1 { "" } else { "s" }
+                "{count} changed file{}",
+                if count == 1 { "" } else { "s" }
             ));
         })
     };
     {
-        let r = refresh.clone();
+        let r = apply_filters.clone();
         refresh_btn.connect_clicked(move |_| r());
+    }
+    {
+        let r = apply_filters.clone();
+        filter_modified.connect_toggled(move |_| r());
+    }
+    {
+        let r = apply_filters.clone();
+        filter_untracked.connect_toggled(move |_| r());
+    }
+    {
+        let r = apply_filters.clone();
+        filter_ignored.connect_toggled(move |_| r());
     }
 
     // File watcher — skip events inside .git/ to avoid infinite refresh loops
-    let r = refresh.clone();
+    let r = apply_filters.clone();
     let vcs_watcher = start_file_watcher(
         &[repo_root.as_path()],
         true,
@@ -611,7 +656,7 @@ pub(super) fn build_vcs_window(
         let action = gio::SimpleAction::new("discard", None);
         let s = sel.clone();
         let rr = repo_root.clone();
-        let r = refresh.clone();
+        let r = apply_filters.clone();
         let v = view.clone();
         action.connect_activate(move |_, _| {
             if let Some(item) = s.selected_item() {
@@ -644,7 +689,7 @@ pub(super) fn build_vcs_window(
         let action = gio::SimpleAction::new("stage", None);
         let s = sel.clone();
         let rr = repo_root.clone();
-        let r = refresh.clone();
+        let r = apply_filters.clone();
         let v = view.clone();
         action.connect_activate(move |_, _| {
             if let Some(item) = s.selected_item() {
@@ -682,7 +727,7 @@ pub(super) fn build_vcs_window(
         let action = gio::SimpleAction::new("unstage", None);
         let s = sel.clone();
         let rr = repo_root.clone();
-        let r = refresh.clone();
+        let r = apply_filters.clone();
         action.connect_activate(move |_, _| {
             if let Some(item) = s.selected_item() {
                 let obj = item.downcast::<StringObject>().unwrap();
@@ -698,7 +743,7 @@ pub(super) fn build_vcs_window(
         let action = gio::SimpleAction::new("trash", None);
         let s = sel.clone();
         let rr = repo_root.clone();
-        let r = refresh.clone();
+        let r = apply_filters.clone();
         let v = view.clone();
         action.connect_activate(move |_, _| {
             if let Some(item) = s.selected_item() {

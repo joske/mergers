@@ -12,6 +12,7 @@ pub enum VcsStatus {
     Renamed,
     Untracked,
     Conflict,
+    Ignored,
 }
 
 #[derive(Debug, Clone)]
@@ -49,6 +50,27 @@ pub fn repo_root(dir: &Path) -> Option<PathBuf> {
     } else {
         None
     }
+}
+
+/// List files with changes in the repository, including ignored files.
+#[must_use]
+pub fn changed_files_with_ignored(repo_root: &Path) -> Vec<VcsEntry> {
+    let output = match Command::new("git")
+        .args([
+            "-C",
+            &repo_root.to_string_lossy(),
+            "status",
+            "--porcelain",
+            "-z",
+            "--ignored",
+        ])
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return Vec::new(),
+    };
+
+    parse_porcelain_nul(&output.stdout)
 }
 
 /// List files with changes in the repository.
@@ -95,6 +117,7 @@ pub fn parse_porcelain_nul(raw: &[u8]) -> Vec<VcsEntry> {
 
         let status = match xy {
             "??" => VcsStatus::Untracked,
+            "!!" => VcsStatus::Ignored,
             _ if xy.contains('U') || xy == "AA" || xy == "DD" => VcsStatus::Conflict,
             _ if xy.starts_with('R') => VcsStatus::Renamed,
             _ if xy.starts_with('D') || xy.ends_with('D') => VcsStatus::Deleted,
@@ -363,7 +386,19 @@ mod tests {
     #[test]
     fn test_parse_nul_unknown_status_ignored() {
         let entries = parse_porcelain_nul(b"!! ignored_file\0");
-        assert!(entries.is_empty());
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].status, VcsStatus::Ignored);
+        assert_eq!(entries[0].rel_path, "ignored_file");
+    }
+
+    #[test]
+    fn test_parse_nul_ignored() {
+        let entries = parse_porcelain_nul(b"!! build/output.o\0!! .env\0");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].status, VcsStatus::Ignored);
+        assert_eq!(entries[0].rel_path, "build/output.o");
+        assert_eq!(entries[1].status, VcsStatus::Ignored);
+        assert_eq!(entries[1].rel_path, ".env");
     }
 
     #[test]
