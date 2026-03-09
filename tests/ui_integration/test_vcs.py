@@ -5,7 +5,7 @@ import tempfile
 
 from dogtail.utils import doDelay
 
-from conftest import find_app, find_labels, wait_for_label
+from conftest import find_app, find_labels, is_button, wait_for_label
 
 
 def _init_repo(repo):
@@ -347,3 +347,76 @@ def test_vcs_subdirectory_file_shows_path(app_process):
         labels = find_labels(app)
         assert any("main.rs" in t for t in labels), \
             f"Expected 'main.rs' in labels: {labels}"
+
+
+def test_vcs_shows_branch_name(app_process):
+    """VCS window should show the current branch name."""
+    with tempfile.TemporaryDirectory() as repo:
+        _init_repo(repo)
+        filepath = os.path.join(repo, "file.txt")
+        with open(filepath, "w") as f:
+            f.write("content\n")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "init")
+
+        app_process(repo)
+        app = find_app()
+        doDelay(2)
+        labels = find_labels(app)
+        # Default branch is usually "main" or "master"
+        assert any("main" in t or "master" in t for t in labels), \
+            f"Expected branch name in labels: {labels}"
+
+
+def test_vcs_filter_untracked_toggle(app_process):
+    """Toggling off Untracked should hide untracked files."""
+    with tempfile.TemporaryDirectory() as repo:
+        _init_repo(repo)
+        filepath = os.path.join(repo, "committed.txt")
+        with open(filepath, "w") as f:
+            f.write("committed\n")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "init")
+        untracked = os.path.join(repo, "untracked.txt")
+        with open(untracked, "w") as f:
+            f.write("untracked\n")
+
+        app_process(repo)
+        app = find_app()
+        doDelay(2)
+
+        labels = find_labels(app)
+        assert any("untracked.txt" in t for t in labels), \
+            f"Expected untracked.txt visible: {labels}"
+
+        # Toggle off Untracked - it's a toggle button
+        toggle = app.findChild(
+            lambda n: is_button(n) and "Untracked" in n.name and n.showing
+        )
+        assert toggle is not None, "Untracked toggle not found"
+        toggle.do_action(0)
+        doDelay(1)
+
+        labels = find_labels(app)
+        assert not any("untracked.txt" in t for t in labels), \
+            f"Expected untracked.txt hidden after toggle: {labels}"
+
+
+def test_vcs_commit_button_exists(app_process):
+    """VCS view should have a Commit button."""
+    with tempfile.TemporaryDirectory() as repo:
+        _init_repo(repo)
+        filepath = os.path.join(repo, "file.txt")
+        with open(filepath, "w") as f:
+            f.write("content\n")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "init")
+
+        app_process(repo)
+        app = find_app()
+        doDelay(2)
+
+        commit_btn = app.findChild(
+            lambda n: is_button(n) and "Commit" in n.name and n.showing
+        )
+        assert commit_btn is not None, "Commit button not found"
