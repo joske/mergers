@@ -29,8 +29,8 @@ def _git(repo, *args):
 
 
 
-def test_vcs_window_title_contains_repo_name_and_git(app_process):
-    """VCS window title should be 'mergers -- reponame (git)'."""
+def test_vcs_window_title_contains_repo_name_and_branch(app_process):
+    """VCS window title should contain repo name and branch (or 'git')."""
     with tempfile.TemporaryDirectory() as repo:
         _init_repo(repo)
         filepath = os.path.join(repo, "file.txt")
@@ -53,8 +53,9 @@ def test_vcs_window_title_contains_repo_name_and_git(app_process):
         assert repo_name in title, (
             f"Expected repo name '{repo_name}' in title '{title}'"
         )
-        assert "(git)" in title, (
-            f"Expected '(git)' in title '{title}'"
+        # Title shows branch name (e.g. "master") or "git" as fallback
+        assert "(git)" in title or "(main)" in title or "(master)" in title, (
+            f"Expected branch or '(git)' in title '{title}'"
         )
 
 

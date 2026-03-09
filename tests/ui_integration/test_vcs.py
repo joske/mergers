@@ -391,7 +391,7 @@ def test_vcs_filter_untracked_toggle(app_process):
 
         # Toggle off Untracked - it's a toggle button
         toggle = app.findChild(
-            lambda n: is_button(n) and "Untracked" in n.name and n.showing
+            lambda n: n.roleName == "toggle button" and "Untracked" in n.name and n.showing
         )
         assert toggle is not None, "Untracked toggle not found"
         toggle.do_action(0)
