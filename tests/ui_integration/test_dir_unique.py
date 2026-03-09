@@ -3,7 +3,7 @@ import os
 
 from dogtail.utils import doDelay
 
-from conftest import find_app, find_labels, send_keys, FIXTURES
+from conftest import find_app, find_labels, is_button, send_keys, FIXTURES
 
 
 def test_dir_alt_tab_switching(app_process):
@@ -71,10 +71,10 @@ def test_dir_collapse_expand_all(app_process):
 
     # Look for collapse/expand buttons
     collapse_btn = app.findChild(
-        lambda n: n.roleName == "push button" and "Collapse" in n.name and n.showing
+        lambda n: is_button(n) and "Collapse" in n.name and n.showing
     )
     expand_btn = app.findChild(
-        lambda n: n.roleName == "push button" and "Expand" in n.name and n.showing
+        lambda n: is_button(n) and "Expand" in n.name and n.showing
     )
 
     if collapse_btn:

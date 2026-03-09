@@ -4,7 +4,7 @@ import tempfile
 
 from dogtail.utils import doDelay
 
-from conftest import copy_fixture, find_app, find_labels, send_keys, wait_for_label
+from conftest import copy_fixture, find_app, find_labels, is_button, send_keys, wait_for_label
 
 
 def test_three_way_merge_opens(app_process, fixture_path):
@@ -324,7 +324,7 @@ def test_alt_delete_removes_chunk(app_process, fixture_path):
 
         # Save button should be sensitive (buffer was modified)
         save_buttons = app.findChildren(
-            lambda n: n.roleName == "push button" and "Save" in n.name
+            lambda n: is_button(n) and "Save" in n.name
         )
         assert any(b.sensitive for b in save_buttons), \
             "Save button should be sensitive after deleting a chunk"

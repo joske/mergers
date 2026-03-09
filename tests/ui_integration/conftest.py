@@ -45,6 +45,11 @@ def wait_for_label(app, predicate, timeout=5, interval=0.5):
     return None
 
 
+def is_button(node):
+    """Check if a node is a button (AT-SPI role varies by platform)."""
+    return node.roleName in ("push button", "button")
+
+
 def find_labels(app):
     """Return text of all visible labels."""
     labels = app.findChildren(lambda n: n.roleName == "label" and n.showing)

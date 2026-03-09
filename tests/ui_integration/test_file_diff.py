@@ -3,7 +3,7 @@
 All tests here are read-only or leave reversible state, so they can safely
 share one app process to avoid repeated startup costs.
 """
-from conftest import find_labels, send_keys, send_keys_until, wait_for_label
+from conftest import find_labels, is_button, send_keys, send_keys_until, wait_for_label
 
 
 # -- Display & labels -------------------------------------------------------
@@ -19,7 +19,7 @@ def test_save_button_initially_insensitive(shared_diff_app):
     """Save buttons should be insensitive when no changes have been made."""
     _, app = shared_diff_app
     buttons = app.findChildren(
-        lambda n: n.roleName == "push button" and "Save" in n.name
+        lambda n: is_button(n) and "Save" in n.name
     )
     for btn in buttons:
         assert not btn.sensitive, f"Save button '{btn.name}' should be insensitive initially"
@@ -62,7 +62,7 @@ def test_swap_panes(shared_diff_app):
         f"Expected at least 2 path labels, got: {labels_before}"
 
     swap_btn = app.findChild(
-        lambda n: n.roleName == "push button" and n.name == "Swap panes"
+        lambda n: is_button(n) and n.name == "Swap panes"
     )
     assert swap_btn is not None, "Swap panes button not found"
     swap_btn.do_action(0)
@@ -126,7 +126,7 @@ def test_swap_panes_twice_returns_to_original(shared_diff_app):
     path_labels_before = [t for t in labels_before if "fixtures/" in t]
 
     swap_btn = app.findChild(
-        lambda n: n.roleName == "push button" and n.name == "Swap panes"
+        lambda n: is_button(n) and n.name == "Swap panes"
     )
     swap_btn.do_action(0)
     wait_for_label(app, lambda t: "fixtures/" in t, timeout=2)
@@ -151,7 +151,7 @@ def test_undo_button_exists(shared_diff_app):
     """Undo button should be present in the toolbar."""
     _, app = shared_diff_app
     undo = app.findChild(
-        lambda n: n.roleName == "push button" and "Undo" in n.name and n.showing
+        lambda n: is_button(n) and "Undo" in n.name and n.showing
     )
     assert undo is not None, "Undo button not found"
 
@@ -160,7 +160,7 @@ def test_redo_button_exists(shared_diff_app):
     """Redo button should be present in the toolbar."""
     _, app = shared_diff_app
     redo = app.findChild(
-        lambda n: n.roleName == "push button" and "Redo" in n.name and n.showing
+        lambda n: is_button(n) and "Redo" in n.name and n.showing
     )
     assert redo is not None, "Redo button not found"
 
@@ -169,7 +169,7 @@ def test_preferences_button_exists(shared_diff_app):
     """Preferences button should be present in the toolbar."""
     _, app = shared_diff_app
     prefs = app.findChild(
-        lambda n: n.roleName == "push button" and "Preferences" in n.name and n.showing
+        lambda n: is_button(n) and "Preferences" in n.name and n.showing
     )
     assert prefs is not None, "Preferences button not found"
 
