@@ -11,6 +11,7 @@ pub fn encode_vcs_row(status: &crate::vcs::VcsStatus, rel_path: &str, extra: &st
         crate::vcs::VcsStatus::Renamed => "R",
         crate::vcs::VcsStatus::Untracked => "U",
         crate::vcs::VcsStatus::Conflict => "C",
+        crate::vcs::VcsStatus::Ignored => "I",
     };
     format!("{code}{SEP}{rel_path}{SEP}{extra}")
 }
@@ -32,6 +33,7 @@ pub fn vcs_status_info(code: &str) -> (&'static str, &'static str) {
         "R" => ("Renamed", "diff-changed"),
         "U" => ("Untracked", "diff-inserted"),
         "C" => ("Conflict", "diff-conflict"),
+        "I" => ("Ignored", "dim-label"),
         _ => ("", ""),
     }
 }
@@ -140,6 +142,7 @@ fn make_vcs_status_factory() -> SignalListItemFactory {
             "diff-deleted",
             "diff-inserted",
             "diff-conflict",
+            "dim-label",
         ] {
             label.remove_css_class(cls);
         }
@@ -181,6 +184,7 @@ fn make_vcs_path_factory() -> SignalListItemFactory {
             "diff-deleted",
             "diff-inserted",
             "diff-conflict",
+            "dim-label",
         ] {
             label.remove_css_class(cls);
         }
@@ -402,6 +406,151 @@ fn open_vcs_diff(
     }
 }
 
+fn show_commit_dialog(parent: &ApplicationWindow, repo_root: &Path, on_done: impl Fn() + 'static) {
+    let dialog = gtk4::Window::builder()
+        .modal(true)
+        .transient_for(parent)
+        .resizable(true)
+        .decorated(true)
+        .deletable(true)
+        .default_width(500)
+        .default_height(400)
+        .title("Commit")
+        .build();
+
+    let content = GtkBox::new(Orientation::Vertical, 8);
+    content.set_margin_top(18);
+    content.set_margin_bottom(18);
+    content.set_margin_start(18);
+    content.set_margin_end(18);
+
+    // Branch label
+    let branch = crate::vcs::current_branch(repo_root);
+    let branch_label = Label::new(Some(&format!(
+        "On branch: {}",
+        branch.as_deref().unwrap_or("(unknown)")
+    )));
+    branch_label.set_halign(gtk4::Align::Start);
+    branch_label.add_css_class("dim-label");
+    content.append(&branch_label);
+
+    // Staged files
+    let files_heading = Label::new(Some("Files to commit:"));
+    files_heading.set_halign(gtk4::Align::Start);
+    content.append(&files_heading);
+
+    let staged = crate::vcs::staged_files(repo_root);
+
+    if staged.is_empty() {
+        let no_files = Label::new(Some("No staged files"));
+        no_files.add_css_class("dim-label");
+        no_files.set_halign(gtk4::Align::Start);
+        content.append(&no_files);
+    } else {
+        let files_text = staged.join("\n");
+        let files_view = TextView::builder()
+            .editable(false)
+            .cursor_visible(false)
+            .monospace(true)
+            .wrap_mode(gtk4::WrapMode::Word)
+            .build();
+        files_view.buffer().set_text(&files_text);
+        let files_scroll = ScrolledWindow::builder()
+            .child(&files_view)
+            .vexpand(false)
+            .min_content_height(60)
+            .max_content_height(120)
+            .build();
+        content.append(&files_scroll);
+    }
+
+    // Commit message
+    let msg_heading = Label::new(Some("Commit message:"));
+    msg_heading.set_halign(gtk4::Align::Start);
+    content.append(&msg_heading);
+
+    let msg_view = sourceview5::View::builder()
+        .monospace(true)
+        .wrap_mode(gtk4::WrapMode::Word)
+        .vexpand(true)
+        .build();
+    if let Some(prefill) = crate::vcs::commit_message_prefill(repo_root) {
+        msg_view.buffer().set_text(&prefill);
+    }
+    let msg_scroll = ScrolledWindow::builder()
+        .child(&msg_view)
+        .vexpand(true)
+        .build();
+    content.append(&msg_scroll);
+
+    // Buttons
+    let btn_box = GtkBox::new(Orientation::Horizontal, 8);
+    btn_box.set_margin_top(8);
+    btn_box.set_halign(gtk4::Align::End);
+
+    let cancel_btn = Button::with_label("Cancel");
+    let commit_btn = Button::with_label("Commit");
+    commit_btn.add_css_class("suggested-action");
+
+    // Disable commit when no staged files or empty message
+    let has_staged = !staged.is_empty();
+    let msg_buf = msg_view.buffer();
+    let update_sensitivity = {
+        let cb = commit_btn.clone();
+        let buf = msg_buf.clone();
+        move || {
+            let text = buf.text(&buf.start_iter(), &buf.end_iter(), false);
+            cb.set_sensitive(has_staged && !text.trim().is_empty());
+        }
+    };
+    update_sensitivity();
+    {
+        let update = update_sensitivity.clone();
+        msg_buf.connect_changed(move |_| update());
+    }
+
+    btn_box.append(&cancel_btn);
+    btn_box.append(&commit_btn);
+    content.append(&btn_box);
+
+    dialog.set_child(Some(&content));
+
+    {
+        let d = dialog.clone();
+        cancel_btn.connect_clicked(move |_| d.close());
+    }
+    {
+        let d = dialog.clone();
+        let rr = repo_root.to_path_buf();
+        let buf = msg_buf.clone();
+        commit_btn.connect_clicked(move |_| {
+            let text = buf.text(&buf.start_iter(), &buf.end_iter(), false);
+            let message = text.trim();
+            if !message.is_empty() && crate::vcs::commit(&rr, message) {
+                on_done();
+                d.close();
+            }
+        });
+    }
+
+    // Allow Escape to close the dialog
+    {
+        let d = dialog.clone();
+        let key_ctl = EventControllerKey::new();
+        key_ctl.connect_key_pressed(move |_, key, _, _| {
+            if key == gtk4::gdk::Key::Escape {
+                d.close();
+                return gtk4::glib::Propagation::Stop;
+            }
+            gtk4::glib::Propagation::Proceed
+        });
+        dialog.add_controller(key_ctl);
+    }
+
+    dialog.present();
+    msg_view.grab_focus();
+}
+
 pub(super) fn build_vcs_window(
     app: &Application,
     dir: std::path::PathBuf,
@@ -452,10 +601,15 @@ pub(super) fn build_vcs_window(
     toolbar.set_margin_top(4);
     toolbar.set_margin_bottom(4);
 
+    let branch_name = crate::vcs::current_branch(&repo_root);
+
     let repo_label = Label::new(Some(&repo_root.to_string_lossy()));
     repo_label.set_halign(gtk4::Align::Start);
     repo_label.set_hexpand(true);
     repo_label.add_css_class("dim-label");
+
+    let branch_label = Label::new(Some(branch_name.as_deref().unwrap_or("git")));
+    branch_label.add_css_class("dim-label");
 
     let count_label = Label::new(Some(&format!(
         "{} changed file{}",
@@ -464,15 +618,30 @@ pub(super) fn build_vcs_window(
     )));
     count_label.add_css_class("chunk-label");
 
+    let filter_modified = ToggleButton::with_label("Modified");
+    filter_modified.set_active(true);
+    let filter_untracked = ToggleButton::with_label("Untracked");
+    filter_untracked.set_active(true);
+    let filter_ignored = ToggleButton::with_label("Ignored");
+    filter_ignored.set_active(false);
+
     let refresh_btn = Button::from_icon_name("view-refresh-symbolic");
     refresh_btn.set_tooltip_text(Some("Refresh"));
+
+    let commit_btn = Button::with_label("Commit");
+    commit_btn.set_tooltip_text(Some("Commit staged changes"));
 
     let prefs_btn = Button::from_icon_name("preferences-system-symbolic");
     prefs_btn.set_tooltip_text(Some(&format!("Preferences ({}+,)", primary_key_name())));
     prefs_btn.set_action_name(Some("win.prefs"));
 
     toolbar.append(&repo_label);
+    toolbar.append(&branch_label);
     toolbar.append(&count_label);
+    toolbar.append(&commit_btn);
+    toolbar.append(&filter_modified);
+    toolbar.append(&filter_untracked);
+    toolbar.append(&filter_ignored);
     toolbar.append(&refresh_btn);
     toolbar.append(&prefs_btn);
 
@@ -493,7 +662,8 @@ pub(super) fn build_vcs_window(
         notebook,
         open_tabs,
     } = build_app_window(app, &settings, 700, 500, true);
-    window.set_title(Some(&format!("mergers — {repo_name} (git)")));
+    let branch_display = branch_name.as_deref().unwrap_or("git");
+    window.set_title(Some(&format!("mergers — {repo_name} ({branch_display})")));
 
     // Open selected item helper (shared by double-click and Enter key)
     let open_selected = {
@@ -540,16 +710,35 @@ pub(super) fn build_vcs_window(
         view.add_controller(key_ctl);
     }
 
-    // Refresh handler
-    let refresh: Rc<dyn Fn()> = {
+    // Apply-filters handler (replaces old refresh)
+    let apply_filters: Rc<dyn Fn()> = {
         let rr = repo_root.clone();
         let st_ref = store.clone();
         let cl = count_label.clone();
         let le = last_encoded.clone();
+        let fm = filter_modified.clone();
+        let fu = filter_untracked.clone();
+        let fi = filter_ignored.clone();
         Rc::new(move || {
-            let entries = crate::vcs::changed_files(&rr);
+            let entries = if fi.is_active() {
+                crate::vcs::changed_files_with_ignored(&rr)
+            } else {
+                crate::vcs::changed_files(&rr)
+            };
+            let show_modified = fm.is_active();
+            let show_untracked = fu.is_active();
+            let show_ignored = fi.is_active();
             let new_encoded: Vec<String> = entries
                 .iter()
+                .filter(|e| match e.status {
+                    crate::vcs::VcsStatus::Modified
+                    | crate::vcs::VcsStatus::Renamed
+                    | crate::vcs::VcsStatus::Deleted
+                    | crate::vcs::VcsStatus::Added
+                    | crate::vcs::VcsStatus::Conflict => show_modified,
+                    crate::vcs::VcsStatus::Untracked => show_untracked,
+                    crate::vcs::VcsStatus::Ignored => show_ignored,
+                })
                 .map(|e| encode_vcs_row(&e.status, &e.rel_path, &e.extra))
                 .collect();
             if new_encoded == *le.borrow() {
@@ -560,20 +749,41 @@ pub(super) fn build_vcs_window(
             for encoded in &new_encoded {
                 st_ref.append(&StringObject::new(encoded));
             }
+            let count = new_encoded.len();
             cl.set_label(&format!(
-                "{} changed file{}",
-                entries.len(),
-                if entries.len() == 1 { "" } else { "s" }
+                "{count} changed file{}",
+                if count == 1 { "" } else { "s" }
             ));
         })
     };
     {
-        let r = refresh.clone();
+        let r = apply_filters.clone();
         refresh_btn.connect_clicked(move |_| r());
+    }
+    {
+        let r = apply_filters.clone();
+        filter_modified.connect_toggled(move |_| r());
+    }
+    {
+        let r = apply_filters.clone();
+        filter_untracked.connect_toggled(move |_| r());
+    }
+    {
+        let r = apply_filters.clone();
+        filter_ignored.connect_toggled(move |_| r());
+    }
+    {
+        let rr = repo_root.clone();
+        let r = apply_filters.clone();
+        let w = window.clone();
+        commit_btn.connect_clicked(move |_| {
+            let r = r.clone();
+            show_commit_dialog(&w, &rr, move || r());
+        });
     }
 
     // File watcher — skip events inside .git/ to avoid infinite refresh loops
-    let r = refresh.clone();
+    let r = apply_filters.clone();
     let vcs_watcher = start_file_watcher(
         &[repo_root.as_path()],
         true,
@@ -604,7 +814,7 @@ pub(super) fn build_vcs_window(
         let action = gio::SimpleAction::new("discard", None);
         let s = sel.clone();
         let rr = repo_root.clone();
-        let r = refresh.clone();
+        let r = apply_filters.clone();
         let v = view.clone();
         action.connect_activate(move |_, _| {
             if let Some(item) = s.selected_item() {
@@ -637,7 +847,7 @@ pub(super) fn build_vcs_window(
         let action = gio::SimpleAction::new("stage", None);
         let s = sel.clone();
         let rr = repo_root.clone();
-        let r = refresh.clone();
+        let r = apply_filters.clone();
         let v = view.clone();
         action.connect_activate(move |_, _| {
             if let Some(item) = s.selected_item() {
@@ -675,7 +885,7 @@ pub(super) fn build_vcs_window(
         let action = gio::SimpleAction::new("unstage", None);
         let s = sel.clone();
         let rr = repo_root.clone();
-        let r = refresh.clone();
+        let r = apply_filters.clone();
         action.connect_activate(move |_, _| {
             if let Some(item) = s.selected_item() {
                 let obj = item.downcast::<StringObject>().unwrap();
@@ -691,7 +901,7 @@ pub(super) fn build_vcs_window(
         let action = gio::SimpleAction::new("trash", None);
         let s = sel.clone();
         let rr = repo_root.clone();
-        let r = refresh.clone();
+        let r = apply_filters.clone();
         let v = view.clone();
         action.connect_activate(move |_, _| {
             if let Some(item) = s.selected_item() {

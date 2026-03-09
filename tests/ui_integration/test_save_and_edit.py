@@ -4,7 +4,7 @@ import tempfile
 
 from dogtail.utils import doDelay
 
-from conftest import copy_fixture, find_app, find_labels, focus_and_type, send_keys
+from conftest import copy_fixture, find_app, find_labels, focus_and_type, is_button, send_keys
 
 
 def test_edit_makes_save_sensitive(app_process):
@@ -19,7 +19,7 @@ def test_edit_makes_save_sensitive(app_process):
 
         # Verify save buttons are initially insensitive
         save_buttons = app.findChildren(
-            lambda n: n.roleName == "push button" and "Save" in n.name
+            lambda n: is_button(n) and "Save" in n.name
         )
         assert save_buttons, "No Save buttons found"
         assert not any(b.sensitive for b in save_buttons), (
@@ -32,7 +32,7 @@ def test_edit_makes_save_sensitive(app_process):
 
         # Now at least one Save button should be sensitive
         save_buttons = app.findChildren(
-            lambda n: n.roleName == "push button" and "Save" in n.name
+            lambda n: is_button(n) and "Save" in n.name
         )
         assert any(b.sensitive for b in save_buttons), (
             "Expected at least one Save button to become sensitive after typing"
@@ -115,7 +115,7 @@ def test_save_makes_button_insensitive_again(app_process):
 
         # Save button should be sensitive
         save_buttons = app.findChildren(
-            lambda n: n.roleName == "push button" and "Save" in n.name
+            lambda n: is_button(n) and "Save" in n.name
         )
         assert any(b.sensitive for b in save_buttons), \
             "Save button should be sensitive after edit"
@@ -125,7 +125,7 @@ def test_save_makes_button_insensitive_again(app_process):
 
         # Save button should be insensitive again
         save_buttons = app.findChildren(
-            lambda n: n.roleName == "push button" and "Save" in n.name
+            lambda n: is_button(n) and "Save" in n.name
         )
         assert not all(b.sensitive for b in save_buttons), \
             "Save button should be insensitive after save"
@@ -146,7 +146,7 @@ def test_undo_after_edit(app_process):
 
         # Should have a sensitive save button
         save_buttons = app.findChildren(
-            lambda n: n.roleName == "push button" and "Save" in n.name
+            lambda n: is_button(n) and "Save" in n.name
         )
         assert any(b.sensitive for b in save_buttons), \
             "Save button should be sensitive after edit"

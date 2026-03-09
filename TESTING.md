@@ -271,7 +271,8 @@ Items marked ✅ are covered by automated UI integration tests (`tests/ui_integr
 ## VCS (Git) Window
 
 ### Display
-- [x] ✅ Window title: "mergers -- reponame (git)"
+- [x] ✅ Window title: "mergers — reponame (branchname)"
+- [x] ✅ Branch name shown in toolbar
 - [ ] ColumnView: Status, File, and Extra columns
 - [ ] Status colors: Modified/Renamed = blue, Added/Untracked = green, Deleted = orange
 - [x] ✅ Extra column: "Staged" for fully staged, "Partially staged" for staged+unstaged
@@ -293,6 +294,20 @@ Items marked ✅ are covered by automated UI integration tests (`tests/ui_integr
 - [ ] "Stage" on conflicted file: confirmation dialog warning it marks conflict resolved
 - [ ] "Unstage": runs `git restore --staged` (enabled only when staged)
 - [ ] "Trash": moves to trash with confirmation (Untracked only)
+
+### Commit Dialog
+- [x] ✅ Commit button in toolbar
+- [ ] Commit dialog shows branch name
+- [ ] Commit dialog lists staged files (read-only)
+- [ ] Commit dialog prefills message from `.git/MERGE_MSG`
+- [ ] Commit button disabled when no staged files or empty message
+- [ ] Successful commit refreshes file list
+
+### Status Filters
+- [x] ✅ Modified toggle (on by default): shows M, A, D, R, C files
+- [x] ✅ Untracked toggle (on by default): shows U files
+- [ ] Ignored toggle (off by default): shows ignored files
+- [ ] Toggling filters updates file list and count label
 
 ### File Watcher
 - [ ] Auto-refresh on FS changes (500ms poll)
