@@ -281,6 +281,7 @@ fn bench_find_conflict_markers(c: &mut Criterion) {
 
 fn bench_conflict_at_cursor(c: &mut Criterion) {
     let text = make_conflict_text(500_000, 500);
+    let blocks = _bench::find_conflict_blocks(&text);
 
     c.bench_function("conflict_at_cursor/line_1000", |b| {
         b.iter(|| _bench::conflict_at_cursor(black_box(&text), 1_000));
@@ -290,6 +291,15 @@ fn bench_conflict_at_cursor(c: &mut Criterion) {
     });
     c.bench_function("conflict_at_cursor/line_490000", |b| {
         b.iter(|| _bench::conflict_at_cursor(black_box(&text), 490_000));
+    });
+    c.bench_function("conflict_at_cursor_fast/line_1000", |b| {
+        b.iter(|| _bench::conflict_at_cursor_fast(black_box(&blocks), 1_000));
+    });
+    c.bench_function("conflict_at_cursor_fast/line_250000", |b| {
+        b.iter(|| _bench::conflict_at_cursor_fast(black_box(&blocks), 250_000));
+    });
+    c.bench_function("conflict_at_cursor_fast/line_490000", |b| {
+        b.iter(|| _bench::conflict_at_cursor_fast(black_box(&blocks), 490_000));
     });
 }
 

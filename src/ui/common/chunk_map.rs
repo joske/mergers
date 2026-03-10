@@ -66,8 +66,7 @@ pub fn create_chunk_map(
     scroll: &ScrolledWindow,
     chunks: &Rc<RefCell<Vec<DiffChunk>>>,
     side: Side,
-    other_chunks: Option<&Rc<RefCell<Vec<DiffChunk>>>>,
-    other_mid: Option<(Side, Side)>,
+    cached_flags: Rc<RefCell<Vec<bool>>>,
 ) -> DrawingArea {
     let map = DrawingArea::new();
     map.set_content_width(12);
@@ -76,14 +75,7 @@ pub fn create_chunk_map(
         let buf = buf.clone();
         let scroll = scroll.clone();
         let chunks = chunks.clone();
-        let other_chunks = other_chunks.cloned();
         map.set_draw_func(move |area, cr, _w, h| {
-            let flags: Vec<bool> =
-                if let (Some(oc), Some((my_mid, oc_mid))) = (&other_chunks, other_mid) {
-                    conflict_flags(&chunks.borrow(), my_mid, &oc.borrow(), oc_mid)
-                } else {
-                    Vec::new()
-                };
             draw_chunk_map(
                 area,
                 cr,
@@ -92,7 +84,7 @@ pub fn create_chunk_map(
                 &scroll,
                 &chunks.borrow(),
                 side,
-                &flags,
+                &cached_flags.borrow(),
             );
         });
     }

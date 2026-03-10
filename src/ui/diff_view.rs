@@ -441,10 +441,11 @@ pub(super) fn build_diff_view(
     });
 
     // ── Chunk maps (overview strips) ─────────────────────────────
+    let empty_flags = Rc::new(RefCell::new(Vec::new()));
     let left_chunk_map =
-        create_chunk_map(&left_buf, &left_pane.scroll, &chunks, Side::A, None, None);
+        create_chunk_map(&left_buf, &left_pane.scroll, &chunks, Side::A, empty_flags.clone());
     let right_chunk_map =
-        create_chunk_map(&right_buf, &right_pane.scroll, &chunks, Side::B, None, None);
+        create_chunk_map(&right_buf, &right_pane.scroll, &chunks, Side::B, empty_flags);
 
     // Redraw chunk maps on scroll
     for scroll in [&left_pane.scroll, &right_pane.scroll] {

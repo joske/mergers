@@ -14,7 +14,8 @@ pub mod _bench {
     pub use crate::ui::common::editor::conflict_flags;
     pub use crate::ui::common::gutter::{merged_gutter_chunks, middle_conflict_regions};
     pub use crate::ui::merge_state::{
-        conflict_at_cursor, find_conflict_markers_in_text, merge_change_indices,
+        conflict_at_cursor, conflict_at_cursor_fast, find_conflict_blocks,
+        find_conflict_markers_in_text, merge_change_indices,
     };
 }
 

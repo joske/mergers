@@ -44,25 +44,53 @@ pub fn find_conflict_markers_in_text(text: &str) -> Vec<usize> {
         .collect()
 }
 
+/// Precompute conflict block ranges: `(open_line, close_line)` pairs (both inclusive).
+///
+/// Scans the text once and returns a sorted `Vec` of `(<<<<<<<` line, `>>>>>>>` line)` pairs.
+pub fn find_conflict_blocks(text: &str) -> Vec<(usize, usize)> {
+    let mut blocks = Vec::new();
+    let mut open: Option<usize> = None;
+    for (i, line) in text.lines().enumerate() {
+        if line.starts_with("<<<<<<<") {
+            open = Some(i);
+        } else if line.starts_with(">>>>>>>") {
+            if let Some(start) = open.take() {
+                blocks.push((start, i));
+            }
+        }
+    }
+    blocks
+}
+
+/// Binary search for which precomputed conflict block contains `cursor_line`.
+///
+/// Returns `Some(open_line)` if `cursor_line` falls within a block (inclusive of
+/// both the `<<<<<<<` and `>>>>>>>` lines), or `None` otherwise.
+pub fn conflict_at_cursor_fast(blocks: &[(usize, usize)], cursor_line: usize) -> Option<usize> {
+    // Find the first block whose open_line > cursor_line; the candidate is one before that.
+    let idx = blocks.partition_point(|&(open, _)| open <= cursor_line);
+    if idx == 0 {
+        return None;
+    }
+    let (open, close) = blocks[idx - 1];
+    if cursor_line <= close {
+        Some(open)
+    } else {
+        None
+    }
+}
+
 /// Find the `<<<<<<<` marker line for the conflict block enclosing `cursor_line`, if any.
 ///
 /// A conflict block spans from a `<<<<<<<` line to a `>>>>>>>` line (inclusive).
 /// Returns the line number of the opening `<<<<<<<` marker, which is the value
 /// stored in `current_conflict`.
+///
+/// For repeated calls on the same text, prefer precomputing blocks with
+/// [`find_conflict_blocks`] and using [`conflict_at_cursor_fast`] directly.
 pub fn conflict_at_cursor(text: &str, cursor_line: usize) -> Option<usize> {
-    let mut open: Option<usize> = None;
-    for (i, line) in text.lines().enumerate() {
-        if line.starts_with("<<<<<<<") {
-            open = Some(i);
-        }
-        if i == cursor_line {
-            return open;
-        }
-        if line.starts_with(">>>>>>>") {
-            open = None;
-        }
-    }
-    None
+    let blocks = find_conflict_blocks(text);
+    conflict_at_cursor_fast(&blocks, cursor_line)
 }
 
 #[cfg(test)]

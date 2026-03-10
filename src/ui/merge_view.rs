@@ -1164,21 +1164,25 @@ pub(super) fn build_merge_view(
     });
 
     // ── Chunk maps for merge view ────────────────────────────────
+    let left_map_flags: Rc<RefCell<Vec<bool>>> = Rc::new(RefCell::new(
+        conflict_flags(&left_chunks.borrow(), Side::B, &right_chunks.borrow(), Side::A),
+    ));
+    let right_map_flags: Rc<RefCell<Vec<bool>>> = Rc::new(RefCell::new(
+        conflict_flags(&right_chunks.borrow(), Side::A, &left_chunks.borrow(), Side::B),
+    ));
     let left_chunk_map = create_chunk_map(
         &left_buf,
         &left_pane.scroll,
         &left_chunks,
         Side::A,
-        Some(&right_chunks),
-        Some((Side::B, Side::A)),
+        left_map_flags.clone(),
     );
     let right_chunk_map = create_chunk_map(
         &right_buf,
         &right_pane.scroll,
         &right_chunks,
         Side::B,
-        Some(&left_chunks),
-        Some((Side::A, Side::B)),
+        right_map_flags.clone(),
     );
 
     // Redraw chunk maps on any scroll change
@@ -1219,6 +1223,8 @@ pub(super) fn build_merge_view(
             let st = settings.clone();
             let lb = left_buf.clone();
             let rb = right_buf.clone();
+            let lmf = left_map_flags.clone();
+            let rmf = right_map_flags.clone();
             move || {
                 let lg = lg.clone();
                 let rg = rg.clone();
@@ -1245,7 +1251,14 @@ pub(super) fn build_merge_view(
                 let st = st.clone();
                 let lb = lb.clone();
                 let rb = rb.clone();
+                let lmf = lmf.clone();
+                let rmf = rmf.clone();
                 move || {
+                    // Recompute cached conflict flags after chunks changed.
+                    *lmf.borrow_mut() =
+                        conflict_flags(&lch.borrow(), Side::B, &rch.borrow(), Side::A);
+                    *rmf.borrow_mut() =
+                        conflict_flags(&rch.borrow(), Side::A, &lch.borrow(), Side::B);
                     lg.queue_draw();
                     rg.queue_draw();
                     lcm.queue_draw();

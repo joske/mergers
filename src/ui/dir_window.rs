@@ -853,18 +853,23 @@ pub(super) fn build_dir_tab(
                     }
                 }
 
-                // Restore expanded state (must iterate after each expand since
-                // expanding a row inserts children and shifts positions)
-                for rel in &expanded {
-                    for i in 0..tm.n_items() {
-                        if let Some(row) = tm.item(i).and_then(|o| o.downcast::<TreeListRow>().ok())
-                            && let Some(obj) = row.item().and_downcast::<StringObject>()
-                            && DirRowInfo::decode(&obj.string()).rel_path == rel.as_str()
-                        {
-                            row.set_expanded(true);
-                            break;
-                        }
+                // Restore expanded state with a single forward scan.
+                // Expanding a row inserts its children right after it, so a
+                // forward scan naturally visits those newly-inserted children
+                // and keeps overall complexity O(n) in visible rows.
+                let expanded_set: HashSet<&str> =
+                    expanded.iter().map(|s| s.as_str()).collect();
+                let mut i = 0;
+                while i < tm.n_items() {
+                    if let Some(row) =
+                        tm.item(i).and_then(|o| o.downcast::<TreeListRow>().ok())
+                        && let Some(obj) = row.item().and_downcast::<StringObject>()
+                        && expanded_set
+                            .contains(DirRowInfo::decode(&obj.string()).rel_path.as_str())
+                    {
+                        row.set_expanded(true);
                     }
+                    i += 1;
                 }
 
                 // Restore selection on both panes
