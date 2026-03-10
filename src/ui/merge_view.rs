@@ -114,10 +114,31 @@ fn find_conflict_markers(buf: &TextBuffer) -> Vec<usize> {
     super::merge_state::find_conflict_markers_in_text(&text)
 }
 
-/// Find the opening `<<<<<<<` marker line for the conflict block at `cursor_line`.
-fn conflict_at_cursor(buf: &TextBuffer, cursor_line: usize) -> Option<usize> {
+/// Return cached conflict markers, populating lazily from the buffer.
+fn get_markers(cache: &Rc<RefCell<Option<Vec<usize>>>>, buf: &TextBuffer) -> Vec<usize> {
+    let mut c = cache.borrow_mut();
+    if let Some(ref v) = *c {
+        return v.clone();
+    }
+    let v = find_conflict_markers(buf);
+    *c = Some(v.clone());
+    v
+}
+
+/// Return cached conflict blocks, populating lazily from the buffer.
+#[allow(clippy::type_complexity)]
+fn get_blocks(
+    cache: &Rc<RefCell<Option<Vec<(usize, usize)>>>>,
+    buf: &TextBuffer,
+) -> Vec<(usize, usize)> {
+    let mut c = cache.borrow_mut();
+    if let Some(ref v) = *c {
+        return v.clone();
+    }
     let text = buf.text(&buf.start_iter(), &buf.end_iter(), false);
-    super::merge_state::conflict_at_cursor(&text, cursor_line)
+    let v = super::merge_state::find_conflict_blocks(&text);
+    *c = Some(v.clone());
+    v
 }
 
 /// Find the next/prev navigation target on a side pane, treating each conflict
@@ -1058,6 +1079,13 @@ pub(super) fn build_merge_view(
         btn.activate_action("diff.next-chunk", None).ok();
     });
 
+    // Cached conflict data — populated lazily, invalidated on buffer change.
+    // Avoids O(n) re-scans on every cursor move / nav sensitivity check.
+    #[allow(clippy::type_complexity)]
+    let cached_markers: Rc<RefCell<Option<Vec<usize>>>> = Rc::new(RefCell::new(None));
+    #[allow(clippy::type_complexity)]
+    let cached_blocks: Rc<RefCell<Option<Vec<(usize, usize)>>>> = Rc::new(RefCell::new(None));
+
     // Navigate conflict helper — jumps between `<<<<<<<` markers in middle buf,
     // and syncs left/right panes to the corresponding line.
     #[allow(clippy::too_many_arguments)]
@@ -1231,6 +1259,8 @@ pub(super) fn build_merge_view(
             let rb = right_buf.clone();
             let lmf = left_map_flags.clone();
             let rmf = right_map_flags.clone();
+            let cmrk = cached_markers.clone();
+            let cblk = cached_blocks.clone();
             move || {
                 let lg = lg.clone();
                 let rg = rg.clone();
@@ -1259,7 +1289,12 @@ pub(super) fn build_merge_view(
                 let rb = rb.clone();
                 let lmf = lmf.clone();
                 let rmf = rmf.clone();
+                let cmrk = cmrk.clone();
+                let cblk = cblk.clone();
                 move || {
+                    // Invalidate conflict caches — buffer content changed.
+                    *cmrk.borrow_mut() = None;
+                    *cblk.borrow_mut() = None;
                     // Recompute cached conflict flags after chunks changed.
                     *lmf.borrow_mut() =
                         conflict_flags(&lch.borrow(), Side::B, &rch.borrow(), Side::A);
@@ -1576,13 +1611,14 @@ pub(super) fn build_merge_view(
             let mb = middle_buf.clone();
             let st = settings.clone();
             let sens = merge_nav_sensitivity;
-            let csens = conflict_nav_sensitivity;
             let lf = left_pane.filler_overlay.clone();
             let mf = middle_pane.filler_overlay.clone();
             let rf = right_pane.filler_overlay.clone();
             let lg = left_gutter.clone();
             let rg = right_gutter.clone();
             let ng = navigating.clone();
+            let cblk = cached_blocks.clone();
+            let cmrk = cached_markers.clone();
             middle_buf.connect_cursor_position_notify(move |_| {
                 if ng.get() {
                     return;
@@ -1653,11 +1689,39 @@ pub(super) fn build_merge_view(
                     wrap,
                 );
 
-                // Conflict: check if cursor is inside a conflict block
-                let in_conflict = conflict_at_cursor(&mb, cursor_line);
+                // Conflict: check if cursor is inside a conflict block (cached)
+                let blocks = get_blocks(&cblk, &mb);
+                let in_conflict = super::merge_state::conflict_at_cursor_fast(&blocks, cursor_line);
                 ccur.set(in_conflict);
-                update_conflict_label(&clbl, &mb, in_conflict);
-                csens(&pcb, &ncb, &mb, &mtv, wrap);
+                let markers = get_markers(&cmrk, &mb);
+                // Inline update_conflict_label with cached markers
+                let total = markers.len();
+                if total == 0 {
+                    clbl.set_label("No conflicts");
+                } else {
+                    match in_conflict {
+                        Some(cur_line) => {
+                            if let Some(pos) = markers.iter().position(|&l| l == cur_line) {
+                                clbl.set_label(&format!("Conflict {} of {}", pos + 1, total));
+                            } else {
+                                clbl.set_label(&format!("{total} conflicts"));
+                            }
+                        }
+                        None => clbl.set_label(&format!("{total} conflicts")),
+                    }
+                }
+                // Inline conflict_nav_sensitivity with cached markers
+                if markers.is_empty() {
+                    pcb.set_sensitive(false);
+                    ncb.set_sensitive(false);
+                } else if wrap {
+                    pcb.set_sensitive(true);
+                    ncb.set_sensitive(true);
+                } else {
+                    let cl = cursor_line;
+                    pcb.set_sensitive(markers.iter().rev().any(|&l| l < cl));
+                    ncb.set_sensitive(markers.iter().any(|&l| l > cl));
+                }
 
                 if at != prev_at {
                     lf.queue_draw();
