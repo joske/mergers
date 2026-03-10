@@ -219,6 +219,16 @@ source tests/ui_integration/.venv/bin/activate
 pytest tests/ui_integration/ -v
 ```
 
+**Layer 3 — Benchmarks (Criterion)**
+
+Performance-critical paths are benchmarked with [Criterion](https://bheisler.github.io/criterion.rs/book/) at large-project scale (50k–500k lines). Benchmarks cover Myers diff, chunk navigation, conflict detection, VCS parsing, and merge state operations. Property tests (proptest) verify optimized algorithms match naive reference implementations.
+
+```bash
+cargo bench
+```
+
+Benchmarks run automatically on pull requests via `.github/workflows/bench.yml`.
+
 **CI**
 
 The `.github/workflows/ui-tests.yml` workflow runs the full suite on every push, installing `at-spi2-core` and `xdotool` from the system package manager before invoking `make test-release`.
