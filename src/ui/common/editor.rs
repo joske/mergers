@@ -620,6 +620,19 @@ pub fn conflict_flags(
     other_chunks: &[DiffChunk],
     other_mid: Side,
 ) -> Vec<bool> {
+    // Pre-collect non-Equal other-chunks with their mid-pane ranges.
+    // These are already sorted by position since chunks are in order.
+    let others: Vec<(usize, usize)> = other_chunks
+        .iter()
+        .filter(|oc| oc.tag != DiffTag::Equal)
+        .map(|oc| match other_mid {
+            Side::A => (oc.start_a, oc.end_a),
+            Side::B => (oc.start_b, oc.end_b),
+        })
+        .collect();
+
+    // Two-pointer sweep: j only advances forward across all my_chunks → O(n+m).
+    let mut j = 0;
     my_chunks
         .iter()
         .map(|mc| {
@@ -630,16 +643,45 @@ pub fn conflict_flags(
                 Side::A => (mc.start_a, mc.end_a),
                 Side::B => (mc.start_b, mc.end_b),
             };
-            other_chunks.iter().any(|oc| {
-                if oc.tag == DiffTag::Equal {
-                    return false;
+            // Advance j past other-chunks that end entirely before this chunk starts.
+            // For a normal range (os < oe): it's fully before when oe <= ms.
+            // For a zero-width point range (os == oe): it's fully before when os < ms.
+            while j < others.len() {
+                let (os, oe) = others[j];
+                if os == oe {
+                    if os < ms {
+                        j += 1;
+                    } else {
+                        break;
+                    }
+                } else if oe <= ms {
+                    j += 1;
+                } else {
+                    break;
                 }
-                let (os, oe) = match other_mid {
-                    Side::A => (oc.start_a, oc.end_a),
-                    Side::B => (oc.start_b, oc.end_b),
-                };
-                chunks_overlap(ms, me, os, oe)
-            })
+            }
+            // Check all other-chunks starting from j that could still overlap.
+            // Once an other-chunk starts at or beyond our end (with no overlap),
+            // no further chunks can overlap either.
+            for &(os, oe) in &others[j..] {
+                if chunks_overlap(ms, me, os, oe) {
+                    return true;
+                }
+                // If this other-chunk starts at or beyond our end, later ones
+                // are even further away, so stop.
+                if ms == me {
+                    // Point range: no overlap possible once os > ms.
+                    if os > ms {
+                        break;
+                    }
+                } else {
+                    // Normal range: no overlap once os >= me.
+                    if os >= me {
+                        break;
+                    }
+                }
+            }
+            false
         })
         .collect()
 }

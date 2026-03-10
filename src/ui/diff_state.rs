@@ -36,17 +36,6 @@ pub fn find_next_chunk(
     side: Side,
     wrap: bool,
 ) -> Option<usize> {
-    let non_equal: Vec<usize> = chunks
-        .iter()
-        .enumerate()
-        .filter(|(_, c)| c.tag != DiffTag::Equal)
-        .map(|(i, _)| i)
-        .collect();
-
-    if non_equal.is_empty() {
-        return None;
-    }
-
     let start_line = |i: usize| -> usize {
         if side == Side::A {
             chunks[i].start_a
@@ -55,19 +44,37 @@ pub fn find_next_chunk(
         }
     };
 
-    if direction > 0 {
-        let found = non_equal.iter().find(|&&i| start_line(i) > cursor_line);
-        found
-            .or(if wrap { non_equal.first() } else { None })
-            .copied()
-    } else {
-        let found = non_equal
+    let non_equal_iter = || {
+        chunks
             .iter()
-            .rev()
-            .find(|&&i| start_line(i) < cursor_line);
-        found
-            .or(if wrap { non_equal.last() } else { None })
-            .copied()
+            .enumerate()
+            .filter(|(_, c)| c.tag != DiffTag::Equal)
+            .map(|(i, _)| i)
+    };
+
+    if direction > 0 {
+        let mut first = None;
+        let mut found = None;
+        for i in non_equal_iter() {
+            if first.is_none() {
+                first = Some(i);
+            }
+            if start_line(i) > cursor_line {
+                found = Some(i);
+                break;
+            }
+        }
+        found.or(if wrap { first } else { None })
+    } else {
+        let mut last = None;
+        let mut found = None;
+        for i in non_equal_iter() {
+            if start_line(i) < cursor_line {
+                found = Some(i);
+            }
+            last = Some(i);
+        }
+        found.or(if wrap { last } else { None })
     }
 }
 
@@ -77,26 +84,23 @@ pub fn find_next_chunk(
 /// - `"N changes"` if `current` is `None` or points to an Equal chunk.
 /// - `"Change X of Y"` if `current` is a non-Equal chunk (1-indexed).
 pub fn format_chunk_label(chunks: &[DiffChunk], current: Option<usize>) -> String {
-    let non_equal: Vec<usize> = chunks
-        .iter()
-        .enumerate()
-        .filter(|(_, c)| c.tag != DiffTag::Equal)
-        .map(|(i, _)| i)
-        .collect();
+    let mut total = 0usize;
+    let mut position = None;
+    for (i, c) in chunks.iter().enumerate() {
+        if c.tag != DiffTag::Equal {
+            if current == Some(i) {
+                position = Some(total);
+            }
+            total += 1;
+        }
+    }
 
-    let total = non_equal.len();
     if total == 0 {
         return "No changes".to_string();
     }
 
-    match current {
-        Some(cur) => {
-            if let Some(pos) = non_equal.iter().position(|&i| i == cur) {
-                format!("Change {} of {}", pos + 1, total)
-            } else {
-                format!("{total} {}", if total == 1 { "change" } else { "changes" })
-            }
-        }
+    match position {
+        Some(pos) => format!("Change {} of {}", pos + 1, total),
         None => format!("{total} {}", if total == 1 { "change" } else { "changes" }),
     }
 }
