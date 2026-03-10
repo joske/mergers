@@ -104,6 +104,7 @@ pub fn draw_gutter(
 ///
 /// Returns a sorted, non-overlapping list of `(start, end)` half-open line
 /// ranges on the middle pane where left and right changes overlap.
+#[must_use]
 pub fn middle_conflict_regions(
     left_chunks: &[DiffChunk],
     right_chunks: &[DiffChunk],
@@ -184,6 +185,7 @@ pub fn middle_conflict_regions(
 /// Conflict detection uses the merged conflict regions on the middle pane so
 /// that side-pane chunks sandwiched between two conflicting chunks (but not
 /// directly overlapping the other side) are also included in the conflict band.
+#[must_use]
 pub fn merged_gutter_chunks(
     my_chunks: &[DiffChunk],
     other_chunks: &[DiffChunk],
@@ -356,6 +358,7 @@ pub fn draw_edge_arrow(
     let _ = cr.fill();
 }
 
+#[must_use]
 pub fn get_lines_text(buf: &TextBuffer, start_line: usize, end_line: usize) -> String {
     if start_line >= end_line {
         return String::new();

@@ -1,3 +1,9 @@
+#![allow(
+    clippy::similar_names,
+    clippy::format_push_string,
+    clippy::format_collect
+)]
+
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use mergers::{
     _bench::{self, Side},

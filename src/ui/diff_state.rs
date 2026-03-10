@@ -29,6 +29,7 @@ pub enum Side {
 /// `side` selects whether to compare `start_a` or `start_b`.
 /// When `wrap` is true, wraps around if no match is found in the given direction.
 /// Returns `None` if there are no non-Equal chunks (or no match when `wrap` is false).
+#[must_use]
 pub fn find_next_chunk(
     chunks: &[DiffChunk],
     cursor_line: usize,
@@ -83,6 +84,7 @@ pub fn find_next_chunk(
 /// - `"No changes"` if all chunks are Equal.
 /// - `"N changes"` if `current` is `None` or points to an Equal chunk.
 /// - `"Change X of Y"` if `current` is a non-Equal chunk (1-indexed).
+#[must_use]
 pub fn format_chunk_label(chunks: &[DiffChunk], current: Option<usize>) -> String {
     let mut total = 0usize;
     let mut position = None;
