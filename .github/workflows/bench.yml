@@ -16,9 +16,20 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
-      - name: Run benchmark comparison
-        uses: boa-dev/criterion-compare-action@v3
-        with:
-          branchName: ${{ github.base_ref }}
-          benchName: benchmarks
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install critcmp
+        run: cargo install critcmp
+      - name: Benchmark PR branch
+        run: cargo bench --bench benchmarks -- --save-baseline pr
+      - name: Benchmark base branch
+        run: |
+          git fetch origin ${{ github.base_ref }}
+          git checkout FETCH_HEAD
+          if cargo bench --bench benchmarks -- --save-baseline base 2>/dev/null; then
+            echo "BASE_HAS_BENCH=true" >> "$GITHUB_ENV"
+          else
+            echo "BASE_HAS_BENCH=false" >> "$GITHUB_ENV"
+            echo "Base branch has no benchmarks — skipping comparison"
+          fi
+      - name: Compare benchmarks
+        if: env.BASE_HAS_BENCH == 'true'
+        run: critcmp base pr
