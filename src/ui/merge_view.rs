@@ -1164,12 +1164,18 @@ pub(super) fn build_merge_view(
     });
 
     // ── Chunk maps for merge view ────────────────────────────────
-    let left_map_flags: Rc<RefCell<Vec<bool>>> = Rc::new(RefCell::new(
-        conflict_flags(&left_chunks.borrow(), Side::B, &right_chunks.borrow(), Side::A),
-    ));
-    let right_map_flags: Rc<RefCell<Vec<bool>>> = Rc::new(RefCell::new(
-        conflict_flags(&right_chunks.borrow(), Side::A, &left_chunks.borrow(), Side::B),
-    ));
+    let left_map_flags: Rc<RefCell<Vec<bool>>> = Rc::new(RefCell::new(conflict_flags(
+        &left_chunks.borrow(),
+        Side::B,
+        &right_chunks.borrow(),
+        Side::A,
+    )));
+    let right_map_flags: Rc<RefCell<Vec<bool>>> = Rc::new(RefCell::new(conflict_flags(
+        &right_chunks.borrow(),
+        Side::A,
+        &left_chunks.borrow(),
+        Side::B,
+    )));
     let left_chunk_map = create_chunk_map(
         &left_buf,
         &left_pane.scroll,

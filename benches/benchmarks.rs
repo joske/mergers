@@ -1,17 +1,27 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use mergers::_bench::{self, Side};
-use mergers::myers::{self, DiffChunk, DiffTag};
+use mergers::{
+    _bench::{self, Side},
+    myers::{self, DiffChunk, DiffTag},
+};
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 fn make_similar_files(n: usize, changes: usize) -> (String, String) {
     let mut a = String::new();
     let mut b = String::new();
-    let step = if changes > 0 { n / (changes + 1) } else { n + 1 };
+    let step = if changes > 0 {
+        n / (changes + 1)
+    } else {
+        n + 1
+    };
     for i in 0..n {
         if changes > 0 && i % step == step / 2 && i / step < changes {
-            a.push_str(&format!("original line {i} with some typical source code content\n"));
-            b.push_str(&format!("modified line {i} with some changed source code content\n"));
+            a.push_str(&format!(
+                "original line {i} with some typical source code content\n"
+            ));
+            b.push_str(&format!(
+                "modified line {i} with some changed source code content\n"
+            ));
         } else {
             let line = format!("common line {i} with typical source code padding content here\n");
             a.push_str(&line);
@@ -192,13 +202,34 @@ fn bench_conflict_flags(c: &mut Criterion) {
     let (left_50k, right_50k) = make_merge_chunks(50_000);
 
     c.bench_function("conflict_flags/10k_chunks", |b| {
-        b.iter(|| _bench::conflict_flags(black_box(&left_10k), Side::B, black_box(&right_10k), Side::A));
+        b.iter(|| {
+            _bench::conflict_flags(
+                black_box(&left_10k),
+                Side::B,
+                black_box(&right_10k),
+                Side::A,
+            )
+        });
     });
     c.bench_function("conflict_flags/30k_chunks", |b| {
-        b.iter(|| _bench::conflict_flags(black_box(&left_30k), Side::B, black_box(&right_30k), Side::A));
+        b.iter(|| {
+            _bench::conflict_flags(
+                black_box(&left_30k),
+                Side::B,
+                black_box(&right_30k),
+                Side::A,
+            )
+        });
     });
     c.bench_function("conflict_flags/50k_chunks", |b| {
-        b.iter(|| _bench::conflict_flags(black_box(&left_50k), Side::B, black_box(&right_50k), Side::A));
+        b.iter(|| {
+            _bench::conflict_flags(
+                black_box(&left_50k),
+                Side::B,
+                black_box(&right_50k),
+                Side::A,
+            )
+        });
     });
 }
 
@@ -223,10 +254,14 @@ fn bench_merged_gutter_chunks(c: &mut Criterion) {
     let (left_30k, right_30k) = make_merge_chunks(30_000);
 
     c.bench_function("merged_gutter_chunks/10k_chunks", |b| {
-        b.iter(|| _bench::merged_gutter_chunks(black_box(&left_10k), black_box(&right_10k), Side::A));
+        b.iter(|| {
+            _bench::merged_gutter_chunks(black_box(&left_10k), black_box(&right_10k), Side::A)
+        });
     });
     c.bench_function("merged_gutter_chunks/30k_chunks", |b| {
-        b.iter(|| _bench::merged_gutter_chunks(black_box(&left_30k), black_box(&right_30k), Side::A));
+        b.iter(|| {
+            _bench::merged_gutter_chunks(black_box(&left_30k), black_box(&right_30k), Side::A)
+        });
     });
 }
 
@@ -235,21 +270,19 @@ fn bench_merged_gutter_chunks(c: &mut Criterion) {
 fn bench_parse_porcelain(c: &mut Criterion) {
     // Monorepo scale: 50k entries with mixed statuses and renames
     let large: Vec<u8> = (0..50_000)
-        .flat_map(|i| {
-            match i % 7 {
-                0 => format!(" M src/deeply/nested/module/submodule/file_{i}.rs\0").into_bytes(),
-                1 => format!("A  src/new/path/to/file_{i}.rs\0").into_bytes(),
-                2 => format!("?? untracked/path/file_{i}.txt\0").into_bytes(),
-                3 => format!("MM src/partially/staged/file_{i}.rs\0").into_bytes(),
-                4 => format!(" D deleted/old/path/file_{i}.rs\0").into_bytes(),
-                5 => {
-                    let mut v = format!("R  src/renamed/new_{i}.rs\0").into_bytes();
-                    v.extend(format!("src/renamed/old_{i}.rs\0").into_bytes());
-                    v
-                }
-                6 => format!("UU src/conflicting/file_{i}.rs\0").into_bytes(),
-                _ => unreachable!(),
+        .flat_map(|i| match i % 7 {
+            0 => format!(" M src/deeply/nested/module/submodule/file_{i}.rs\0").into_bytes(),
+            1 => format!("A  src/new/path/to/file_{i}.rs\0").into_bytes(),
+            2 => format!("?? untracked/path/file_{i}.txt\0").into_bytes(),
+            3 => format!("MM src/partially/staged/file_{i}.rs\0").into_bytes(),
+            4 => format!(" D deleted/old/path/file_{i}.rs\0").into_bytes(),
+            5 => {
+                let mut v = format!("R  src/renamed/new_{i}.rs\0").into_bytes();
+                v.extend(format!("src/renamed/old_{i}.rs\0").into_bytes());
+                v
             }
+            6 => format!("UU src/conflicting/file_{i}.rs\0").into_bytes(),
+            _ => unreachable!(),
         })
         .collect();
 
@@ -327,10 +360,7 @@ criterion_group!(
     bench_merged_gutter_chunks,
 );
 
-criterion_group!(
-    vcs_benches,
-    bench_parse_porcelain,
-);
+criterion_group!(vcs_benches, bench_parse_porcelain,);
 
 criterion_group!(
     merge_state_benches,
