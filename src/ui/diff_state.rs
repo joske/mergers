@@ -9,7 +9,7 @@ pub(super) enum GutterHit {
 
 /// A rectangle in the chunk-map sidebar for a non-Equal chunk.
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct ChunkMapRect {
+pub struct ChunkMapRect {
     pub y_start: f64,
     pub height: f64,
     pub tag: DiffTag,
@@ -18,7 +18,7 @@ pub(super) struct ChunkMapRect {
 
 /// Which side of a diff chunk to use for line comparisons.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Side {
+pub enum Side {
     A,
     B,
 }
@@ -29,24 +29,14 @@ pub(super) enum Side {
 /// `side` selects whether to compare `start_a` or `start_b`.
 /// When `wrap` is true, wraps around if no match is found in the given direction.
 /// Returns `None` if there are no non-Equal chunks (or no match when `wrap` is false).
-pub(super) fn find_next_chunk(
+#[must_use]
+pub fn find_next_chunk(
     chunks: &[DiffChunk],
     cursor_line: usize,
     direction: i32,
     side: Side,
     wrap: bool,
 ) -> Option<usize> {
-    let non_equal: Vec<usize> = chunks
-        .iter()
-        .enumerate()
-        .filter(|(_, c)| c.tag != DiffTag::Equal)
-        .map(|(i, _)| i)
-        .collect();
-
-    if non_equal.is_empty() {
-        return None;
-    }
-
     let start_line = |i: usize| -> usize {
         if side == Side::A {
             chunks[i].start_a
@@ -55,19 +45,37 @@ pub(super) fn find_next_chunk(
         }
     };
 
-    if direction > 0 {
-        let found = non_equal.iter().find(|&&i| start_line(i) > cursor_line);
-        found
-            .or(if wrap { non_equal.first() } else { None })
-            .copied()
-    } else {
-        let found = non_equal
+    let non_equal_iter = || {
+        chunks
             .iter()
-            .rev()
-            .find(|&&i| start_line(i) < cursor_line);
-        found
-            .or(if wrap { non_equal.last() } else { None })
-            .copied()
+            .enumerate()
+            .filter(|(_, c)| c.tag != DiffTag::Equal)
+            .map(|(i, _)| i)
+    };
+
+    if direction > 0 {
+        let mut first = None;
+        let mut found = None;
+        for i in non_equal_iter() {
+            if first.is_none() {
+                first = Some(i);
+            }
+            if start_line(i) > cursor_line {
+                found = Some(i);
+                break;
+            }
+        }
+        found.or(if wrap { first } else { None })
+    } else {
+        let mut last = None;
+        let mut found = None;
+        for i in non_equal_iter() {
+            if start_line(i) < cursor_line {
+                found = Some(i);
+            }
+            last = Some(i);
+        }
+        found.or(if wrap { last } else { None })
     }
 }
 
@@ -76,27 +84,25 @@ pub(super) fn find_next_chunk(
 /// - `"No changes"` if all chunks are Equal.
 /// - `"N changes"` if `current` is `None` or points to an Equal chunk.
 /// - `"Change X of Y"` if `current` is a non-Equal chunk (1-indexed).
-pub(super) fn format_chunk_label(chunks: &[DiffChunk], current: Option<usize>) -> String {
-    let non_equal: Vec<usize> = chunks
-        .iter()
-        .enumerate()
-        .filter(|(_, c)| c.tag != DiffTag::Equal)
-        .map(|(i, _)| i)
-        .collect();
+#[must_use]
+pub fn format_chunk_label(chunks: &[DiffChunk], current: Option<usize>) -> String {
+    let mut total = 0usize;
+    let mut position = None;
+    for (i, c) in chunks.iter().enumerate() {
+        if c.tag != DiffTag::Equal {
+            if current == Some(i) {
+                position = Some(total);
+            }
+            total += 1;
+        }
+    }
 
-    let total = non_equal.len();
     if total == 0 {
         return "No changes".to_string();
     }
 
-    match current {
-        Some(cur) => {
-            if let Some(pos) = non_equal.iter().position(|&i| i == cur) {
-                format!("Change {} of {}", pos + 1, total)
-            } else {
-                format!("{total} {}", if total == 1 { "change" } else { "changes" })
-            }
-        }
+    match position {
+        Some(pos) => format!("Change {} of {}", pos + 1, total),
         None => format!("{total} {}", if total == 1 { "change" } else { "changes" }),
     }
 }
@@ -214,7 +220,7 @@ pub(super) fn hit_test_gutter_arrow(
 /// otherwise `start_b`/`end_b`. Each rectangle has a minimum height of 2 pixels.
 /// Returns empty if `total_lines == 0` or `map_height <= 0.0`.
 #[must_use]
-pub(super) fn compute_chunk_map_rects(
+pub fn compute_chunk_map_rects(
     chunks: &[DiffChunk],
     total_lines: usize,
     map_height: f64,

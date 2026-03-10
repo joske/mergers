@@ -104,6 +104,7 @@ pub fn is_dark_scheme() -> bool {
 }
 
 /// Compute perceived luminance from a CSS hex colour string (e.g. `"#2e3436"`).
+#[must_use]
 pub fn hex_luminance(hex: &str) -> f64 {
     let hex = hex.trim_start_matches('#');
     if hex.len() < 6 {
@@ -161,6 +162,7 @@ pub fn apply_scheme_css(settings: &Settings) {
     });
 }
 
+#[must_use]
 pub fn create_source_buffer(file_path: &Path, settings: &Settings) -> TextBuffer {
     let buf = sourceview5::Buffer::new(None::<&gtk4::TextTagTable>);
     let lang_mgr = sourceview5::LanguageManager::default();
@@ -204,6 +206,7 @@ pub fn remove_diff_tags(buf: &TextBuffer) {
 // Chunk fills use opaque `paragraph_background` TextTags (rendered behind text).
 // Strokes, bands, and fillers use Cairo with alpha (drawn on an overlay).
 
+#[must_use]
 pub fn stroke_insert() -> (f64, f64, f64, f64) {
     if is_dark_scheme() {
         (0.30, 0.65, 0.18, 0.8) // bright green
@@ -211,6 +214,7 @@ pub fn stroke_insert() -> (f64, f64, f64, f64) {
         (0.647, 1.0, 0.298, 0.7) // #a5ff4c
     }
 }
+#[must_use]
 pub fn stroke_replace() -> (f64, f64, f64, f64) {
     if is_dark_scheme() {
         (0.20, 0.50, 0.90, 0.8) // bright blue
@@ -218,6 +222,7 @@ pub fn stroke_replace() -> (f64, f64, f64, f64) {
         (0.396, 0.698, 1.0, 0.7) // #65b2ff
     }
 }
+#[must_use]
 pub fn stroke_conflict() -> (f64, f64, f64, f64) {
     if is_dark_scheme() {
         (0.90, 0.35, 0.30, 0.8) // bright red
@@ -226,6 +231,7 @@ pub fn stroke_conflict() -> (f64, f64, f64, f64) {
     }
 }
 
+#[must_use]
 pub fn band_insert() -> (f64, f64, f64) {
     if is_dark_scheme() {
         (0.30, 0.65, 0.18) // bright green
@@ -233,6 +239,7 @@ pub fn band_insert() -> (f64, f64, f64) {
         (0.647, 1.0, 0.298) // #a5ff4c
     }
 }
+#[must_use]
 pub fn band_replace() -> (f64, f64, f64) {
     if is_dark_scheme() {
         (0.20, 0.50, 0.90) // bright blue
@@ -241,6 +248,7 @@ pub fn band_replace() -> (f64, f64, f64) {
     }
 }
 
+#[must_use]
 pub fn band_conflict() -> (f64, f64, f64) {
     if is_dark_scheme() {
         (0.90, 0.35, 0.30) // bright red
@@ -249,12 +257,15 @@ pub fn band_conflict() -> (f64, f64, f64) {
     }
 }
 
+#[must_use]
 pub fn filler_insert() -> (f64, f64, f64) {
     band_insert()
 }
+#[must_use]
 pub fn filler_replace() -> (f64, f64, f64) {
     band_replace()
 }
+#[must_use]
 pub fn inline_changed() -> &'static str {
     if is_dark_scheme() {
         "#8a8a3c" // visible yellow
@@ -262,6 +273,7 @@ pub fn inline_changed() -> &'static str {
         "#c8c864"
     }
 }
+#[must_use]
 pub fn inline_deleted() -> &'static str {
     if is_dark_scheme() {
         "#8a3c3c" // visible red
@@ -269,6 +281,7 @@ pub fn inline_deleted() -> &'static str {
         "#ff9696"
     }
 }
+#[must_use]
 pub fn inline_inserted() -> &'static str {
     if is_dark_scheme() {
         "#3c8a3c" // visible green
@@ -277,6 +290,7 @@ pub fn inline_inserted() -> &'static str {
     }
 }
 
+#[must_use]
 pub fn search_match_bg() -> &'static str {
     if is_dark_scheme() {
         "#9a7a10"
@@ -284,6 +298,7 @@ pub fn search_match_bg() -> &'static str {
         "#ffe066"
     }
 }
+#[must_use]
 pub fn search_current_bg() -> &'static str {
     if is_dark_scheme() {
         "#b86010"
@@ -294,6 +309,7 @@ pub fn search_current_bg() -> &'static str {
 
 // Opaque chunk background colours used by `paragraph_background` TextTags
 // (drawn behind text by the text view, matching Meld's rendering approach).
+#[must_use]
 pub fn chunk_bg_insert() -> &'static str {
     if is_dark_scheme() {
         "#1e4e0e" // visible dark green
@@ -301,6 +317,7 @@ pub fn chunk_bg_insert() -> &'static str {
         "#b0e080" // saturated green (readable with muted-text schemes)
     }
 }
+#[must_use]
 pub fn chunk_bg_replace() -> &'static str {
     if is_dark_scheme() {
         "#0e2e6e" // visible dark blue
@@ -308,6 +325,7 @@ pub fn chunk_bg_replace() -> &'static str {
         "#a0c8ee" // saturated blue
     }
 }
+#[must_use]
 pub fn chunk_bg_conflict() -> &'static str {
     if is_dark_scheme() {
         "#6e2420" // visible dark red
@@ -360,6 +378,7 @@ pub fn apply_chunk_bg_tags(buf: &TextBuffer, chunks: &[DiffChunk], side: Side) {
 
 /// Apply `paragraph_background` tags for conflict regions on the merge middle pane.
 /// Check whether two line ranges overlap (handling zero-width ranges).
+#[must_use]
 pub fn chunks_overlap(a_start: usize, a_end: usize, b_start: usize, b_end: usize) -> bool {
     if a_start == a_end && b_start == b_end {
         a_start == b_start
@@ -614,12 +633,26 @@ pub fn draw_chunk_backgrounds(
 ///
 /// `my_mid` selects which side of `my_chunks` is the middle pane;
 /// `other_mid` selects which side of `other_chunks` is the middle pane.
+#[must_use]
 pub fn conflict_flags(
     my_chunks: &[DiffChunk],
     my_mid: Side,
     other_chunks: &[DiffChunk],
     other_mid: Side,
 ) -> Vec<bool> {
+    // Pre-collect non-Equal other-chunks with their mid-pane ranges.
+    // These are already sorted by position since chunks are in order.
+    let others: Vec<(usize, usize)> = other_chunks
+        .iter()
+        .filter(|oc| oc.tag != DiffTag::Equal)
+        .map(|oc| match other_mid {
+            Side::A => (oc.start_a, oc.end_a),
+            Side::B => (oc.start_b, oc.end_b),
+        })
+        .collect();
+
+    // Two-pointer sweep: j only advances forward across all my_chunks → O(n+m).
+    let mut j = 0;
     my_chunks
         .iter()
         .map(|mc| {
@@ -630,16 +663,45 @@ pub fn conflict_flags(
                 Side::A => (mc.start_a, mc.end_a),
                 Side::B => (mc.start_b, mc.end_b),
             };
-            other_chunks.iter().any(|oc| {
-                if oc.tag == DiffTag::Equal {
-                    return false;
+            // Advance j past other-chunks that end entirely before this chunk starts.
+            // For a normal range (os < oe): it's fully before when oe <= ms.
+            // For a zero-width point range (os == oe): it's fully before when os < ms.
+            while j < others.len() {
+                let (os, oe) = others[j];
+                if os == oe {
+                    if os < ms {
+                        j += 1;
+                    } else {
+                        break;
+                    }
+                } else if oe <= ms {
+                    j += 1;
+                } else {
+                    break;
                 }
-                let (os, oe) = match other_mid {
-                    Side::A => (oc.start_a, oc.end_a),
-                    Side::B => (oc.start_b, oc.end_b),
-                };
-                chunks_overlap(ms, me, os, oe)
-            })
+            }
+            // Check all other-chunks starting from j that could still overlap.
+            // Once an other-chunk starts at or beyond our end (with no overlap),
+            // no further chunks can overlap either.
+            for &(os, oe) in &others[j..] {
+                if chunks_overlap(ms, me, os, oe) {
+                    return true;
+                }
+                // If this other-chunk starts at or beyond our end, later ones
+                // are even further away, so stop.
+                if ms == me {
+                    // Point range: no overlap possible once os > ms.
+                    if os > ms {
+                        break;
+                    }
+                } else {
+                    // Normal range: no overlap once os >= me.
+                    if os >= me {
+                        break;
+                    }
+                }
+            }
+            false
         })
         .collect()
 }
@@ -998,6 +1060,7 @@ pub fn draw_merge_fillers(
     }
 }
 
+#[must_use]
 pub fn get_line_text(buf: &TextBuffer, line: usize) -> String {
     let start = buf
         .iter_at_line(line as i32)

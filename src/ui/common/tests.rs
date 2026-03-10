@@ -403,6 +403,216 @@ fn all_colour_pairs_differ() {
     IS_DARK_SCHEME.with(|c| c.set(false));
 }
 
+// ── conflict_flags ──────────────────────────────────────────
+
+#[test]
+fn conflict_flags_empty_chunks() {
+    let flags = conflict_flags(&[], Side::B, &[], Side::A);
+    assert!(flags.is_empty());
+}
+
+#[test]
+fn conflict_flags_no_overlap() {
+    let my = vec![DiffChunk {
+        tag: DiffTag::Replace,
+        start_a: 0,
+        end_a: 3,
+        start_b: 0,
+        end_b: 3,
+    }];
+    let other = vec![DiffChunk {
+        tag: DiffTag::Replace,
+        start_a: 10,
+        end_a: 15,
+        start_b: 10,
+        end_b: 15,
+    }];
+    // my mid B = (0,3), other mid A = (10,15) → no overlap → false
+    assert_eq!(conflict_flags(&my, Side::B, &other, Side::A), vec![false]);
+}
+
+#[test]
+fn conflict_flags_with_overlap() {
+    let my = vec![
+        DiffChunk {
+            tag: DiffTag::Equal,
+            start_a: 0,
+            end_a: 5,
+            start_b: 0,
+            end_b: 5,
+        },
+        DiffChunk {
+            tag: DiffTag::Replace,
+            start_a: 5,
+            end_a: 8,
+            start_b: 5,
+            end_b: 10,
+        },
+    ];
+    let other = vec![DiffChunk {
+        tag: DiffTag::Replace,
+        start_a: 7,
+        end_a: 12,
+        start_b: 7,
+        end_b: 12,
+    }];
+    // my[0] Equal → false. my[1] mid B = (5,10), other mid A = (7,12) → overlap → true
+    assert_eq!(
+        conflict_flags(&my, Side::B, &other, Side::A),
+        vec![false, true]
+    );
+}
+
+#[test]
+fn conflict_flags_zero_width_insert() {
+    let my = vec![DiffChunk {
+        tag: DiffTag::Insert,
+        start_a: 5,
+        end_a: 5,
+        start_b: 5,
+        end_b: 8,
+    }];
+    let other = vec![DiffChunk {
+        tag: DiffTag::Replace,
+        start_a: 5,
+        end_a: 7,
+        start_b: 5,
+        end_b: 7,
+    }];
+    // my mid B = (5,8), other mid A = (5,7) → overlap → true
+    assert_eq!(conflict_flags(&my, Side::B, &other, Side::A), vec![true]);
+}
+
+#[test]
+fn conflict_flags_all_equal() {
+    let my = vec![DiffChunk {
+        tag: DiffTag::Equal,
+        start_a: 0,
+        end_a: 10,
+        start_b: 0,
+        end_b: 10,
+    }];
+    let other = vec![DiffChunk {
+        tag: DiffTag::Replace,
+        start_a: 3,
+        end_a: 7,
+        start_b: 3,
+        end_b: 7,
+    }];
+    assert_eq!(conflict_flags(&my, Side::B, &other, Side::A), vec![false]);
+}
+
+mod conflict_flags_proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn arb_tag() -> impl Strategy<Value = DiffTag> {
+        prop_oneof![
+            Just(DiffTag::Equal),
+            Just(DiffTag::Replace),
+            Just(DiffTag::Insert),
+            Just(DiffTag::Delete),
+        ]
+    }
+
+    /// Generate sorted, non-overlapping chunks (monotonically increasing positions).
+    fn arb_sorted_chunks() -> impl Strategy<Value = Vec<DiffChunk>> {
+        prop::collection::vec(
+            (
+                arb_tag(),
+                1..50_usize,
+                1..50_usize,
+                1..50_usize,
+                1..50_usize,
+            ),
+            0..15,
+        )
+        .prop_map(|raw| {
+            let mut pos_a = 0_usize;
+            let mut pos_b = 0_usize;
+            raw.into_iter()
+                .map(|(tag, da, db, la, lb)| {
+                    let start_a = pos_a + da;
+                    let end_a = if tag == DiffTag::Delete || tag == DiffTag::Replace {
+                        start_a + la
+                    } else {
+                        start_a
+                    };
+                    let start_b = pos_b + db;
+                    let end_b = if tag == DiffTag::Insert || tag == DiffTag::Replace {
+                        start_b + lb
+                    } else {
+                        start_b
+                    };
+                    pos_a = end_a;
+                    pos_b = end_b;
+                    DiffChunk {
+                        tag,
+                        start_a,
+                        end_a,
+                        start_b,
+                        end_b,
+                    }
+                })
+                .collect()
+        })
+    }
+
+    /// Naive O(n*m) reference implementation.
+    fn conflict_flags_naive(
+        my_chunks: &[DiffChunk],
+        my_mid: Side,
+        other_chunks: &[DiffChunk],
+        other_mid: Side,
+    ) -> Vec<bool> {
+        let others: Vec<(usize, usize)> = other_chunks
+            .iter()
+            .filter(|oc| oc.tag != DiffTag::Equal)
+            .map(|oc| match other_mid {
+                Side::A => (oc.start_a, oc.end_a),
+                Side::B => (oc.start_b, oc.end_b),
+            })
+            .collect();
+        my_chunks
+            .iter()
+            .map(|mc| {
+                if mc.tag == DiffTag::Equal {
+                    return false;
+                }
+                let (ms, me) = match my_mid {
+                    Side::A => (mc.start_a, mc.end_a),
+                    Side::B => (mc.start_b, mc.end_b),
+                };
+                others
+                    .iter()
+                    .any(|&(os, oe)| chunks_overlap(ms, me, os, oe))
+            })
+            .collect()
+    }
+
+    proptest! {
+        #[test]
+        fn conflict_flags_matches_naive(
+            my_chunks in arb_sorted_chunks(),
+            other_chunks in arb_sorted_chunks(),
+        ) {
+            let result = conflict_flags(&my_chunks, Side::B, &other_chunks, Side::A);
+            let expected = conflict_flags_naive(&my_chunks, Side::B, &other_chunks, Side::A);
+            prop_assert_eq!(result, expected);
+        }
+
+        #[test]
+        fn conflict_flags_side_a_matches_naive(
+            my_chunks in arb_sorted_chunks(),
+            other_chunks in arb_sorted_chunks(),
+        ) {
+            let result = conflict_flags(&my_chunks, Side::A, &other_chunks, Side::B);
+            let expected = conflict_flags_naive(&my_chunks, Side::A, &other_chunks, Side::B);
+            prop_assert_eq!(result, expected);
+        }
+    }
+}
+
 // ── map_key_to_action ──────────────────────────────────────
 
 const TEST_BINDINGS: KeyBindings = KeyBindings {

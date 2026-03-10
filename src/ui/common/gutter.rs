@@ -104,35 +104,74 @@ pub fn draw_gutter(
 ///
 /// Returns a sorted, non-overlapping list of `(start, end)` half-open line
 /// ranges on the middle pane where left and right changes overlap.
+#[must_use]
 pub fn middle_conflict_regions(
     left_chunks: &[DiffChunk],
     right_chunks: &[DiffChunk],
 ) -> Vec<(usize, usize)> {
-    let mut regions: Vec<(usize, usize)> = Vec::new();
-    for lc in left_chunks {
-        if lc.tag == DiffTag::Equal {
-            continue;
+    // Pre-collect non-Equal chunks projected onto the middle pane.
+    // Left chunks use (start_b, end_b), right chunks use (start_a, end_a).
+    // Both are already sorted by position since they come from diff output.
+    let lefts: Vec<(usize, usize)> = left_chunks
+        .iter()
+        .filter(|c| c.tag != DiffTag::Equal)
+        .map(|c| (c.start_b, c.end_b))
+        .collect();
+    let rights: Vec<(usize, usize)> = right_chunks
+        .iter()
+        .filter(|c| c.tag != DiffTag::Equal)
+        .map(|c| (c.start_a, c.end_a))
+        .collect();
+
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+
+    // Two-pointer sweep: for each left chunk, find all overlapping right chunks.
+    // `rj` tracks where to start scanning in `rights` for the current left chunk.
+    let mut rj: usize = 0;
+    for &(ls, le) in &lefts {
+        // Advance rj past right chunks that cannot overlap this left chunk.
+        // A right chunk (rs, re) is entirely before (ls, le) when:
+        //   - for non-zero-width right: re <= ls (and not a zero-width touch)
+        //   - for zero-width right at rs: rs < ls
+        // We use chunks_overlap to be precise, but we can safely skip right
+        // chunks whose end is strictly before the left start (for non-zero-width)
+        // or whose position is strictly before the left start (for zero-width).
+        while rj < rights.len() {
+            let (rs, re) = rights[rj];
+            if re < ls || (re == ls && !chunks_overlap(ls, le, rs, re)) {
+                rj += 1;
+            } else {
+                break;
+            }
         }
-        for rc in right_chunks {
-            if rc.tag == DiffTag::Equal {
+
+        // Scan forward from rj collecting all overlapping right chunks.
+        let mut rk = rj;
+        while rk < rights.len() {
+            let (rs, re) = rights[rk];
+            if !chunks_overlap(ls, le, rs, re) {
+                // Since rights are sorted, once we pass the left chunk's end
+                // no further right chunks can overlap.
+                // For non-zero-width left: rs >= le means done.
+                // For zero-width left: rs > ls means done.
+                if (ls < le && rs >= le) || (ls == le && rs > ls) {
+                    break;
+                }
+                rk += 1;
                 continue;
             }
-            if chunks_overlap(lc.start_b, lc.end_b, rc.start_a, rc.end_a) {
-                regions.push((lc.start_b.min(rc.start_a), lc.end_b.max(rc.end_a)));
+            let region_start = ls.min(rs);
+            let region_end = le.max(re);
+            // Merge into the output list.
+            if let Some(last) = merged.last_mut()
+                && region_start <= last.1
+            {
+                last.1 = last.1.max(region_end);
+            } else {
+                merged.push((region_start, region_end));
             }
+            rk += 1;
         }
-    }
-    regions.sort_unstable();
-    // Merge overlapping / adjacent regions.
-    let mut merged: Vec<(usize, usize)> = Vec::new();
-    for (s, e) in regions {
-        if let Some(last) = merged.last_mut()
-            && s <= last.1
-        {
-            last.1 = last.1.max(e);
-            continue;
-        }
-        merged.push((s, e));
     }
     merged
 }
@@ -146,6 +185,7 @@ pub fn middle_conflict_regions(
 /// Conflict detection uses the merged conflict regions on the middle pane so
 /// that side-pane chunks sandwiched between two conflicting chunks (but not
 /// directly overlapping the other side) are also included in the conflict band.
+#[must_use]
 pub fn merged_gutter_chunks(
     my_chunks: &[DiffChunk],
     other_chunks: &[DiffChunk],
@@ -318,6 +358,7 @@ pub fn draw_edge_arrow(
     let _ = cr.fill();
 }
 
+#[must_use]
 pub fn get_lines_text(buf: &TextBuffer, start_line: usize, end_line: usize) -> String {
     if start_line >= end_line {
         return String::new();

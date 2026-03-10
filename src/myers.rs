@@ -474,19 +474,16 @@ fn build_matching_blocks(
         }
     }
 
-    blocks.reverse();
-
-    // Prepend common prefix block
+    // Push prefix block at end (will be first after reverse)
     if common_prefix > 0 {
-        blocks.insert(
-            0,
-            MatchingBlock {
-                a: 0,
-                b: 0,
-                len: common_prefix,
-            },
-        );
+        blocks.push(MatchingBlock {
+            a: 0,
+            b: 0,
+            len: common_prefix,
+        });
     }
+
+    blocks.reverse();
 
     // Append common suffix block
     if common_suffix > 0 {

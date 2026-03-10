@@ -1,0 +1,35 @@
+name: Benchmarks
+on:
+  pull_request:
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install additional packages
+        run: sudo apt-get update && sudo apt-get install -y build-essential libgtksourceview-5-dev
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Install critcmp
+        run: cargo install critcmp
+      - name: Benchmark PR branch
+        run: cargo bench --bench benchmarks -- --save-baseline pr
+      - name: Benchmark base branch
+        run: |
+          git fetch origin ${{ github.base_ref }}
+          git checkout FETCH_HEAD
+          if cargo bench --bench benchmarks -- --save-baseline base 2>/dev/null; then
+            echo "BASE_HAS_BENCH=true" >> "$GITHUB_ENV"
+          else
+            echo "BASE_HAS_BENCH=false" >> "$GITHUB_ENV"
+            echo "Base branch has no benchmarks — skipping comparison"
+          fi
+      - name: Compare benchmarks
+        if: env.BASE_HAS_BENCH == 'true'
+        run: critcmp base pr
