@@ -9,7 +9,7 @@ pub(super) enum GutterHit {
 
 /// A rectangle in the chunk-map sidebar for a non-Equal chunk.
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct ChunkMapRect {
+pub struct ChunkMapRect {
     pub y_start: f64,
     pub height: f64,
     pub tag: DiffTag,
@@ -18,7 +18,7 @@ pub(super) struct ChunkMapRect {
 
 /// Which side of a diff chunk to use for line comparisons.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Side {
+pub enum Side {
     A,
     B,
 }
@@ -29,7 +29,7 @@ pub(super) enum Side {
 /// `side` selects whether to compare `start_a` or `start_b`.
 /// When `wrap` is true, wraps around if no match is found in the given direction.
 /// Returns `None` if there are no non-Equal chunks (or no match when `wrap` is false).
-pub(super) fn find_next_chunk(
+pub fn find_next_chunk(
     chunks: &[DiffChunk],
     cursor_line: usize,
     direction: i32,
@@ -76,7 +76,7 @@ pub(super) fn find_next_chunk(
 /// - `"No changes"` if all chunks are Equal.
 /// - `"N changes"` if `current` is `None` or points to an Equal chunk.
 /// - `"Change X of Y"` if `current` is a non-Equal chunk (1-indexed).
-pub(super) fn format_chunk_label(chunks: &[DiffChunk], current: Option<usize>) -> String {
+pub fn format_chunk_label(chunks: &[DiffChunk], current: Option<usize>) -> String {
     let non_equal: Vec<usize> = chunks
         .iter()
         .enumerate()
@@ -214,7 +214,7 @@ pub(super) fn hit_test_gutter_arrow(
 /// otherwise `start_b`/`end_b`. Each rectangle has a minimum height of 2 pixels.
 /// Returns empty if `total_lines == 0` or `map_height <= 0.0`.
 #[must_use]
-pub(super) fn compute_chunk_map_rects(
+pub fn compute_chunk_map_rects(
     chunks: &[DiffChunk],
     total_lines: usize,
     map_height: f64,

@@ -5,10 +5,12 @@ use super::diff_state;
 pub(super) use diff_state::Side;
 
 mod chunk_map;
-mod editor;
+#[doc(hidden)]
+pub mod editor;
 mod file_watcher;
 mod find_bar;
-mod gutter;
+#[doc(hidden)]
+pub mod gutter;
 mod helpers;
 mod navigation;
 mod scroll_sync;

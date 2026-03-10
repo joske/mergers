@@ -78,12 +78,15 @@ fn primary_key_name() -> &'static str {
     }
 }
 
-mod common;
-mod diff_state;
+#[doc(hidden)]
+pub mod common;
+#[doc(hidden)]
+pub mod diff_state;
 mod diff_view;
 mod dir_window;
 mod file_window;
-mod merge_state;
+#[doc(hidden)]
+pub mod merge_state;
 mod merge_view;
 mod preferences;
 mod vcs_window;
