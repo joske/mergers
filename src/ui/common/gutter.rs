@@ -162,6 +162,11 @@ pub fn middle_conflict_regions(
             }
             let region_start = ls.min(rs);
             let region_end = le.max(re);
+            // Skip zero-width regions (e.g. delete-at-same-line as insert).
+            if region_start == region_end {
+                rk += 1;
+                continue;
+            }
             // Merge into the output list.
             if let Some(last) = merged.last_mut()
                 && region_start <= last.1
@@ -200,7 +205,8 @@ pub fn merged_gutter_chunks(
     let mid_regions = middle_conflict_regions(left_chunks, right_chunks);
 
     // A non-Equal chunk is "in conflict" if its middle-pane projection
-    // overlaps any merged conflict region.
+    // overlaps any merged conflict region.  Use binary search since
+    // mid_regions is sorted and non-overlapping.
     let is_conflict: Vec<bool> = my_chunks
         .iter()
         .map(|mc| {
@@ -211,9 +217,12 @@ pub fn merged_gutter_chunks(
                 Side::A => (mc.start_b, mc.end_b),
                 Side::B => (mc.start_a, mc.end_a),
             };
-            mid_regions
-                .iter()
-                .any(|&(rs, re)| chunks_overlap(mid_s, mid_e, rs, re))
+            // Find first region whose start > mid_s, then check it and predecessor.
+            let idx = mid_regions.partition_point(|&(rs, _)| rs <= mid_s);
+            (idx > 0
+                && chunks_overlap(mid_s, mid_e, mid_regions[idx - 1].0, mid_regions[idx - 1].1))
+                || (idx < mid_regions.len()
+                    && chunks_overlap(mid_s, mid_e, mid_regions[idx].0, mid_regions[idx].1))
         })
         .collect();
 

@@ -699,3 +699,193 @@ fn key_no_modifiers_returns_none() {
         None,
     );
 }
+
+// ── middle_conflict_regions ─────────────────────────────────────
+
+#[test]
+fn conflict_regions_no_overlap() {
+    // Left changes lines 0-2, right changes lines 5-7 → no conflict
+    let left = vec![DiffChunk {
+        tag: DiffTag::Replace,
+        start_a: 0,
+        end_a: 2,
+        start_b: 0,
+        end_b: 2,
+    }];
+    let right = vec![DiffChunk {
+        tag: DiffTag::Replace,
+        start_a: 5,
+        end_a: 7,
+        start_b: 5,
+        end_b: 7,
+    }];
+    assert!(gutter::middle_conflict_regions(&left, &right).is_empty());
+}
+
+#[test]
+fn conflict_regions_basic_overlap() {
+    // Both touch middle lines 2-4
+    let left = vec![DiffChunk {
+        tag: DiffTag::Replace,
+        start_a: 0,
+        end_a: 2,
+        start_b: 2,
+        end_b: 4,
+    }];
+    let right = vec![DiffChunk {
+        tag: DiffTag::Replace,
+        start_a: 2,
+        end_a: 4,
+        start_b: 0,
+        end_b: 2,
+    }];
+    let regions = gutter::middle_conflict_regions(&left, &right);
+    assert_eq!(regions, vec![(2, 4)]);
+}
+
+#[test]
+fn conflict_regions_filters_zero_width() {
+    // Left deletes at middle line 3, right inserts at middle line 3 → zero-width
+    let left = vec![DiffChunk {
+        tag: DiffTag::Delete,
+        start_a: 0,
+        end_a: 1,
+        start_b: 3,
+        end_b: 3,
+    }];
+    let right = vec![DiffChunk {
+        tag: DiffTag::Insert,
+        start_a: 3,
+        end_a: 3,
+        start_b: 0,
+        end_b: 1,
+    }];
+    let regions = gutter::middle_conflict_regions(&left, &right);
+    // Zero-width regions should be filtered out
+    assert!(regions.is_empty());
+}
+
+#[test]
+fn conflict_regions_merges_adjacent() {
+    // Two overlapping conflict areas should merge into one region
+    let left = vec![
+        DiffChunk {
+            tag: DiffTag::Replace,
+            start_a: 0,
+            end_a: 1,
+            start_b: 0,
+            end_b: 2,
+        },
+        DiffChunk {
+            tag: DiffTag::Replace,
+            start_a: 2,
+            end_a: 3,
+            start_b: 3,
+            end_b: 5,
+        },
+    ];
+    let right = vec![DiffChunk {
+        tag: DiffTag::Replace,
+        start_a: 1,
+        end_a: 4,
+        start_b: 0,
+        end_b: 3,
+    }];
+    let regions = gutter::middle_conflict_regions(&left, &right);
+    // Both left chunks overlap with the right chunk; result should be one merged region
+    assert_eq!(regions.len(), 1);
+    assert!(regions[0].0 <= 1);
+    assert!(regions[0].1 >= 4);
+}
+
+#[test]
+fn conflict_regions_equal_chunks_ignored() {
+    let left = vec![DiffChunk {
+        tag: DiffTag::Equal,
+        start_a: 0,
+        end_a: 5,
+        start_b: 0,
+        end_b: 5,
+    }];
+    let right = vec![DiffChunk {
+        tag: DiffTag::Equal,
+        start_a: 0,
+        end_a: 5,
+        start_b: 0,
+        end_b: 5,
+    }];
+    assert!(gutter::middle_conflict_regions(&left, &right).is_empty());
+}
+
+// ── merged_gutter_chunks (binary search) ────────────────────────
+
+#[test]
+fn merged_gutter_no_conflicts() {
+    let my = vec![
+        DiffChunk {
+            tag: DiffTag::Equal,
+            start_a: 0,
+            end_a: 3,
+            start_b: 0,
+            end_b: 3,
+        },
+        DiffChunk {
+            tag: DiffTag::Replace,
+            start_a: 3,
+            end_a: 5,
+            start_b: 3,
+            end_b: 5,
+        },
+    ];
+    // Other side has no changes → no conflict
+    let other = vec![DiffChunk {
+        tag: DiffTag::Equal,
+        start_a: 0,
+        end_a: 5,
+        start_b: 0,
+        end_b: 5,
+    }];
+    let merged = gutter::merged_gutter_chunks(&my, &other, diff_state::Side::A);
+    // No conflict bands, just pass-through
+    assert!(merged.iter().all(|(_, is_conflict)| !is_conflict));
+}
+
+#[test]
+fn merged_gutter_marks_conflict() {
+    // Left changes middle lines 2-4, right also changes middle lines 2-4
+    let left = vec![
+        DiffChunk {
+            tag: DiffTag::Equal,
+            start_a: 0,
+            end_a: 2,
+            start_b: 0,
+            end_b: 2,
+        },
+        DiffChunk {
+            tag: DiffTag::Replace,
+            start_a: 2,
+            end_a: 4,
+            start_b: 2,
+            end_b: 4,
+        },
+    ];
+    let right = vec![
+        DiffChunk {
+            tag: DiffTag::Equal,
+            start_a: 0,
+            end_a: 2,
+            start_b: 0,
+            end_b: 2,
+        },
+        DiffChunk {
+            tag: DiffTag::Replace,
+            start_a: 2,
+            end_a: 4,
+            start_b: 2,
+            end_b: 4,
+        },
+    ];
+    let merged = gutter::merged_gutter_chunks(&left, &right, diff_state::Side::A);
+    // The Replace chunk should be marked as conflict
+    assert!(merged.iter().any(|(_, is_conflict)| *is_conflict));
+}
