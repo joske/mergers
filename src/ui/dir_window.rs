@@ -113,7 +113,7 @@ fn read_dir_entries(
                 continue;
             }
             let meta = entry.metadata().ok();
-            let is_dir = entry.path().is_dir();
+            let is_dir = meta.as_ref().is_some_and(std::fs::Metadata::is_dir);
             map.insert(
                 name,
                 DirMeta {
