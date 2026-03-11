@@ -1357,7 +1357,13 @@ pub(super) fn build_merge_view(
             let ib = ignore_blanks.clone();
             let iw = ignore_whitespace.clone();
             let make_cb = make_on_complete.clone();
+            let cmrk = cached_markers.clone();
+            let cblk = cached_blocks.clone();
             buf.connect_changed(move |_| {
+                // Eagerly invalidate conflict caches so cursor handler
+                // never reads stale data while async re-diff is pending.
+                *cmrk.borrow_mut() = None;
+                *cblk.borrow_mut() = None;
                 if !p.get() {
                     p.set(true);
                     let lb = lb.clone();

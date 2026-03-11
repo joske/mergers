@@ -162,6 +162,11 @@ pub fn middle_conflict_regions(
             }
             let region_start = ls.min(rs);
             let region_end = le.max(re);
+            // Skip zero-width regions (e.g. delete-at-same-line as insert).
+            if region_start == region_end {
+                rk += 1;
+                continue;
+            }
             // Merge into the output list.
             if let Some(last) = merged.last_mut()
                 && region_start <= last.1
