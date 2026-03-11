@@ -115,29 +115,29 @@ fn find_conflict_markers(buf: &TextBuffer) -> Vec<usize> {
 }
 
 /// Return cached conflict markers, populating lazily from the buffer.
-fn get_markers(cache: &Rc<RefCell<Option<Vec<usize>>>>, buf: &TextBuffer) -> Vec<usize> {
+fn get_markers(cache: &Rc<RefCell<Option<Rc<Vec<usize>>>>>, buf: &TextBuffer) -> Rc<Vec<usize>> {
     let mut c = cache.borrow_mut();
     if let Some(ref v) = *c {
-        return v.clone();
+        return Rc::clone(v);
     }
-    let v = find_conflict_markers(buf);
-    *c = Some(v.clone());
+    let v = Rc::new(find_conflict_markers(buf));
+    *c = Some(Rc::clone(&v));
     v
 }
 
 /// Return cached conflict blocks, populating lazily from the buffer.
 #[allow(clippy::type_complexity)]
 fn get_blocks(
-    cache: &Rc<RefCell<Option<Vec<(usize, usize)>>>>,
+    cache: &Rc<RefCell<Option<Rc<Vec<(usize, usize)>>>>>,
     buf: &TextBuffer,
-) -> Vec<(usize, usize)> {
+) -> Rc<Vec<(usize, usize)>> {
     let mut c = cache.borrow_mut();
     if let Some(ref v) = *c {
-        return v.clone();
+        return Rc::clone(v);
     }
     let text = buf.text(&buf.start_iter(), &buf.end_iter(), false);
-    let v = super::merge_state::find_conflict_blocks(&text);
-    *c = Some(v.clone());
+    let v = Rc::new(super::merge_state::find_conflict_blocks(&text));
+    *c = Some(Rc::clone(&v));
     v
 }
 
@@ -1082,9 +1082,9 @@ pub(super) fn build_merge_view(
     // Cached conflict data — populated lazily, invalidated on buffer change.
     // Avoids O(n) re-scans on every cursor move / nav sensitivity check.
     #[allow(clippy::type_complexity)]
-    let cached_markers: Rc<RefCell<Option<Vec<usize>>>> = Rc::new(RefCell::new(None));
+    let cached_markers: Rc<RefCell<Option<Rc<Vec<usize>>>>> = Rc::new(RefCell::new(None));
     #[allow(clippy::type_complexity)]
-    let cached_blocks: Rc<RefCell<Option<Vec<(usize, usize)>>>> = Rc::new(RefCell::new(None));
+    let cached_blocks: Rc<RefCell<Option<Rc<Vec<(usize, usize)>>>>> = Rc::new(RefCell::new(None));
 
     // Navigate conflict helper — jumps between `<<<<<<<` markers in middle buf,
     // and syncs left/right panes to the corresponding line.
