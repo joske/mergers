@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
-use gio::prelude::ApplicationExtManual;
+use gio::prelude::{ApplicationExt, ApplicationExtManual};
 use gtk4::{Application, glib};
 
 use mergers::{CompareMode, ui, vcs};
@@ -11,7 +11,7 @@ use mergers::{CompareMode, ui, vcs};
 #[derive(Parser)]
 #[command(name = "mergers", version, about = "Visual diff and merge tool")]
 struct Cli {
-    /// Paths to compare (2 files or 2 directories, or 3 files for 3-way merge)
+    /// Paths to compare (2 files, 2 dirs, 3 files for merge, or file/dir + patch)
     paths: Vec<PathBuf>,
 
     /// Custom labels for panes (one per pane)
@@ -128,8 +128,26 @@ fn main() -> glib::ExitCode {
 
     let application = Application::builder().application_id("mergers").build();
 
+    // Clean up patch temp dirs on normal shutdown
+    application.connect_shutdown(|_| {
+        ui::cleanup_patch_temp_dirs();
+    });
+
     ui::build_ui(&application, mode);
 
+    // Set up signal handler *after* GTK init so it doesn't get overridden.
+    // ctrlc handles SIGINT and SIGTERM.
+    ctrlc::set_handler(|| {
+        ui::cleanup_patch_temp_dirs();
+        std::process::exit(1);
+    })
+    .ok();
+
     // Pass empty args so GTK doesn't try to parse our directory args
-    application.run_with_args::<String>(&[])
+    let code = application.run_with_args::<String>(&[]);
+
+    // Final cleanup in case shutdown handler didn't fire
+    ui::cleanup_patch_temp_dirs();
+
+    code
 }

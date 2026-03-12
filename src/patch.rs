@@ -479,6 +479,116 @@ pub fn apply_hunks(original: &str, hunks: &[Hunk]) -> Result<String, PatchError>
     Ok(output.join("\n"))
 }
 
+/// Try to apply each hunk individually. Hunks that apply cleanly are applied;
+/// hunks that fail are inserted as conflict markers at the expected location.
+/// Returns the result text — never fails.
+#[must_use]
+pub fn apply_hunks_best_effort(original: &str, hunks: &[Hunk]) -> String {
+    let orig_lines: Vec<&str> = if original.is_empty() {
+        Vec::new()
+    } else {
+        original.lines().collect()
+    };
+    let mut output: Vec<String> = Vec::new();
+    let mut pos: usize = 0;
+
+    for hunk in hunks {
+        let hunk_start = if hunk.old_start == 0 {
+            0
+        } else {
+            hunk.old_start.saturating_sub(1)
+        };
+
+        // If hunk starts before our position (overlap) or beyond file end,
+        // emit it as a rejected hunk at current position.
+        if hunk_start < pos || hunk_start > orig_lines.len() {
+            emit_conflict(&mut output, &[], &hunk.lines);
+            continue;
+        }
+
+        // Copy unchanged lines before this hunk
+        for line in &orig_lines[pos..hunk_start] {
+            output.push((*line).to_string());
+        }
+        pos = hunk_start;
+
+        // Try to apply this hunk
+        if try_apply_hunk(&orig_lines, pos, hunk) {
+            // Hunk applies cleanly
+            for hl in &hunk.lines {
+                match hl {
+                    HunkLine::Context(text) => {
+                        output.push(text.clone());
+                        pos += 1;
+                    }
+                    HunkLine::Remove(_) => {
+                        pos += 1;
+                    }
+                    HunkLine::Add(text) => {
+                        output.push(text.clone());
+                    }
+                }
+            }
+        } else {
+            // Hunk fails — emit conflict markers
+            let old_count = hunk
+                .lines
+                .iter()
+                .filter(|l| matches!(l, HunkLine::Context(_) | HunkLine::Remove(_)))
+                .count();
+            let end = (pos + old_count).min(orig_lines.len());
+            let original_section: Vec<String> = orig_lines[pos..end]
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect();
+            emit_conflict(&mut output, &original_section, &hunk.lines);
+            pos = end;
+        }
+    }
+
+    // Copy remaining original lines
+    for line in &orig_lines[pos..] {
+        output.push((*line).to_string());
+    }
+
+    output.join("\n")
+}
+
+/// Check whether a hunk can be applied cleanly at the given position.
+fn try_apply_hunk(orig_lines: &[&str], mut pos: usize, hunk: &Hunk) -> bool {
+    for hl in &hunk.lines {
+        match hl {
+            HunkLine::Context(text) | HunkLine::Remove(text) => {
+                if pos >= orig_lines.len() || orig_lines[pos] != text.as_str() {
+                    return false;
+                }
+                pos += 1;
+            }
+            HunkLine::Add(_) => {}
+        }
+    }
+    true
+}
+
+/// Emit a conflict block with the original lines and the patch's intended changes.
+fn emit_conflict(output: &mut Vec<String>, original_lines: &[String], hunk_lines: &[HunkLine]) {
+    output.push("<<<<<<< original".to_string());
+    for line in original_lines {
+        output.push(line.clone());
+    }
+    output.push("=======".to_string());
+    // Show what the patch wanted: context + added lines (skip removed)
+    for hl in hunk_lines {
+        match hl {
+            HunkLine::Context(text) | HunkLine::Add(text) => {
+                output.push(text.clone());
+            }
+            HunkLine::Remove(_) => {}
+        }
+    }
+    output.push(">>>>>>> patch".to_string());
+}
+
 fn parse_unified_diff(input: &str) -> Result<Vec<FilePatch>, PatchError> {
     let lines: Vec<&str> = input.lines().collect();
     let mut patches = Vec::new();
@@ -949,5 +1059,85 @@ fn main() {
         assert_eq!(patches.len(), 1);
         let result = apply_hunks(original, &patches[0].hunks).unwrap();
         assert_eq!(result, "keep1\nkeep2");
+    }
+
+    // ── Best-effort apply tests ──────────────────────────────────────
+
+    #[test]
+    fn best_effort_clean_apply() {
+        let original = "line1\nline2\nline3\n";
+        let hunks = vec![Hunk {
+            old_start: 1,
+            old_count: 3,
+            new_start: 1,
+            new_count: 3,
+            lines: vec![
+                HunkLine::Context("line1".to_string()),
+                HunkLine::Remove("line2".to_string()),
+                HunkLine::Add("LINE2".to_string()),
+                HunkLine::Context("line3".to_string()),
+            ],
+        }];
+        let result = apply_hunks_best_effort(original, &hunks);
+        assert_eq!(result, "line1\nLINE2\nline3");
+    }
+
+    #[test]
+    fn best_effort_conflict_markers() {
+        let original = "aaa\nbbb\nccc\n";
+        let hunks = vec![Hunk {
+            old_start: 1,
+            old_count: 3,
+            new_start: 1,
+            new_count: 3,
+            lines: vec![
+                HunkLine::Context("aaa".to_string()),
+                HunkLine::Remove("WRONG".to_string()),
+                HunkLine::Add("NEW".to_string()),
+                HunkLine::Context("ccc".to_string()),
+            ],
+        }];
+        let result = apply_hunks_best_effort(original, &hunks);
+        assert!(result.contains("<<<<<<< original"));
+        assert!(result.contains("======="));
+        assert!(result.contains(">>>>>>> patch"));
+        assert!(result.contains("bbb")); // original line in conflict
+        assert!(result.contains("NEW")); // patched line in conflict
+    }
+
+    #[test]
+    fn best_effort_partial_apply() {
+        // Two hunks: first applies, second conflicts
+        let original = "a\nb\nc\nd\ne\nf\n";
+        let hunks = vec![
+            Hunk {
+                old_start: 1,
+                old_count: 2,
+                new_start: 1,
+                new_count: 2,
+                lines: vec![
+                    HunkLine::Remove("a".to_string()),
+                    HunkLine::Add("A".to_string()),
+                    HunkLine::Context("b".to_string()),
+                ],
+            },
+            Hunk {
+                old_start: 5,
+                old_count: 2,
+                new_start: 5,
+                new_count: 2,
+                lines: vec![
+                    HunkLine::Remove("WRONG".to_string()),
+                    HunkLine::Add("E".to_string()),
+                    HunkLine::Context("f".to_string()),
+                ],
+            },
+        ];
+        let result = apply_hunks_best_effort(original, &hunks);
+        // First hunk applied cleanly
+        assert!(result.starts_with("A\nb\nc\nd\n"));
+        // Second hunk has conflict markers
+        assert!(result.contains("<<<<<<< original"));
+        assert!(result.contains(">>>>>>> patch"));
     }
 }

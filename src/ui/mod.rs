@@ -89,6 +89,7 @@ mod file_window;
 pub mod merge_state;
 mod merge_view;
 mod patch_window;
+pub use patch_window::cleanup_patch_temp_dirs;
 mod preferences;
 mod vcs_window;
 mod welcome;

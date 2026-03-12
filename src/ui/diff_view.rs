@@ -384,7 +384,15 @@ pub(super) fn build_diff_view(
     toolbar.append(&chunk_label);
     toolbar.append(&goto_entry);
     toolbar.append(&filter_box);
+    let apply_all_btn = Button::from_icon_name("media-skip-backward-symbolic");
+    apply_all_btn.set_tooltip_text(Some("Apply all non-conflicting changes right → left"));
+    apply_all_btn.set_action_name(Some("diff.apply-all-right-to-left"));
+    if any_binary {
+        apply_all_btn.set_sensitive(false);
+    }
+
     toolbar.append(&patch_btn);
+    toolbar.append(&apply_all_btn);
     toolbar.append(&swap_btn);
     let prefs_btn = Button::from_icon_name("preferences-system-symbolic");
     prefs_btn.set_tooltip_text(Some(&format!("Preferences ({}+,)", primary_key_name())));
@@ -975,6 +983,33 @@ pub(super) fn build_diff_view(
         action_group.add_action(&action);
     }
 
+    // Apply all non-conflicting: copy every non-equal, non-conflict chunk R→L
+    // as a single undo operation.
+    {
+        let action = gio::SimpleAction::new("apply-all-right-to-left", None);
+        let ch = chunks.clone();
+        let lb = left_buf.clone();
+        let rb = right_buf.clone();
+        action.connect_activate(move |_, _| {
+            let snapshot = ch.borrow();
+            lb.begin_user_action();
+            // Reverse order so line numbers stay valid
+            for c in snapshot.iter().rev() {
+                if c.tag == DiffTag::Equal {
+                    continue;
+                }
+                // Skip chunks whose right-side text contains conflict markers
+                let src_text = get_lines_text(&rb, c.start_b, c.end_b);
+                if src_text.contains("<<<<<<< original") && src_text.contains(">>>>>>> patch") {
+                    continue;
+                }
+                copy_chunk(&rb, c.start_b, c.end_b, &lb, c.start_a, c.end_a);
+            }
+            lb.end_user_action();
+        });
+        action_group.add_action(&action);
+    }
+
     // Ctrl+S: save the focused pane
     {
         let action = gio::SimpleAction::new("save", None);
@@ -1163,6 +1198,7 @@ pub(super) fn open_file_diff(
     open_tabs: &Rc<RefCell<Vec<FileTab>>>,
     left_dir: &str,
     right_dir: &str,
+    labels: &[String],
     settings: &Rc<RefCell<Settings>>,
 ) {
     // Switch to existing tab if this file is already open
@@ -1176,10 +1212,13 @@ pub(super) fn open_file_diff(
         }
     }
 
-    let left_path = Path::new(left_dir).join(rel_path);
-    let right_path = Path::new(right_dir).join(rel_path);
+    // Resolve symlinks so headers/tooltips/save-dialogs show original paths
+    let left_raw = Path::new(left_dir).join(rel_path);
+    let right_raw = Path::new(right_dir).join(rel_path);
+    let left_path = std::fs::canonicalize(&left_raw).unwrap_or(left_raw);
+    let right_path = std::fs::canonicalize(&right_raw).unwrap_or(right_raw);
 
-    let dv = build_diff_view(&left_path, &right_path, &[], settings);
+    let dv = build_diff_view(&left_path, &right_path, labels, settings);
     dv.widget
         .insert_action_group("diff", Some(&dv.action_group));
 
@@ -1201,10 +1240,16 @@ pub(super) fn open_file_diff(
         },
     });
 
-    // Tab label
+    // Tab label — use label overrides when available (e.g. patch mode)
     let file_name = display_name(Path::new(rel_path));
-    let left_dir_name = display_name(Path::new(left_dir));
-    let right_dir_name = display_name(Path::new(right_dir));
+    let left_dir_name = labels
+        .first()
+        .cloned()
+        .unwrap_or_else(|| display_name(Path::new(left_dir)));
+    let right_dir_name = labels
+        .get(1)
+        .cloned()
+        .unwrap_or_else(|| display_name(Path::new(right_dir)));
     let tab_title = format!("[{left_dir_name}] {file_name} — [{right_dir_name}] {file_name}");
 
     let (tab_label_box, close_btn) = make_closeable_tab_label(&tab_title);

@@ -1,6 +1,20 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use crate::patch::{apply_hunks, parse_patch};
+use crate::patch::{apply_hunks, apply_hunks_best_effort, parse_patch};
+
+use std::sync::Mutex;
+
+/// Temp dirs registered for cleanup on exit / signal.
+static PATCH_TEMP_DIRS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// Remove all registered patch temp dirs. Called from shutdown and signal handlers.
+pub fn cleanup_patch_temp_dirs() {
+    if let Ok(dirs) = PATCH_TEMP_DIRS.lock() {
+        for dir in dirs.iter() {
+            let _ = fs::remove_dir_all(dir);
+        }
+    }
+}
 
 // ─── Patch file viewing window ─────────────────────────────────────────────
 
@@ -39,6 +53,11 @@ pub(super) fn build_patch_window(
     if let Err(e) = fs::create_dir_all(&tmp_dir) {
         show_patch_error(app, &format!("Cannot create temp directory: {e}"));
         return;
+    }
+
+    // Register for cleanup on shutdown / signal
+    if let Ok(mut dirs) = PATCH_TEMP_DIRS.lock() {
+        dirs.push(tmp_dir.clone());
     }
 
     if base.is_file() {
@@ -96,8 +115,8 @@ fn build_single_file_patch(
     let patched = match apply_hunks(&original, &fp.hunks) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("Warning: failed to apply patch: {e}");
-            original.clone()
+            eprintln!("Warning: failed to apply patch cleanly: {e}");
+            apply_hunks_best_effort(&original, &fp.hunks)
         }
     };
 
@@ -201,6 +220,8 @@ fn build_multi_file_patch(
     fs::create_dir_all(&left_dir).ok();
     fs::create_dir_all(&right_dir).ok();
 
+    let mut conflict_paths: Vec<String> = Vec::new();
+
     for fp in file_patches {
         let rel_path = &fp.original_path;
         let left_path = left_dir.join(rel_path);
@@ -246,7 +267,8 @@ fn build_multi_file_patch(
                     Ok(c) => c,
                     Err(e) => {
                         eprintln!("Warning: cannot read {}: {e}", orig_path.display());
-                        fs::write(&right_path, "").ok();
+                        let msg = format!("[Cannot read original file]\n\n{e}\n");
+                        fs::write(&right_path, msg).ok();
                         continue;
                     }
                 };
@@ -263,9 +285,9 @@ fn build_multi_file_patch(
                 let patched = match apply_hunks(&original, &fp.hunks) {
                     Ok(p) => p,
                     Err(e) => {
-                        eprintln!("Warning: failed to apply patch to {rel_path}: {e}");
-                        fs::write(&right_path, "").ok();
-                        continue;
+                        eprintln!("Warning: failed to apply patch cleanly to {rel_path}: {e}");
+                        conflict_paths.push(rel_path.clone());
+                        apply_hunks_best_effort(&original, &fp.hunks)
                     }
                 };
 
@@ -274,6 +296,40 @@ fn build_multi_file_patch(
         }
     }
 
+    // Write marker file so the dir scan can color conflicted files red
+    if !conflict_paths.is_empty() {
+        let marker = right_dir.join(".mergers-conflicts");
+        fs::write(&marker, conflict_paths.join("\n")).ok();
+    }
+
+    // Provide sensible labels so the headers show the base dir, not temp paths
+    let patch_labels = if labels.len() >= 2 {
+        labels.to_vec()
+    } else {
+        let base_name = base.file_name().map_or_else(
+            || base.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        vec![
+            labels.first().cloned().unwrap_or(base_name.clone()),
+            labels
+                .get(1)
+                .cloned()
+                .unwrap_or(format!("{base_name} (patched)")),
+        ]
+    };
+
+    // Tooltip dirs show the original base path (not temp dirs).
+    // Only the left side gets overridden — the right side is generated temp content.
+    let tooltip_dirs = vec![base.display().to_string()];
+
     // Delegate to the existing directory comparison window
-    build_dir_window(app, left_dir, right_dir, labels, Rc::clone(settings));
+    build_dir_window_with_tooltips(
+        app,
+        left_dir,
+        right_dir,
+        &patch_labels,
+        &tooltip_dirs,
+        Rc::clone(settings),
+    );
 }

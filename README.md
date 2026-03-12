@@ -21,6 +21,7 @@ A visual diff and merge tool written in Rust with GTK4, inspired by [Meld](https
 - **Chunk navigation** with keyboard shortcuts (with optional wrap-around)
 - **Synchronized scrolling** — chunk-aware vertical sync keeps corresponding lines aligned
 - **Chunk map** — visual overview strips alongside each pane with viewport indicator
+- **Patch viewing** — open `.patch`/`.diff` files to interactively review and apply changes, with conflict markers for failed hunks
 - **Patch export** (unified diff format)
 - **Refresh** (Ctrl+R / F5) — reload files from disk with unsaved-changes confirmation
 - **Open externally** (Ctrl+Shift+O) — open focused file in system default app
@@ -95,6 +96,12 @@ mergers dir1/ dir2/
 # Three-way merge (left, merged, right)
 mergers local.txt merged.txt remote.txt
 
+# Apply a patch to a file (auto-detected from .patch/.diff extension)
+mergers original.txt changes.patch
+
+# Apply a patch to a directory
+mergers project/ changes.patch
+
 # View uncommitted git changes
 mergers .
 
@@ -133,7 +140,7 @@ git mergetool
 | **Find & Replace**                | Yes                   | Yes                            | Yes                                               | No                                       |
 | **Go to Line**                    | Yes                   | No                             | No                                                | No                                       |
 | **Patch Export**                  | Yes                   | No                             | No                                                | Yes                                      |
-| **Patch Viewing/Applying**        | No                    | No                             | No                                                | Yes                                      |
+| **Patch Viewing/Applying**        | Yes                   | No                             | No                                                | Yes                                      |
 | **Ignore Whitespace**             | Yes                   | Yes                            | No                                                | No                                       |
 | **Ignore Blank Lines**            | Yes                   | Yes                            | No                                                | No                                       |
 | **Text Wrapping Options**         | Yes                   | Yes                            | No                                                | No                                       |
