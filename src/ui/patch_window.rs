@@ -52,15 +52,7 @@ pub(super) fn build_patch_window(
             settings,
         );
     } else if base.is_dir() {
-        build_multi_file_patch(
-            app,
-            &base,
-            &file_patches,
-            &patch_path,
-            &tmp_dir,
-            labels,
-            settings,
-        );
+        build_multi_file_patch(app, &base, &file_patches, &tmp_dir, labels, settings);
     } else {
         show_patch_error(
             app,
@@ -189,120 +181,99 @@ fn build_single_file_patch(
     });
 }
 
-#[allow(clippy::too_many_arguments)]
 fn build_multi_file_patch(
     app: &Application,
     base: &Path,
     file_patches: &[crate::patch::FilePatch],
-    patch_path: &Path,
     tmp_dir: &Path,
     labels: &[String],
     settings: &Rc<RefCell<Settings>>,
 ) {
-    let patch_filename = patch_path
-        .file_name()
-        .map_or_else(|| "patch".to_string(), |n| n.to_string_lossy().into_owned());
-    let title = format!("mergers \u{2014} {patch_filename}");
+    use crate::patch::PatchKind;
 
-    let AppWindow {
-        window,
-        notebook,
-        open_tabs,
-    } = build_app_window(app, settings, 900, 600, false);
-    window.set_title(Some(&title));
+    // Canonicalize base so symlinks use absolute paths
+    let base = base.canonicalize().unwrap_or_else(|_| base.to_path_buf());
 
-    let mut has_tabs = false;
+    // Two temp dirs: "left" has only the originals mentioned in the patch,
+    // "right" has the patched versions. This avoids scanning the entire base tree.
+    let left_dir = tmp_dir.join("left");
+    let right_dir = tmp_dir.join("right");
+    fs::create_dir_all(&left_dir).ok();
+    fs::create_dir_all(&right_dir).ok();
 
     for fp in file_patches {
         let rel_path = &fp.original_path;
-        let orig_path = base.join(rel_path);
+        let left_path = left_dir.join(rel_path);
+        let right_path = right_dir.join(rel_path);
 
-        let original = match fs::read_to_string(&orig_path) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("Warning: cannot read {}: {e}", orig_path.display());
-                continue;
-            }
-        };
-
-        let patched = match apply_hunks(&original, &fp.hunks) {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("Warning: failed to apply patch to {rel_path}: {e}");
-                original.clone()
-            }
-        };
-
-        // Write patched content — preserve subdirectory structure in temp dir
-        let tmp_path = tmp_dir.join(rel_path);
-        if let Some(parent) = tmp_path.parent()
+        // Ensure parent dirs exist in the right (patched) tree.
+        // Left tree uses symlinks, so only the right tree needs real dirs.
+        if let Some(parent) = right_path.parent()
             && let Err(e) = fs::create_dir_all(parent)
         {
             eprintln!("Warning: cannot create temp dir for {rel_path}: {e}");
             continue;
         }
-        if let Err(e) = fs::write(&tmp_path, &patched) {
-            eprintln!("Warning: cannot write temp file for {rel_path}: {e}");
-            continue;
+
+        match fp.kind {
+            PatchKind::Deleted => {
+                // Symlink original on left, nothing on right → shows as LeftOnly
+                let orig_path = base.join(rel_path);
+                if orig_path.exists() {
+                    if let Some(parent) = left_path.parent() {
+                        fs::create_dir_all(parent).ok();
+                    }
+                    #[cfg(unix)]
+                    std::os::unix::fs::symlink(&orig_path, &left_path).ok();
+                    #[cfg(windows)]
+                    fs::copy(&orig_path, &left_path).ok();
+                }
+            }
+            PatchKind::Added => {
+                // Nothing on left, patched on right → shows as RightOnly
+                let patched = match apply_hunks("", &fp.hunks) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("Warning: failed to apply patch for new file {rel_path}: {e}");
+                        String::new()
+                    }
+                };
+                fs::write(&right_path, patched).ok();
+            }
+            PatchKind::Modified => {
+                let orig_path = base.join(rel_path);
+                let original = match fs::read_to_string(&orig_path) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("Warning: cannot read {}: {e}", orig_path.display());
+                        fs::write(&right_path, "").ok();
+                        continue;
+                    }
+                };
+
+                // Symlink original to left tree — saves write back through symlink
+                if let Some(parent) = left_path.parent() {
+                    fs::create_dir_all(parent).ok();
+                }
+                #[cfg(unix)]
+                std::os::unix::fs::symlink(&orig_path, &left_path).ok();
+                #[cfg(windows)]
+                fs::copy(&orig_path, &left_path).ok();
+
+                let patched = match apply_hunks(&original, &fp.hunks) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("Warning: failed to apply patch to {rel_path}: {e}");
+                        fs::write(&right_path, "").ok();
+                        continue;
+                    }
+                };
+
+                fs::write(&right_path, patched).ok();
+            }
         }
-
-        let left_label = labels.first().cloned().unwrap_or_else(|| rel_path.clone());
-        let right_label = labels
-            .get(1)
-            .cloned()
-            .unwrap_or_else(|| format!("{rel_path} (patched)"));
-        let diff_labels = vec![left_label, right_label];
-
-        let dv = build_diff_view(&orig_path, &tmp_path, &diff_labels, settings);
-
-        // Right pane is read-only (patched output)
-        dv.right_save.set_sensitive(false);
-        dv.right_save.set_visible(false);
-
-        dv.widget
-            .insert_action_group("diff", Some(&dv.action_group));
-
-        let tab_title = rel_path.clone();
-        notebook.append_page(&dv.widget, Some(&Label::new(Some(&tab_title))));
-
-        // Register tab
-        {
-            let tab_id = NEXT_TAB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            open_tabs.borrow_mut().push(FileTab::Diff {
-                id: tab_id,
-                rel_path: tab_title,
-                widget: dv.widget.clone(),
-                left: PaneInfo {
-                    path: dv.left_tab_path.clone(),
-                    buf: dv.left_buf.clone(),
-                    save: dv.left_save.clone(),
-                },
-                right: PaneInfo {
-                    path: dv.right_tab_path.clone(),
-                    buf: dv.right_buf.clone(),
-                    save: dv.right_save.clone(),
-                },
-            });
-        }
-
-        has_tabs = true;
     }
 
-    if !has_tabs {
-        show_error_dialog(
-            &window,
-            "No files from the patch could be applied to the base directory",
-        );
-        let _ = fs::remove_dir_all(tmp_dir);
-        window.close();
-        return;
-    }
-
-    // Clean up temp dir on destroy
-    let tmp_dir_owned = tmp_dir.to_path_buf();
-    window.connect_destroy(move |_| {
-        let _ = fs::remove_dir_all(&tmp_dir_owned);
-    });
-
-    window.present();
+    // Delegate to the existing directory comparison window
+    build_dir_window(app, left_dir, right_dir, labels, Rc::clone(settings));
 }

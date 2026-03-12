@@ -16,9 +16,17 @@ pub enum HunkLine {
     Remove(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PatchKind {
+    Modified,
+    Added,
+    Deleted,
+}
+
 #[derive(Debug, Clone)]
 pub struct FilePatch {
     pub original_path: String,
+    pub kind: PatchKind,
     pub hunks: Vec<Hunk>,
 }
 
@@ -252,6 +260,7 @@ fn parse_context_diff(input: &str) -> Result<Vec<FilePatch>, PatchError> {
 
             patches.push(FilePatch {
                 original_path: old_path.to_string(),
+                kind: PatchKind::Modified,
                 hunks,
             });
         } else {
@@ -420,6 +429,13 @@ pub fn apply_hunks(original: &str, hunks: &[Hunk]) -> Result<String, PatchError>
         }
 
         // Copy unchanged lines before this hunk
+        if hunk_start > orig_lines.len() {
+            return Err(PatchError(format!(
+                "hunk references line {} but original has only {} lines",
+                hunk.old_start,
+                orig_lines.len()
+            )));
+        }
         for line in &orig_lines[pos..hunk_start] {
             output.push((*line).to_string());
         }
@@ -471,10 +487,26 @@ fn parse_unified_diff(input: &str) -> Result<Vec<FilePatch>, PatchError> {
     while i < lines.len() {
         // Look for a --- / +++ header pair.
         if lines[i].starts_with("--- ") && i + 1 < lines.len() && lines[i + 1].starts_with("+++ ") {
-            let old_path = &lines[i][4..];
-            let old_path = strip_timestamp(strip_ab_prefix(old_path.trim()));
+            let old_raw = lines[i][4..].trim();
+            let old_path = strip_timestamp(strip_ab_prefix(old_raw));
+            let new_raw = lines[i + 1][4..].trim();
+            let new_path = strip_timestamp(strip_ab_prefix(new_raw));
 
-            // Skip the +++ line (we use the old path as canonical).
+            let kind = if old_raw == "/dev/null" {
+                PatchKind::Added
+            } else if new_raw == "/dev/null" {
+                PatchKind::Deleted
+            } else {
+                PatchKind::Modified
+            };
+
+            // For added files, use the new path as canonical
+            let canonical_path = if kind == PatchKind::Added {
+                new_path
+            } else {
+                old_path
+            };
+
             i += 2;
 
             let mut hunks = Vec::new();
@@ -522,7 +554,8 @@ fn parse_unified_diff(input: &str) -> Result<Vec<FilePatch>, PatchError> {
             }
 
             patches.push(FilePatch {
-                original_path: old_path.to_string(),
+                original_path: canonical_path.to_string(),
+                kind,
                 hunks,
             });
         } else {
