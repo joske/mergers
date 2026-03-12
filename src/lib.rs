@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 pub mod myers;
+pub mod patch;
 pub mod settings;
 pub mod ui;
 pub mod vcs;
