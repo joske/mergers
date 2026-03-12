@@ -827,4 +827,94 @@ fn main() {
     fn detect_empty_not_a_patch() {
         assert!(!is_patch_file(""));
     }
+
+    #[test]
+    fn round_trip_unified_parse_apply() {
+        let original = "line1\nline2\nline3\nline4\nline5";
+        let diff = "\
+--- a/test.txt
++++ b/test.txt
+@@ -1,5 +1,6 @@
+ line1
+-line2
++line2modified
+ line3
+ line4
++line4b
+ line5
+";
+        let patches = parse_patch(diff).unwrap();
+        assert_eq!(patches.len(), 1);
+        let result = apply_hunks(original, &patches[0].hunks).unwrap();
+        assert_eq!(result, "line1\nline2modified\nline3\nline4\nline4b\nline5");
+    }
+
+    #[test]
+    fn round_trip_context_parse_apply() {
+        let original = "alpha\nbeta\ngamma\ndelta";
+        let diff = "\
+*** test.txt\t2024-01-01 00:00:00.000000000 +0000
+--- test.txt\t2024-01-02 00:00:00.000000000 +0000
+***************
+*** 1,4 ****
+  alpha
+! beta
+! gamma
+  delta
+--- 1,4 ----
+  alpha
+! BETA
+! GAMMA
+  delta
+";
+        let patches = parse_patch(diff).unwrap();
+        assert_eq!(patches.len(), 1);
+        let result = apply_hunks(original, &patches[0].hunks).unwrap();
+        assert_eq!(result, "alpha\nBETA\nGAMMA\ndelta");
+    }
+
+    #[test]
+    fn round_trip_multi_file() {
+        let diff = "\
+--- a/one.txt
++++ b/one.txt
+@@ -1,3 +1,3 @@
+ aaa
+-bbb
++BBB
+ ccc
+--- a/two.txt
++++ b/two.txt
+@@ -1,2 +1,3 @@
+ xxx
++yyy
+ zzz
+";
+        let patches = parse_patch(diff).unwrap();
+        assert_eq!(patches.len(), 2);
+
+        let result1 = apply_hunks("aaa\nbbb\nccc", &patches[0].hunks).unwrap();
+        assert_eq!(result1, "aaa\nBBB\nccc");
+
+        let result2 = apply_hunks("xxx\nzzz", &patches[1].hunks).unwrap();
+        assert_eq!(result2, "xxx\nyyy\nzzz");
+    }
+
+    #[test]
+    fn round_trip_delete_only() {
+        let original = "keep1\nremove1\nremove2\nkeep2";
+        let diff = "\
+--- a/del.txt
++++ b/del.txt
+@@ -1,4 +1,2 @@
+ keep1
+-remove1
+-remove2
+ keep2
+";
+        let patches = parse_patch(diff).unwrap();
+        assert_eq!(patches.len(), 1);
+        let result = apply_hunks(original, &patches[0].hunks).unwrap();
+        assert_eq!(result, "keep1\nkeep2");
+    }
 }
