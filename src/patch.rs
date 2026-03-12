@@ -38,6 +38,24 @@ fn is_context_diff(input: &str) -> bool {
     input.lines().any(|l| l == "***************")
 }
 
+/// Returns true if the content looks like a patch file (unified or context diff).
+///
+/// Scans the first 50 lines for a unified diff signature (`--- ` immediately followed
+/// by `+++ `) or a context diff separator (`***************`).
+#[must_use]
+pub fn is_patch_file(content: &str) -> bool {
+    let lines: Vec<&str> = content.lines().take(50).collect();
+    for (i, line) in lines.iter().enumerate() {
+        if *line == "***************" {
+            return true;
+        }
+        if line.starts_with("--- ") && i + 1 < lines.len() && lines[i + 1].starts_with("+++ ") {
+            return true;
+        }
+    }
+    false
+}
+
 /// Parse a unified or context diff into a list of per-file patches.
 ///
 /// # Errors
@@ -760,5 +778,53 @@ mod tests {
         }];
         let result = apply_hunks(original, &hunks).unwrap();
         assert_eq!(result, "new1\nnew2");
+    }
+
+    #[test]
+    fn detect_unified_patch() {
+        let content = "\
+diff --git a/file.txt b/file.txt
+--- a/file.txt
++++ b/file.txt
+@@ -1,3 +1,3 @@
+ line1
+-line2
++line2modified
+ line3
+";
+        assert!(is_patch_file(content));
+    }
+
+    #[test]
+    fn detect_context_patch() {
+        let content = "\
+*** file.txt\t2024-01-01 00:00:00.000000000 +0000
+--- file.txt\t2024-01-02 00:00:00.000000000 +0000
+***************
+*** 1,3 ****
+  line1
+! line2
+  line3
+--- 1,3 ----
+  line1
+! line2modified
+  line3
+";
+        assert!(is_patch_file(content));
+    }
+
+    #[test]
+    fn detect_not_a_patch() {
+        let content = "\
+fn main() {
+    println!(\"Hello, world!\");
+}
+";
+        assert!(!is_patch_file(content));
+    }
+
+    #[test]
+    fn detect_empty_not_a_patch() {
+        assert!(!is_patch_file(""));
     }
 }
