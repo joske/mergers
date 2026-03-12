@@ -369,6 +369,82 @@ fn merge_context_sections(
     Ok(result)
 }
 
+/// Apply a list of hunks to the original file content, producing the patched text.
+///
+/// # Errors
+///
+/// Returns `PatchError` if a hunk references lines beyond the original content or if
+/// context/remove lines don't match the original.
+pub fn apply_hunks(original: &str, hunks: &[Hunk]) -> Result<String, PatchError> {
+    let orig_lines: Vec<&str> = if original.is_empty() {
+        Vec::new()
+    } else {
+        original.lines().collect()
+    };
+    let mut output = Vec::new();
+    // 0-based position in orig_lines
+    let mut pos: usize = 0;
+
+    for hunk in hunks {
+        // old_start is 1-based; convert to 0-based index
+        let hunk_start = if hunk.old_start == 0 {
+            0
+        } else {
+            hunk.old_start - 1
+        };
+
+        if hunk_start < pos {
+            return Err(PatchError(format!(
+                "overlapping hunks: expected position >= {}, but hunk starts at {}",
+                pos + 1,
+                hunk.old_start
+            )));
+        }
+
+        // Copy unchanged lines before this hunk
+        for line in &orig_lines[pos..hunk_start] {
+            output.push((*line).to_string());
+        }
+        pos = hunk_start;
+
+        for hl in &hunk.lines {
+            match hl {
+                HunkLine::Context(text) | HunkLine::Remove(text) => {
+                    if pos >= orig_lines.len() {
+                        return Err(PatchError(format!(
+                            "hunk references line {} but original has only {} lines",
+                            pos + 1,
+                            orig_lines.len()
+                        )));
+                    }
+                    if orig_lines[pos] != text.as_str() {
+                        return Err(PatchError(format!(
+                            "mismatch at line {}: expected {:?}, got {:?}",
+                            pos + 1,
+                            text,
+                            orig_lines[pos]
+                        )));
+                    }
+                    if matches!(hl, HunkLine::Context(_)) {
+                        output.push(text.clone());
+                    }
+                    pos += 1;
+                }
+                HunkLine::Add(text) => {
+                    output.push(text.clone());
+                }
+            }
+        }
+    }
+
+    // Copy remaining original lines after the last hunk
+    for line in &orig_lines[pos..] {
+        output.push((*line).to_string());
+    }
+
+    Ok(output.join("\n"))
+}
+
 fn parse_unified_diff(input: &str) -> Result<Vec<FilePatch>, PatchError> {
     let lines: Vec<&str> = input.lines().collect();
     let mut patches = Vec::new();
@@ -590,5 +666,99 @@ mod tests {
         assert!(result.is_err());
         let result = parse_patch("   \n  \n");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn apply_hunks_simple_replace() {
+        let original = "line1\nline2\nline3";
+        let hunks = vec![Hunk {
+            old_start: 2,
+            old_count: 1,
+            new_start: 2,
+            new_count: 1,
+            lines: vec![
+                HunkLine::Remove("line2".to_string()),
+                HunkLine::Add("replaced".to_string()),
+            ],
+        }];
+        let result = apply_hunks(original, &hunks).unwrap();
+        assert_eq!(result, "line1\nreplaced\nline3");
+    }
+
+    #[test]
+    fn apply_hunks_addition() {
+        let original = "line1\nline2\nline3";
+        let hunks = vec![Hunk {
+            old_start: 2,
+            old_count: 1,
+            new_start: 2,
+            new_count: 2,
+            lines: vec![
+                HunkLine::Context("line2".to_string()),
+                HunkLine::Add("inserted".to_string()),
+            ],
+        }];
+        let result = apply_hunks(original, &hunks).unwrap();
+        assert_eq!(result, "line1\nline2\ninserted\nline3");
+    }
+
+    #[test]
+    fn apply_hunks_deletion() {
+        let original = "line1\nline2\nline3";
+        let hunks = vec![Hunk {
+            old_start: 2,
+            old_count: 1,
+            new_start: 2,
+            new_count: 0,
+            lines: vec![HunkLine::Remove("line2".to_string())],
+        }];
+        let result = apply_hunks(original, &hunks).unwrap();
+        assert_eq!(result, "line1\nline3");
+    }
+
+    #[test]
+    fn apply_hunks_multiple() {
+        let original = "a\nb\nc\nd\ne\nf";
+        let hunks = vec![
+            Hunk {
+                old_start: 2,
+                old_count: 1,
+                new_start: 2,
+                new_count: 1,
+                lines: vec![
+                    HunkLine::Remove("b".to_string()),
+                    HunkLine::Add("B".to_string()),
+                ],
+            },
+            Hunk {
+                old_start: 5,
+                old_count: 1,
+                new_start: 5,
+                new_count: 1,
+                lines: vec![
+                    HunkLine::Remove("e".to_string()),
+                    HunkLine::Add("E".to_string()),
+                ],
+            },
+        ];
+        let result = apply_hunks(original, &hunks).unwrap();
+        assert_eq!(result, "a\nB\nc\nd\nE\nf");
+    }
+
+    #[test]
+    fn apply_hunks_to_empty_original() {
+        let original = "";
+        let hunks = vec![Hunk {
+            old_start: 0,
+            old_count: 0,
+            new_start: 1,
+            new_count: 2,
+            lines: vec![
+                HunkLine::Add("new1".to_string()),
+                HunkLine::Add("new2".to_string()),
+            ],
+        }];
+        let result = apply_hunks(original, &hunks).unwrap();
+        assert_eq!(result, "new1\nnew2");
     }
 }
