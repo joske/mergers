@@ -1,6 +1,6 @@
 #![windows_subsystem = "windows"]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::Parser;
 use gio::prelude::ApplicationExtManual;
@@ -17,6 +17,22 @@ struct Cli {
     /// Custom labels for panes (one per pane)
     #[arg(short = 'L', long = "label", value_name = "LABEL")]
     labels: Vec<String>,
+
+    /// Patch format override (unified or context). Auto-detected if omitted.
+    #[arg(long = "patch-format", value_name = "FORMAT")]
+    patch_format: Option<String>,
+}
+
+fn is_right_a_patch(path: &Path) -> bool {
+    if let Some(ext) = path.extension().and_then(|e| e.to_str())
+        && matches!(ext, "patch" | "diff")
+    {
+        return true;
+    }
+    if let Ok(content) = std::fs::read_to_string(path) {
+        return mergers::patch::is_patch_file(&content);
+    }
+    false
 }
 
 fn main() -> glib::ExitCode {
@@ -45,10 +61,29 @@ fn main() -> glib::ExitCode {
         let right = &cli.paths[1];
 
         if left.is_file() && right.is_file() {
-            CompareMode::Files {
-                left: left.clone(),
-                right: right.clone(),
-                labels: cli.labels.clone(),
+            if cli.patch_format.is_some() || is_right_a_patch(right) {
+                CompareMode::Patch {
+                    base: left.clone(),
+                    patch: right.clone(),
+                    labels: cli.labels.clone(),
+                }
+            } else {
+                CompareMode::Files {
+                    left: left.clone(),
+                    right: right.clone(),
+                    labels: cli.labels.clone(),
+                }
+            }
+        } else if left.is_dir() && right.is_file() {
+            if cli.patch_format.is_some() || is_right_a_patch(right) {
+                CompareMode::Patch {
+                    base: left.clone(),
+                    patch: right.clone(),
+                    labels: cli.labels.clone(),
+                }
+            } else {
+                eprintln!("Error: cannot compare a directory with a file");
+                std::process::exit(1);
             }
         } else if left.is_dir() && right.is_dir() {
             CompareMode::Dirs {

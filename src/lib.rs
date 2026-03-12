@@ -40,6 +40,11 @@ pub enum CompareMode {
         right: PathBuf,
         labels: Vec<String>,
     },
+    Patch {
+        base: PathBuf,
+        patch: PathBuf,
+        labels: Vec<String>,
+    },
     Vcs {
         dir: PathBuf,
     },
