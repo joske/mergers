@@ -238,15 +238,12 @@ fn build_multi_file_patch(
     let mut conflict_paths: Vec<String> = Vec::new();
 
     for fp in file_patches {
-        let rel_path = match sanitize_patch_path(&fp.original_path) {
-            Some(p) => p,
-            None => {
-                eprintln!(
-                    "Warning: skipping unsafe patch path: {:?}",
-                    fp.original_path
-                );
-                continue;
-            }
+        let Some(rel_path) = sanitize_patch_path(&fp.original_path) else {
+            eprintln!(
+                "Warning: skipping unsafe patch path: {:?}",
+                fp.original_path
+            );
+            continue;
         };
         let left_path = left_dir.join(rel_path);
         let right_path = right_dir.join(rel_path);

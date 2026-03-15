@@ -1,7 +1,9 @@
 #![windows_subsystem = "windows"]
 
-use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
+use std::{
+    io::{BufRead, BufReader},
+    path::{Path, PathBuf},
+};
 
 use clap::Parser;
 use gio::prelude::{ApplicationExt, ApplicationExtManual};
@@ -18,7 +20,6 @@ struct Cli {
     /// Custom labels for panes (one per pane)
     #[arg(short = 'L', long = "label", value_name = "LABEL")]
     labels: Vec<String>,
-
 }
 
 fn is_right_a_patch(path: &Path) -> bool {
