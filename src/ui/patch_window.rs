@@ -118,9 +118,9 @@ fn build_single_file_patch(
         }
     };
 
-    // Find the patch entry that matches the base filename, or fall back to
-    // the first entry for single-file patches. This prevents silently applying
-    // an unrelated file's hunks when the patch targets multiple files.
+    // Find the patch entry that matches the base filename. Reject ambiguous
+    // matches (multiple entries with the same basename) to avoid silently
+    // applying the wrong file's hunks.
     let base_name = base
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -128,22 +128,33 @@ fn build_single_file_patch(
     let fp = if file_patches.len() == 1 {
         &file_patches[0]
     } else {
-        let Some(found) = file_patches.iter().find(|fp| {
-            std::path::Path::new(&fp.original_path)
-                .file_name()
-                .is_some_and(|n| n.to_string_lossy() == base_name)
-        }) else {
-            show_patch_error(
-                app,
-                &format!(
+        let matches: Vec<_> = file_patches
+            .iter()
+            .filter(|fp| {
+                std::path::Path::new(&fp.original_path)
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy() == base_name)
+            })
+            .collect();
+        if matches.len() == 1 {
+            matches[0]
+        } else {
+            let msg = if matches.is_empty() {
+                format!(
                     "Patch does not contain an entry for '{base_name}'. \
                      Use directory mode for multi-file patches.",
-                ),
-            );
+                )
+            } else {
+                format!(
+                    "Patch contains {} entries matching '{base_name}'. \
+                     Use directory mode for multi-file patches.",
+                    matches.len()
+                )
+            };
+            show_patch_error(app, &msg);
             let _ = fs::remove_dir_all(tmp_dir);
             return;
-        };
-        found
+        }
     };
     let patched = match apply_hunks(&original, &fp.hunks) {
         Ok(p) => p,
@@ -296,7 +307,19 @@ fn build_multi_file_patch(
                     #[cfg(windows)]
                     fs::copy(&orig_path, &left_path).ok();
                 } else {
+                    // Base file missing — write error to both sides so the entry
+                    // appears as a Modified/conflict row, not invisibly absent.
                     eprintln!("Warning: base file not found for deleted entry: {rel_path}");
+                    let msg = format!("[Base file not found: {rel_path}]\n");
+                    if let Some(parent) = left_path.parent() {
+                        fs::create_dir_all(parent).ok();
+                    }
+                    fs::write(&left_path, &msg).ok();
+                    if let Some(parent) = right_path.parent() {
+                        fs::create_dir_all(parent).ok();
+                    }
+                    fs::write(&right_path, &msg).ok();
+                    conflict_paths.push(rel_path.to_string());
                 }
             }
             PatchKind::Added => {
