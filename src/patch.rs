@@ -88,6 +88,21 @@ fn strip_ab_prefix(path: &str) -> &str {
         .unwrap_or(path)
 }
 
+/// Sanitize a path from a patch file: reject absolute paths and `..` traversal.
+///
+/// Returns `None` if the path is unsafe (absolute or contains `..` components).
+#[must_use]
+pub fn sanitize_patch_path(path: &str) -> Option<&str> {
+    let path = path.trim_start_matches('/');
+    if path.is_empty() {
+        return None;
+    }
+    if path.split('/').any(|c| c == "..") {
+        return None;
+    }
+    Some(path)
+}
+
 /// Strip a trailing tab-separated timestamp from a path (e.g. `file.txt\t2024-01-01 ...`).
 fn strip_timestamp(path: &str) -> &str {
     match path.find('\t') {
@@ -194,8 +209,24 @@ fn parse_context_diff(input: &str) -> Result<Vec<FilePatch>, PatchError> {
             }
             // Check this is a file header, not a hunk range line.
             // Hunk range lines look like `*** 1,4 ****` — they end with `****`.
-            let old_path = strip_timestamp(lines[i][4..].trim());
-            let _new_path = strip_timestamp(lines[i + 1][4..].trim());
+            let old_raw = lines[i][4..].trim();
+            let old_path = strip_ab_prefix(strip_timestamp(old_raw));
+            let new_raw = lines[i + 1][4..].trim();
+            let new_path = strip_ab_prefix(strip_timestamp(new_raw));
+
+            let kind = if old_raw == "/dev/null" {
+                PatchKind::Added
+            } else if new_raw == "/dev/null" {
+                PatchKind::Deleted
+            } else {
+                PatchKind::Modified
+            };
+
+            let canonical_path = if kind == PatchKind::Added {
+                new_path
+            } else {
+                old_path
+            };
             i += 2;
 
             let mut hunks = Vec::new();
@@ -259,8 +290,8 @@ fn parse_context_diff(input: &str) -> Result<Vec<FilePatch>, PatchError> {
             }
 
             patches.push(FilePatch {
-                original_path: old_path.to_string(),
-                kind: PatchKind::Modified,
+                original_path: canonical_path.to_string(),
+                kind,
                 hunks,
             });
         } else {
@@ -476,7 +507,12 @@ pub fn apply_hunks(original: &str, hunks: &[Hunk]) -> Result<String, PatchError>
         output.push((*line).to_string());
     }
 
-    Ok(output.join("\n"))
+    let mut result = output.join("\n");
+    // Preserve trailing newline if the original had one
+    if original.ends_with('\n') && !result.ends_with('\n') {
+        result.push('\n');
+    }
+    Ok(result)
 }
 
 /// Try to apply each hunk individually. Hunks that apply cleanly are applied;
@@ -551,7 +587,12 @@ pub fn apply_hunks_best_effort(original: &str, hunks: &[Hunk]) -> String {
         output.push((*line).to_string());
     }
 
-    output.join("\n")
+    let mut result = output.join("\n");
+    // Preserve trailing newline if the original had one
+    if original.ends_with('\n') && !result.ends_with('\n') {
+        result.push('\n');
+    }
+    result
 }
 
 /// Check whether a hunk can be applied cleanly at the given position.
@@ -1079,7 +1120,7 @@ fn main() {
             ],
         }];
         let result = apply_hunks_best_effort(original, &hunks);
-        assert_eq!(result, "line1\nLINE2\nline3");
+        assert_eq!(result, "line1\nLINE2\nline3\n");
     }
 
     #[test]
@@ -1139,5 +1180,85 @@ fn main() {
         // Second hunk has conflict markers
         assert!(result.contains("<<<<<<< original"));
         assert!(result.contains(">>>>>>> patch"));
+    }
+
+    // ── sanitize_patch_path tests ────────────────────────────────────
+
+    #[test]
+    fn sanitize_normal_path() {
+        assert_eq!(sanitize_patch_path("src/main.rs"), Some("src/main.rs"));
+    }
+
+    #[test]
+    fn sanitize_strips_leading_slash() {
+        assert_eq!(sanitize_patch_path("/etc/passwd"), Some("etc/passwd"));
+    }
+
+    #[test]
+    fn sanitize_rejects_dotdot() {
+        assert_eq!(sanitize_patch_path("../../../etc/passwd"), None);
+        assert_eq!(sanitize_patch_path("src/../../../etc/passwd"), None);
+    }
+
+    #[test]
+    fn sanitize_rejects_empty() {
+        assert_eq!(sanitize_patch_path(""), None);
+        assert_eq!(sanitize_patch_path("/"), None);
+    }
+
+    // ── trailing newline preservation ────────────────────────────────
+
+    #[test]
+    fn apply_hunks_preserves_trailing_newline() {
+        let original = "line1\nline2\n";
+        let hunks = vec![Hunk {
+            old_start: 2,
+            old_count: 1,
+            new_start: 2,
+            new_count: 1,
+            lines: vec![
+                HunkLine::Remove("line2".to_string()),
+                HunkLine::Add("LINE2".to_string()),
+            ],
+        }];
+        let result = apply_hunks(original, &hunks).unwrap();
+        assert_eq!(result, "line1\nLINE2\n");
+    }
+
+    #[test]
+    fn apply_hunks_no_trailing_newline_when_original_lacks_it() {
+        let original = "line1\nline2";
+        let hunks = vec![Hunk {
+            old_start: 2,
+            old_count: 1,
+            new_start: 2,
+            new_count: 1,
+            lines: vec![
+                HunkLine::Remove("line2".to_string()),
+                HunkLine::Add("LINE2".to_string()),
+            ],
+        }];
+        let result = apply_hunks(original, &hunks).unwrap();
+        assert_eq!(result, "line1\nLINE2");
+    }
+
+    // ── context diff Added/Deleted detection ─────────────────────────
+
+    #[test]
+    fn context_diff_added_file() {
+        let input = "*** /dev/null\n--- b/new_file.txt\n***************\n*** 0 ****\n--- 1,2 ----\n+ hello\n+ world\n";
+        let patches = parse_patch(input).unwrap();
+        assert_eq!(patches.len(), 1);
+        assert_eq!(patches[0].kind, PatchKind::Added);
+        assert_eq!(patches[0].original_path, "new_file.txt");
+    }
+
+    #[test]
+    fn context_diff_deleted_file() {
+        let input = "*** a/old_file.txt\n--- /dev/null\n***************\n*** 1,2 ****\n- hello\n- world\n--- 0 ----\n";
+        let patches = parse_patch(input).unwrap();
+        assert_eq!(patches.len(), 1);
+        assert_eq!(patches[0].kind, PatchKind::Deleted);
+        assert_eq!(patches[0].original_path, "old_file.txt");
     }
 }

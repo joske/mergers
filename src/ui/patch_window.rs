@@ -1,6 +1,6 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use crate::patch::{apply_hunks, apply_hunks_best_effort, parse_patch};
+use crate::patch::{apply_hunks, apply_hunks_best_effort, parse_patch, sanitize_patch_path};
 
 use std::sync::Mutex;
 
@@ -48,9 +48,16 @@ pub(super) fn build_patch_window(
         return;
     }
 
-    // Create temp directory with a unique name
-    let tmp_dir = std::env::temp_dir().join(format!("mergers-patch-{}", std::process::id()));
-    if let Err(e) = fs::create_dir_all(&tmp_dir) {
+    // Create temp directory with a random name to prevent symlink attacks
+    let tmp_dir = std::env::temp_dir().join(format!(
+        "mergers-patch-{}-{:016x}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos() as u64)
+    ));
+    // Use create_dir (not create_dir_all) so it fails if the path already exists
+    if let Err(e) = fs::create_dir(&tmp_dir) {
         show_patch_error(app, &format!("Cannot create temp directory: {e}"));
         return;
     }
@@ -217,13 +224,30 @@ fn build_multi_file_patch(
     // "right" has the patched versions. This avoids scanning the entire base tree.
     let left_dir = tmp_dir.join("left");
     let right_dir = tmp_dir.join("right");
-    fs::create_dir_all(&left_dir).ok();
-    fs::create_dir_all(&right_dir).ok();
+    if let Err(e) = fs::create_dir(&left_dir) {
+        show_patch_error(app, &format!("Cannot create temp directory: {e}"));
+        let _ = fs::remove_dir_all(tmp_dir);
+        return;
+    }
+    if let Err(e) = fs::create_dir(&right_dir) {
+        show_patch_error(app, &format!("Cannot create temp directory: {e}"));
+        let _ = fs::remove_dir_all(tmp_dir);
+        return;
+    }
 
     let mut conflict_paths: Vec<String> = Vec::new();
 
     for fp in file_patches {
-        let rel_path = &fp.original_path;
+        let rel_path = match sanitize_patch_path(&fp.original_path) {
+            Some(p) => p,
+            None => {
+                eprintln!(
+                    "Warning: skipping unsafe patch path: {:?}",
+                    fp.original_path
+                );
+                continue;
+            }
+        };
         let left_path = left_dir.join(rel_path);
         let right_path = right_dir.join(rel_path);
 
@@ -286,7 +310,7 @@ fn build_multi_file_patch(
                     Ok(p) => p,
                     Err(e) => {
                         eprintln!("Warning: failed to apply patch cleanly to {rel_path}: {e}");
-                        conflict_paths.push(rel_path.clone());
+                        conflict_paths.push(rel_path.to_string());
                         apply_hunks_best_effort(&original, &fp.hunks)
                     }
                 };

@@ -1,5 +1,6 @@
 #![windows_subsystem = "windows"]
 
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
@@ -18,9 +19,6 @@ struct Cli {
     #[arg(short = 'L', long = "label", value_name = "LABEL")]
     labels: Vec<String>,
 
-    /// Patch format override (unified or context). Auto-detected if omitted.
-    #[arg(long = "patch-format", value_name = "FORMAT")]
-    patch_format: Option<String>,
 }
 
 fn is_right_a_patch(path: &Path) -> bool {
@@ -29,8 +27,22 @@ fn is_right_a_patch(path: &Path) -> bool {
     {
         return true;
     }
-    if let Ok(content) = std::fs::read_to_string(path) {
-        return mergers::patch::is_patch_file(&content);
+    // Read only the first 50 lines instead of the entire file
+    if let Ok(file) = std::fs::File::open(path) {
+        let reader = BufReader::new(file);
+        let lines: Vec<String> = reader.lines().take(50).filter_map(Result::ok).collect();
+        let preview: Vec<&str> = lines.iter().map(String::as_str).collect();
+        for (i, line) in preview.iter().enumerate() {
+            if *line == "***************" {
+                return true;
+            }
+            if line.starts_with("--- ")
+                && i + 1 < preview.len()
+                && preview[i + 1].starts_with("+++ ")
+            {
+                return true;
+            }
+        }
     }
     false
 }
@@ -61,7 +73,7 @@ fn main() -> glib::ExitCode {
         let right = &cli.paths[1];
 
         if left.is_file() && right.is_file() {
-            if cli.patch_format.is_some() || is_right_a_patch(right) {
+            if is_right_a_patch(right) {
                 CompareMode::Patch {
                     base: left.clone(),
                     patch: right.clone(),
@@ -75,7 +87,7 @@ fn main() -> glib::ExitCode {
                 }
             }
         } else if left.is_dir() && right.is_file() {
-            if cli.patch_format.is_some() || is_right_a_patch(right) {
+            if is_right_a_patch(right) {
                 CompareMode::Patch {
                     base: left.clone(),
                     patch: right.clone(),
