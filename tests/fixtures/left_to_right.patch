@@ -1,0 +1,16 @@
+--- a/left.txt	2024-01-01 00:00:00
++++ b/left.txt	2024-01-01 00:00:00
+@@ -1,10 +1,11 @@
+ line 1
+ line 2
+-line 3
++changed line 3
+ line 4
+ line 5
+-original line 6
++modified line 6
+ line 7
++inserted line 7.5
+ line 8
+ line 9
+ line 10
