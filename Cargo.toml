@@ -1,6 +1,6 @@
 [package]
 name = "mergers"
-version = "0.8.1"
+version = "0.8.2"
 edition = "2024"
 description = "A visual diff and merge tool for files and directories"
 license = "GPL-2.0"
@@ -19,7 +19,7 @@ toml = "1.0"
 ctrlc = { version = "3.5.2", features = ["termination"] }
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 proptest = "1.10"
 tempfile = "3.26"
 
