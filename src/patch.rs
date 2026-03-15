@@ -104,10 +104,7 @@ pub fn sanitize_patch_path(path: &str) -> Option<&str> {
         return None;
     }
     // Reject `..` as a component with either separator
-    if path
-        .split(['/', '\\'])
-        .any(|c| c == "..")
-    {
+    if path.split(['/', '\\']).any(|c| c == "..") {
         return None;
     }
     Some(path)
@@ -1302,10 +1299,7 @@ fn main() {
 
     #[test]
     fn sanitize_allows_hidden_files() {
-        assert_eq!(
-            sanitize_patch_path(".gitignore"),
-            Some(".gitignore")
-        );
+        assert_eq!(sanitize_patch_path(".gitignore"), Some(".gitignore"));
         assert_eq!(
             sanitize_patch_path("src/.hidden/file.rs"),
             Some("src/.hidden/file.rs")
@@ -1563,14 +1557,16 @@ index abc1234..def5678 100644
         // Patch signature must appear within first 50 lines
         let mut content = String::new();
         for i in 0..48 {
-            content.push_str(&format!("filler line {i}\n"));
+            use std::fmt::Write;
+            let _ = writeln!(content, "filler line {i}");
         }
         content.push_str("--- a/file.txt\n+++ b/file.txt\n");
         assert!(is_patch_file(&content)); // lines 48-49 (0-indexed), within limit
 
         let mut content_beyond = String::new();
         for i in 0..50 {
-            content_beyond.push_str(&format!("filler line {i}\n"));
+            use std::fmt::Write;
+            let _ = writeln!(content_beyond, "filler line {i}");
         }
         content_beyond.push_str("--- a/file.txt\n+++ b/file.txt\n");
         assert!(!is_patch_file(&content_beyond)); // lines 50-51, beyond limit
