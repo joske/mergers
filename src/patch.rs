@@ -91,13 +91,23 @@ fn strip_ab_prefix(path: &str) -> &str {
 /// Sanitize a path from a patch file: reject absolute paths and `..` traversal.
 ///
 /// Returns `None` if the path is unsafe (absolute or contains `..` components).
+/// Handles both Unix (`/`, `..`) and Windows (`\`, `C:`) path conventions.
 #[must_use]
 pub fn sanitize_patch_path(path: &str) -> Option<&str> {
-    let path = path.trim_start_matches('/');
+    // Strip leading slashes (Unix absolute) and backslashes (Windows absolute)
+    let path = path.trim_start_matches(['/', '\\']);
     if path.is_empty() {
         return None;
     }
-    if path.split('/').any(|c| c == "..") {
+    // Reject Windows drive letters (e.g. "C:", "D:")
+    if path.len() >= 2 && path.as_bytes()[0].is_ascii_alphabetic() && path.as_bytes()[1] == b':' {
+        return None;
+    }
+    // Reject `..` as a component with either separator
+    if path
+        .split(['/', '\\'])
+        .any(|c| c == "..")
+    {
         return None;
     }
     Some(path)
@@ -1201,9 +1211,30 @@ fn main() {
     }
 
     #[test]
+    fn sanitize_rejects_windows_backslash_traversal() {
+        assert_eq!(sanitize_patch_path("..\\..\\etc\\passwd"), None);
+        assert_eq!(sanitize_patch_path("src\\..\\..\\etc\\passwd"), None);
+    }
+
+    #[test]
+    fn sanitize_rejects_windows_drive_letter() {
+        assert_eq!(sanitize_patch_path("C:\\tmp\\owned.txt"), None);
+        assert_eq!(sanitize_patch_path("D:\\Windows\\System32\\config"), None);
+    }
+
+    #[test]
+    fn sanitize_strips_leading_backslash() {
+        assert_eq!(
+            sanitize_patch_path("\\usr\\bin\\foo"),
+            Some("usr\\bin\\foo")
+        );
+    }
+
+    #[test]
     fn sanitize_rejects_empty() {
         assert_eq!(sanitize_patch_path(""), None);
         assert_eq!(sanitize_patch_path("/"), None);
+        assert_eq!(sanitize_patch_path("\\"), None);
     }
 
     // ── trailing newline preservation ────────────────────────────────

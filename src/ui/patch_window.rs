@@ -118,7 +118,33 @@ fn build_single_file_patch(
         }
     };
 
-    let fp = &file_patches[0];
+    // Find the patch entry that matches the base filename, or fall back to
+    // the first entry for single-file patches. This prevents silently applying
+    // an unrelated file's hunks when the patch targets multiple files.
+    let base_name = base
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let fp = if file_patches.len() == 1 {
+        &file_patches[0]
+    } else {
+        let Some(found) = file_patches.iter().find(|fp| {
+            std::path::Path::new(&fp.original_path)
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy() == base_name)
+        }) else {
+            show_patch_error(
+                app,
+                &format!(
+                    "Patch does not contain an entry for '{base_name}'. \
+                     Use directory mode for multi-file patches.",
+                ),
+            );
+            let _ = fs::remove_dir_all(tmp_dir);
+            return;
+        };
+        found
+    };
     let patched = match apply_hunks(&original, &fp.hunks) {
         Ok(p) => p,
         Err(e) => {
@@ -269,6 +295,8 @@ fn build_multi_file_patch(
                     std::os::unix::fs::symlink(&orig_path, &left_path).ok();
                     #[cfg(windows)]
                     fs::copy(&orig_path, &left_path).ok();
+                } else {
+                    eprintln!("Warning: base file not found for deleted entry: {rel_path}");
                 }
             }
             PatchKind::Added => {
@@ -288,8 +316,15 @@ fn build_multi_file_patch(
                     Ok(c) => c,
                     Err(e) => {
                         eprintln!("Warning: cannot read {}: {e}", orig_path.display());
-                        let msg = format!("[Cannot read original file]\n\n{e}\n");
-                        fs::write(&right_path, msg).ok();
+                        // Write error message to both sides so the entry shows as
+                        // Modified (not RightOnly), making the failure obvious.
+                        let msg = format!("[Cannot read original file: {e}]\n");
+                        if let Some(parent) = left_path.parent() {
+                            fs::create_dir_all(parent).ok();
+                        }
+                        fs::write(&left_path, &msg).ok();
+                        fs::write(&right_path, &msg).ok();
+                        conflict_paths.push(rel_path.to_string());
                         continue;
                     }
                 };
