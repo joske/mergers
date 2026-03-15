@@ -319,4 +319,65 @@ mod tests {
     fn conflict_at_cursor_empty() {
         assert_eq!(conflict_at_cursor("", 0), None);
     }
+
+    // ── find_conflict_blocks edge cases ──────────────────────────────
+
+    #[test]
+    fn conflict_blocks_unmatched_open() {
+        // <<<<<<< without >>>>>>> — should produce no blocks
+        let text = "before\n<<<<<<< HEAD\nours\n=======\ntheirs\n";
+        let blocks = find_conflict_blocks(text);
+        assert!(blocks.is_empty());
+    }
+
+    #[test]
+    fn conflict_blocks_unmatched_close() {
+        // >>>>>>> without <<<<<<< — should produce no blocks
+        let text = "before\nsome text\n>>>>>>> branch\nafter\n";
+        let blocks = find_conflict_blocks(text);
+        assert!(blocks.is_empty());
+    }
+
+    #[test]
+    fn conflict_blocks_adjacent() {
+        // Two blocks right next to each other
+        let text = "<<<<<<< a\nours\n>>>>>>> b\n<<<<<<< c\ntheirs\n>>>>>>> d\n";
+        let blocks = find_conflict_blocks(text);
+        assert_eq!(blocks, vec![(0, 2), (3, 5)]);
+    }
+
+    #[test]
+    fn conflict_blocks_nested_open_takes_last() {
+        // Second <<<<<<< overwrites the first open (only innermost block matched)
+        let text = "<<<<<<< first\nstuff\n<<<<<<< second\nmore\n>>>>>>> end\n";
+        let blocks = find_conflict_blocks(text);
+        assert_eq!(blocks, vec![(2, 4)]);
+    }
+
+    // ── conflict_at_cursor_fast edge cases ───────────────────────────
+
+    #[test]
+    fn conflict_at_cursor_fast_empty_blocks() {
+        assert_eq!(conflict_at_cursor_fast(&[], 0), None);
+        assert_eq!(conflict_at_cursor_fast(&[], 100), None);
+    }
+
+    #[test]
+    fn conflict_at_cursor_fast_exactly_on_boundaries() {
+        let blocks = vec![(5, 10), (20, 25)];
+        assert_eq!(conflict_at_cursor_fast(&blocks, 4), None);
+        assert_eq!(conflict_at_cursor_fast(&blocks, 5), Some(5)); // open marker
+        assert_eq!(conflict_at_cursor_fast(&blocks, 10), Some(5)); // close marker
+        assert_eq!(conflict_at_cursor_fast(&blocks, 11), None); // just after
+        assert_eq!(conflict_at_cursor_fast(&blocks, 20), Some(20));
+        assert_eq!(conflict_at_cursor_fast(&blocks, 25), Some(20));
+        assert_eq!(conflict_at_cursor_fast(&blocks, 26), None);
+    }
+
+    #[test]
+    fn conflict_at_cursor_fast_between_blocks() {
+        let blocks = vec![(0, 3), (10, 15)];
+        assert_eq!(conflict_at_cursor_fast(&blocks, 5), None);
+        assert_eq!(conflict_at_cursor_fast(&blocks, 9), None);
+    }
 }
