@@ -138,10 +138,11 @@ fn read_dir_entries(
             if hide_hidden && name.starts_with('.') {
                 continue;
             }
-            // Use fs::metadata (follows symlinks) instead of entry.metadata()
-            // which is equivalent to lstat and returns symlink metadata.
+            // Use entry.file_type() (lstat) for is_dir to avoid following
+            // symlinks to directories (prevents infinite recursion with cycles).
+            // Use fs::metadata (stat) for size/mtime to get real file data.
+            let is_dir = entry.file_type().ok().is_some_and(|ft| ft.is_dir());
             let meta = fs::metadata(entry.path()).ok();
-            let is_dir = meta.as_ref().is_some_and(std::fs::Metadata::is_dir);
             map.insert(
                 name,
                 DirMeta {
@@ -1936,6 +1937,70 @@ mod tests {
 
         assert_eq!(decoded.name, "file with spaces.txt");
         assert_eq!(decoded.rel_path, "path/file with spaces.txt");
+    }
+
+    // ── collect_actionable_files logic ──────────────────────────
+
+    #[test]
+    fn actionable_includes_different() {
+        assert!(matches!(
+            FileStatus::Different,
+            FileStatus::Different | FileStatus::RightOnly | FileStatus::LeftOnly
+        ));
+    }
+
+    #[test]
+    fn actionable_includes_right_only() {
+        assert!(matches!(
+            FileStatus::RightOnly,
+            FileStatus::Different | FileStatus::RightOnly | FileStatus::LeftOnly
+        ));
+    }
+
+    #[test]
+    fn actionable_includes_left_only() {
+        assert!(matches!(
+            FileStatus::LeftOnly,
+            FileStatus::Different | FileStatus::RightOnly | FileStatus::LeftOnly
+        ));
+    }
+
+    #[test]
+    fn actionable_excludes_conflict() {
+        assert!(!matches!(
+            FileStatus::Conflict,
+            FileStatus::Different | FileStatus::RightOnly | FileStatus::LeftOnly
+        ));
+    }
+
+    #[test]
+    fn actionable_excludes_same() {
+        assert!(!matches!(
+            FileStatus::Same,
+            FileStatus::Different | FileStatus::RightOnly | FileStatus::LeftOnly
+        ));
+    }
+
+    #[test]
+    fn actionable_filter_mixed_statuses() {
+        let entries = [
+            ("a.rs", FileStatus::Different),
+            ("b.rs", FileStatus::Same),
+            ("c.rs", FileStatus::Conflict),
+            ("d.rs", FileStatus::RightOnly),
+            ("e.rs", FileStatus::LeftOnly),
+        ];
+        let result: Vec<&str> = entries
+            .iter()
+            .filter(|(_, s)| {
+                matches!(
+                    s,
+                    FileStatus::Different | FileStatus::RightOnly | FileStatus::LeftOnly
+                )
+            })
+            .map(|(name, _)| *name)
+            .collect();
+        assert_eq!(result, vec!["a.rs", "d.rs", "e.rs"]);
     }
 
     // ── FileStatus ────────────────────────────────────────────────

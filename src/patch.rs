@@ -190,6 +190,11 @@ fn parse_context_range(line: &str) -> Result<(usize, usize), PatchError> {
             .trim()
             .parse::<usize>()
             .map_err(|_| PatchError(format!("invalid context range: {line}")))?;
+        if end < start {
+            return Err(PatchError(format!(
+                "invalid context range (end < start): {line}"
+            )));
+        }
         Ok((start, end - start + 1))
     } else {
         let start = inner
