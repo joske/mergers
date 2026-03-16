@@ -337,7 +337,13 @@ fn build_multi_file_patch(
                     }
                     p
                 };
-                fs::write(&right_path, patched).ok();
+                if let Err(e) = fs::write(&right_path, patched) {
+                    eprintln!(
+                        "Warning: failed to write patched file {}: {e}",
+                        right_path.display()
+                    );
+                    conflict_paths.push(rel_path.to_string());
+                }
             }
             PatchKind::Modified => {
                 let orig_path = base.join(rel_path);
@@ -376,7 +382,13 @@ fn build_multi_file_patch(
                     }
                 };
 
-                fs::write(&right_path, patched).ok();
+                if let Err(e) = fs::write(&right_path, patched) {
+                    eprintln!(
+                        "Warning: failed to write patched file {}: {e}",
+                        right_path.display()
+                    );
+                    conflict_paths.push(rel_path.to_string());
+                }
             }
         }
     }

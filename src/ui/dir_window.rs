@@ -502,8 +502,10 @@ pub(super) fn build_dir_tab(
         Rc::new(RefCell::new(labels.first().cloned()));
     let right_label_override: Rc<RefCell<Option<String>>> =
         Rc::new(RefCell::new(labels.get(1).cloned()));
-    let left_tooltip_override: Option<String> = tooltip_dirs.first().cloned();
-    let right_tooltip_override: Option<String> = tooltip_dirs.get(1).cloned();
+    let left_tooltip_override: Rc<RefCell<Option<String>>> =
+        Rc::new(RefCell::new(tooltip_dirs.first().cloned()));
+    let right_tooltip_override: Rc<RefCell<Option<String>>> =
+        Rc::new(RefCell::new(tooltip_dirs.get(1).cloned()));
     let left_dir = Rc::new(RefCell::new(
         std::fs::canonicalize(&left_dir)
             .unwrap_or(left_dir)
@@ -758,7 +760,8 @@ pub(super) fn build_dir_tab(
     let left_header = Label::new(Some(&left_header_text));
     {
         let ld = left_dir.borrow();
-        let left_tip = left_tooltip_override.as_deref().unwrap_or(&ld);
+        let lto = left_tooltip_override.borrow();
+        let left_tip: &str = lto.as_ref().map_or(&*ld, String::as_str);
         left_header.set_tooltip_text(Some(left_tip));
     }
     left_header.set_ellipsize(gtk4::pango::EllipsizeMode::Start);
@@ -787,7 +790,8 @@ pub(super) fn build_dir_tab(
     let right_header = Label::new(Some(&right_header_text));
     {
         let rd = right_dir.borrow();
-        let right_tip = right_tooltip_override.as_deref().unwrap_or(&rd);
+        let rto = right_tooltip_override.borrow();
+        let right_tip: &str = rto.as_ref().map_or(&*rd, String::as_str);
         right_header.set_tooltip_text(Some(right_tip));
     }
     right_header.set_ellipsize(gtk4::pango::EllipsizeMode::Start);
@@ -1017,9 +1021,13 @@ pub(super) fn build_dir_tab(
         let rd = right_dir.clone();
         let ll = left_label_override.clone();
         let rl = right_label_override.clone();
+        let lto = left_tooltip_override.clone();
+        let rto = right_tooltip_override.clone();
         let reload = reload_dir.clone();
         let lh = left_header.clone();
         let rh = right_header.clone();
+        let aab = apply_all_btn.clone();
+        let swapped = Rc::new(Cell::new(false));
         dir_swap_btn.connect_clicked(move |btn| {
             let tmp = ld.borrow().clone();
             (*ld.borrow_mut()).clone_from(&rd.borrow());
@@ -1027,18 +1035,38 @@ pub(super) fn build_dir_tab(
             let tmp_label = ll.borrow().clone();
             (*ll.borrow_mut()).clone_from(&rl.borrow());
             *rl.borrow_mut() = tmp_label;
+            let tmp_tip = lto.borrow().clone();
+            (*lto.borrow_mut()).clone_from(&rto.borrow());
+            *rto.borrow_mut() = tmp_tip;
             let left_text = match *ll.borrow() {
                 Some(ref l) => l.clone(),
                 None => shortened_path(Path::new(&*ld.borrow())),
             };
             lh.set_text(&left_text);
-            lh.set_tooltip_text(Some(&*ld.borrow()));
+            {
+                let ld_ref = ld.borrow();
+                let lto_ref = lto.borrow();
+                let left_tip: &str = lto_ref.as_ref().map_or(&*ld_ref, String::as_str);
+                lh.set_tooltip_text(Some(left_tip));
+            }
             let right_text = match *rl.borrow() {
                 Some(ref l) => l.clone(),
                 None => shortened_path(Path::new(&*rd.borrow())),
             };
             rh.set_text(&right_text);
-            rh.set_tooltip_text(Some(&*rd.borrow()));
+            {
+                let rd_ref = rd.borrow();
+                let rto_ref = rto.borrow();
+                let right_tip: &str = rto_ref.as_ref().map_or(&*rd_ref, String::as_str);
+                rh.set_tooltip_text(Some(right_tip));
+            }
+            // In patch mode, disable apply-all when swapped (directions get confused)
+            let is_patch = lto.borrow().is_some() || rto.borrow().is_some();
+            if is_patch {
+                let now_swapped = !swapped.get();
+                swapped.set(now_swapped);
+                aab.set_sensitive(!now_swapped);
+            }
             // Update window title
             if let Some(win) = find_window(btn) {
                 let ln = Path::new(ld.borrow().as_str())
@@ -1134,7 +1162,7 @@ pub(super) fn build_dir_tab(
         let rd = right_dir.clone();
         let reload = reload_dir.clone();
         let lv = left_view.clone();
-        let base_dir_override: Option<String> = left_tooltip_override.clone();
+        let base_dir_override: Option<String> = left_tooltip_override.borrow().clone();
         apply_all_btn.connect_clicked(move |_| {
             let ld_str = ld.borrow().clone();
             let rd_str = rd.borrow().clone();
