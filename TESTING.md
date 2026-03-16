@@ -47,6 +47,10 @@ Items marked ✅ are covered by automated UI integration tests (`tests/ui_integr
 - [x] ✅ Go to line (Ctrl+L): entry appears; type number + Enter to jump; Escape to dismiss; focus returns to active pane
 - [x] ✅ Blanks toggle: re-diffs ignoring blank lines
 - [x] ✅ Spaces toggle: re-diffs ignoring whitespace
+- [ ] Apply all (⏪ button): copies all non-conflicting chunks right → left
+- [ ] Apply all: single undo operation (one Ctrl+Z reverts everything)
+- [ ] Apply all: skips chunks containing conflict markers (`<<<<<<< original` / `>>>>>>> patch`)
+- [ ] Apply all on binary files: button is disabled
 - [ ] Export patch (Ctrl+Shift+P): save dialog; generates unified diff
 - [x] ✅ Swap panes: swaps content, labels, save paths, dirty state; title updates
 - [x] ✅ Preferences (Ctrl+,): opens Preferences
@@ -153,7 +157,7 @@ Items marked ✅ are covered by automated UI integration tests (`tests/ui_integr
 - [ ] Directory headers above each pane with full path as tooltip
 - [ ] Copy path button next to each header: copies full absolute path to clipboard
 - [ ] Copy path after swap: copies the swapped (current) path, not the original
-- [ ] Status colors: blue (different), orange (left-only), green (right-only), dim italic (missing side)
+- [ ] Status colors: blue (different), orange (left-only), green (right-only), red (conflict), dim italic (missing side)
 
 ### Navigation
 - [x] ✅ Double-click file row: opens diff in new notebook tab
@@ -171,6 +175,10 @@ Items marked ✅ are covered by automated UI integration tests (`tests/ui_integr
 - [ ] Delete (Delete key): trashes selected file with confirmation
 - [x] ✅ Collapse all: collapses every expanded directory row
 - [x] ✅ Expand all: expands every directory row
+- [ ] Apply all non-conflicting (⏪ button): copies all non-conflicting files right → left
+- [ ] Apply all: confirmation dialog shows file count
+- [ ] Apply all: handles modified, new, and deleted files
+- [ ] Apply all: skips conflicting files
 - [ ] Swap panes: rescans, updates headers and window title
 - [ ] Preferences (Ctrl+,)
 
@@ -324,6 +332,50 @@ Items marked ✅ are covered by automated UI integration tests (`tests/ui_integr
 
 ### Security
 - [ ] Paths with `..` components refused
+
+## Patch Viewing / Applying
+
+### CLI
+- [ ] `mergers file.c patch.diff`: opens single-file patch view (original vs patched)
+- [ ] `mergers dir/ patch.diff`: opens multi-file patch view (dir comparison)
+- [ ] `-L` labels applied to patch views
+- [ ] Invalid patch file: error dialog shown
+- [ ] Base path does not exist: error dialog shown
+
+### Single-File Patch
+- [ ] Left pane: original file; Right pane: patched result
+- [ ] Conflict hunks shown with `<<<<<<< original` / `>>>>>>> patch` markers in right pane
+- [ ] Labels show base filename and "filename (patched)" (not temp paths)
+- [ ] Window destroy cleans up temp directory
+
+### Multi-File Patch (Dir View)
+- [ ] Left header shows base directory name (not temp path)
+- [ ] Left header tooltip shows original base path (not temp path)
+- [ ] Right header shows "dirname (patched)"
+- [ ] Right header tooltip shows temp directory path
+- [ ] Conflicted files colored red in tree view
+- [ ] Same-status files filtered out of tree view
+- [ ] Empty directories filtered out of tree view
+- [ ] Double-click file: opens diff tab with resolved paths
+- [ ] Diff tab left pane header/tooltip: shows original file path (resolved through symlink)
+- [ ] Diff tab right pane: shows temp patched file path
+- [ ] Unsaved changes dialog shows original path (not temp path)
+
+### Apply All (Dir Patch View)
+- [ ] ⏪ button: confirmation dialog shows file count
+- [ ] Modified files (Different): copied right → left through symlink, then removed from view
+- [ ] New files (RightOnly): created in original directory, parent dirs created as needed
+- [ ] Deleted files (LeftOnly): removed from original directory
+- [ ] Conflicted files: skipped (not applied)
+- [ ] View reloads after apply; applied files vanish from tree
+- [ ] File watcher suppressed during bulk copy (no spurious reloads)
+- [ ] Errors during apply: error dialog shown with details
+
+### Temp Directory Cleanup
+- [ ] Normal window close: temp dir removed (connect_shutdown)
+- [ ] SIGINT (Ctrl+C): temp dir removed (ctrlc handler)
+- [ ] SIGTERM (kill): temp dir removed (ctrlc handler)
+- [ ] Multiple patch windows: all temp dirs tracked and cleaned up
 
 ## Preferences
 
