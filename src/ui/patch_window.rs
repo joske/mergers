@@ -69,11 +69,6 @@ pub(super) fn build_patch_window(
         let _ = fs::set_permissions(&tmp_dir, fs::Permissions::from_mode(0o700));
     }
 
-    // Register for cleanup on shutdown / signal
-    if let Ok(mut dirs) = PATCH_TEMP_DIRS.lock() {
-        dirs.push(tmp_dir.clone());
-    }
-
     if base.is_file() {
         build_single_file_patch(
             app,
@@ -239,6 +234,11 @@ fn build_single_file_patch(
                 save: dv.right_save.clone(),
             },
         });
+    }
+
+    // Register for cleanup on shutdown / signal (only after successful creation)
+    if let Ok(mut dirs) = PATCH_TEMP_DIRS.lock() {
+        dirs.push(tmp_dir.to_path_buf());
     }
 
     // Clean up temp dir on destroy and remove from global registry
@@ -419,6 +419,20 @@ fn build_multi_file_patch(
     // Only the left side gets overridden — the right side is generated temp content.
     let tooltip_dirs = vec![base.display().to_string()];
 
+    // Register for cleanup on shutdown / signal (only after successful creation)
+    if let Ok(mut dirs) = PATCH_TEMP_DIRS.lock() {
+        dirs.push(tmp_dir.to_path_buf());
+    }
+
+    // Clean up temp dir and unregister on window destroy
+    let tmp_owned = tmp_dir.to_path_buf();
+    let on_destroy: Box<dyn Fn() + 'static> = Box::new(move || {
+        let _ = fs::remove_dir_all(&tmp_owned);
+        if let Ok(mut dirs) = PATCH_TEMP_DIRS.lock() {
+            dirs.retain(|d| *d != tmp_owned);
+        }
+    });
+
     // Delegate to the existing directory comparison window
     build_dir_window_with_tooltips(
         app,
@@ -426,6 +440,7 @@ fn build_multi_file_patch(
         right_dir,
         &patch_labels,
         &tooltip_dirs,
+        Some(on_destroy),
         Rc::clone(settings),
     );
 }

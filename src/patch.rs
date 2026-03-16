@@ -78,7 +78,13 @@ pub fn parse_patch(input: &str) -> Result<Vec<FilePatch>, PatchError> {
         return parse_context_diff(input);
     }
 
-    parse_unified_diff(input)
+    let patches = parse_unified_diff(input)?;
+    if patches.is_empty() {
+        return Err(PatchError(
+            "no file headers or hunks found in patch input".to_string(),
+        ));
+    }
+    Ok(patches)
 }
 
 /// Strip an optional `a/` or `b/` prefix from a path.

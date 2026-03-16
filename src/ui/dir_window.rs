@@ -269,8 +269,20 @@ fn scan_tree_inner(
         } else {
             children = Vec::new();
             status = match (in_left, in_right) {
-                (true, false) => FileStatus::LeftOnly,
-                (false, true) => FileStatus::RightOnly,
+                (true, false) => {
+                    if conflicts.contains(&child_rel) {
+                        FileStatus::Conflict
+                    } else {
+                        FileStatus::LeftOnly
+                    }
+                }
+                (false, true) => {
+                    if conflicts.contains(&child_rel) {
+                        FileStatus::Conflict
+                    } else {
+                        FileStatus::RightOnly
+                    }
+                }
                 (true, true) => {
                     let lm = left_entries.get(*name);
                     let rm = right_entries.get(*name);
@@ -1777,7 +1789,7 @@ pub(super) fn build_dir_window(
     labels: &[String],
     settings: Rc<RefCell<Settings>>,
 ) {
-    build_dir_window_with_tooltips(app, left_dir, right_dir, labels, &[], settings);
+    build_dir_window_with_tooltips(app, left_dir, right_dir, labels, &[], None, settings);
 }
 
 pub(super) fn build_dir_window_with_tooltips(
@@ -1786,6 +1798,7 @@ pub(super) fn build_dir_window_with_tooltips(
     right_dir: std::path::PathBuf,
     labels: &[String],
     tooltip_dirs: &[String],
+    on_destroy: Option<Box<dyn Fn() + 'static>>,
     settings: Rc<RefCell<Settings>>,
 ) {
     let AppWindow {
@@ -1808,6 +1821,12 @@ pub(super) fn build_dir_window_with_tooltips(
     window.connect_destroy(move |_| {
         dir_watcher.alive.set(false);
     });
+
+    // If a cleanup callback is provided (e.g. patch mode temp dir), run it on destroy
+    if let Some(on_destroy) = on_destroy {
+        window.connect_destroy(move |_| on_destroy());
+    }
+
     window.present();
     left_view.grab_focus();
 }
