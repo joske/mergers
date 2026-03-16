@@ -1126,6 +1126,11 @@ pub(super) fn build_dir_tab(
             let rd_str = rd.borrow().clone();
             let mut actionable: Vec<(String, FileStatus)> = Vec::new();
             collect_actionable_files(&rs, &cm.borrow(), &mut actionable);
+            // In non-patch mode, LeftOnly delete is not supported
+            let is_patch = base_dir_override.is_some();
+            if !is_patch {
+                actionable.retain(|(_, s)| *s != FileStatus::LeftOnly);
+            }
             if actionable.is_empty() {
                 return;
             }

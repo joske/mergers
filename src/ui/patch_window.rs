@@ -241,10 +241,13 @@ fn build_single_file_patch(
         });
     }
 
-    // Clean up temp dir on destroy
+    // Clean up temp dir on destroy and remove from global registry
     let tmp_dir_owned = tmp_dir.to_path_buf();
     window.connect_destroy(move |_| {
         let _ = fs::remove_dir_all(&tmp_dir_owned);
+        if let Ok(mut dirs) = PATCH_TEMP_DIRS.lock() {
+            dirs.retain(|d| *d != tmp_dir_owned);
+        }
     });
 
     window.present();
@@ -336,12 +339,14 @@ fn build_multi_file_patch(
             }
             PatchKind::Added => {
                 // Nothing on left, patched on right → shows as RightOnly
-                let patched = match apply_hunks("", &fp.hunks) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        eprintln!("Warning: failed to apply patch for new file {rel_path}: {e}");
-                        String::new()
+                let patched = if let Ok(p) = apply_hunks("", &fp.hunks) {
+                    p
+                } else {
+                    let p = apply_hunks_best_effort("", &fp.hunks);
+                    if p.contains("<<<<<<< original") {
+                        conflict_paths.push(rel_path.to_string());
                     }
+                    p
                 };
                 fs::write(&right_path, patched).ok();
             }
