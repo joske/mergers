@@ -284,23 +284,25 @@ fn scan_tree_inner(
                     }
                 }
                 (true, true) => {
-                    let lm = left_entries.get(*name);
-                    let rm = right_entries.get(*name);
-                    // Fast path: different sizes means different content
-                    if lm.and_then(|m| m.size) == rm.and_then(|m| m.size) {
-                        let lc = fs::read(left_dir.join(name)).unwrap_or_default();
-                        let rc = fs::read(right_dir.join(name)).unwrap_or_default();
-                        if lc == rc {
-                            FileStatus::Same
-                        } else if conflicts.contains(&child_rel) {
-                            FileStatus::Conflict
+                    // Check conflict marker first — conflicted files should
+                    // always show as Conflict even if contents are identical
+                    if conflicts.contains(&child_rel) {
+                        FileStatus::Conflict
+                    } else {
+                        let lm = left_entries.get(*name);
+                        let rm = right_entries.get(*name);
+                        // Fast path: different sizes means different content
+                        if lm.and_then(|m| m.size) == rm.and_then(|m| m.size) {
+                            let lc = fs::read(left_dir.join(name)).unwrap_or_default();
+                            let rc = fs::read(right_dir.join(name)).unwrap_or_default();
+                            if lc == rc {
+                                FileStatus::Same
+                            } else {
+                                FileStatus::Different
+                            }
                         } else {
                             FileStatus::Different
                         }
-                    } else if conflicts.contains(&child_rel) {
-                        FileStatus::Conflict
-                    } else {
-                        FileStatus::Different
                     }
                 }
                 _ => unreachable!(),

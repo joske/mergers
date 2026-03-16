@@ -49,25 +49,14 @@ pub(super) fn build_patch_window(
         return;
     }
 
-    // Create temp directory with a random name to prevent symlink attacks
-    let tmp_dir = std::env::temp_dir().join(format!(
-        "mergers-patch-{}-{:016x}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos() as u64)
-    ));
-    // Use create_dir (not create_dir_all) so it fails if the path already exists
-    if let Err(e) = fs::create_dir(&tmp_dir) {
-        show_patch_error(app, &format!("Cannot create temp directory: {e}"));
-        return;
-    }
-    // Restrict permissions to owner-only (0o700)
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&tmp_dir, fs::Permissions::from_mode(0o700));
-    }
+    // Create temp directory with secure permissions (0o700, collision-resistant)
+    let tmp_dir = match tempfile::tempdir() {
+        Ok(d) => d.keep(),
+        Err(e) => {
+            show_patch_error(app, &format!("Cannot create temp directory: {e}"));
+            return;
+        }
+    };
 
     if base.is_file() {
         build_single_file_patch(

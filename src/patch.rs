@@ -234,9 +234,9 @@ fn parse_context_diff(input: &str) -> Result<Vec<FilePatch>, PatchError> {
             let new_raw = lines[i + 1][4..].trim();
             let new_path = strip_ab_prefix(strip_timestamp(new_raw));
 
-            let kind = if old_raw == "/dev/null" {
+            let kind = if old_path == "/dev/null" || old_path == "dev/null" {
                 PatchKind::Added
-            } else if new_raw == "/dev/null" {
+            } else if new_path == "/dev/null" || new_path == "dev/null" {
                 PatchKind::Deleted
             } else {
                 PatchKind::Modified
@@ -520,6 +520,30 @@ pub fn apply_hunks(original: &str, hunks: &[Hunk]) -> Result<String, PatchError>
                 }
             }
         }
+
+        // Validate consumed old/new line counts match hunk header
+        let actual_old = hunk
+            .lines
+            .iter()
+            .filter(|l| matches!(l, HunkLine::Context(_) | HunkLine::Remove(_)))
+            .count();
+        let actual_new = hunk
+            .lines
+            .iter()
+            .filter(|l| matches!(l, HunkLine::Context(_) | HunkLine::Add(_)))
+            .count();
+        if actual_old != hunk.old_count {
+            return Err(PatchError(format!(
+                "hunk at line {}: expected {} old lines but found {}",
+                hunk.old_start, hunk.old_count, actual_old
+            )));
+        }
+        if actual_new != hunk.new_count {
+            return Err(PatchError(format!(
+                "hunk at line {}: expected {} new lines but found {}",
+                hunk.new_start, hunk.new_count, actual_new
+            )));
+        }
     }
 
     // Copy remaining original lines after the last hunk
@@ -663,9 +687,9 @@ fn parse_unified_diff(input: &str) -> Result<Vec<FilePatch>, PatchError> {
             let new_raw = lines[i + 1][4..].trim();
             let new_path = strip_timestamp(strip_ab_prefix(new_raw));
 
-            let kind = if old_raw == "/dev/null" {
+            let kind = if old_path == "/dev/null" || old_path == "dev/null" {
                 PatchKind::Added
-            } else if new_raw == "/dev/null" {
+            } else if new_path == "/dev/null" || new_path == "dev/null" {
                 PatchKind::Deleted
             } else {
                 PatchKind::Modified
