@@ -1,6 +1,5 @@
 """UI integration tests for patch detection and misc behavior."""
 import os
-import pytest
 
 from conftest import (
     FIXTURES,

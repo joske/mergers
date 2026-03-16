@@ -42,8 +42,30 @@ impl fmt::Display for PatchError {
 impl std::error::Error for PatchError {}
 
 /// Returns true if the input looks like a context diff.
+///
+/// Requires both a `***************` separator and a file header pair
+/// (`*** <path>` followed by `--- <path>`) to avoid mis-detecting unified
+/// diffs or non-diff text that happen to contain that separator line.
 fn is_context_diff(input: &str) -> bool {
-    input.lines().any(|l| l == "***************")
+    let mut has_separator = false;
+    let mut has_header = false;
+    let lines: Vec<&str> = input.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        if *line == "***************" {
+            has_separator = true;
+        }
+        if line.starts_with("*** ")
+            && !line.contains("****")
+            && i + 1 < lines.len()
+            && lines[i + 1].starts_with("--- ")
+        {
+            has_header = true;
+        }
+        if has_separator && has_header {
+            return true;
+        }
+    }
+    false
 }
 
 /// Returns true if the content looks like a patch file (unified or context diff).
@@ -53,15 +75,26 @@ fn is_context_diff(input: &str) -> bool {
 #[must_use]
 pub fn is_patch_file(content: &str) -> bool {
     let lines: Vec<&str> = content.lines().take(50).collect();
+    let mut has_ctx_sep = false;
+    let mut has_ctx_header = false;
     for (i, line) in lines.iter().enumerate() {
-        if *line == "***************" {
-            return true;
-        }
+        // Unified: --- immediately followed by +++
         if line.starts_with("--- ") && i + 1 < lines.len() && lines[i + 1].starts_with("+++ ") {
             return true;
         }
+        // Context: require both separator and file header pair
+        if *line == "***************" {
+            has_ctx_sep = true;
+        }
+        if line.starts_with("*** ")
+            && !line.contains("****")
+            && i + 1 < lines.len()
+            && lines[i + 1].starts_with("--- ")
+        {
+            has_ctx_header = true;
+        }
     }
-    false
+    has_ctx_sep && has_ctx_header
 }
 
 /// Parse a unified or context diff into a list of per-file patches.
@@ -75,7 +108,13 @@ pub fn parse_patch(input: &str) -> Result<Vec<FilePatch>, PatchError> {
     }
 
     if is_context_diff(input) {
-        return parse_context_diff(input);
+        let patches = parse_context_diff(input)?;
+        if patches.is_empty() {
+            return Err(PatchError(
+                "no file headers or hunks found in context diff input".to_string(),
+            ));
+        }
+        return Ok(patches);
     }
 
     let patches = parse_unified_diff(input)?;

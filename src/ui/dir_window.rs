@@ -138,11 +138,11 @@ fn read_dir_entries(
             if hide_hidden && name.starts_with('.') {
                 continue;
             }
-            // Use entry.file_type() (lstat) for is_dir to avoid following
-            // symlinks to directories (prevents infinite recursion with cycles).
-            // Use fs::metadata (stat) for size/mtime to get real file data.
+            // Use lstat (file_type/symlink_metadata) consistently to avoid
+            // following symlinks to directories (prevents infinite recursion)
+            // and to get consistent size/mtime for symlinks-to-dirs.
             let is_dir = entry.file_type().ok().is_some_and(|ft| ft.is_dir());
-            let meta = fs::metadata(entry.path()).ok();
+            let meta = fs::symlink_metadata(entry.path()).ok();
             map.insert(
                 name,
                 DirMeta {
@@ -293,12 +293,12 @@ fn scan_tree_inner(
                         let rm = right_entries.get(*name);
                         // Fast path: different sizes means different content
                         if lm.and_then(|m| m.size) == rm.and_then(|m| m.size) {
-                            let lc = fs::read(left_dir.join(name)).unwrap_or_default();
-                            let rc = fs::read(right_dir.join(name)).unwrap_or_default();
-                            if lc == rc {
-                                FileStatus::Same
-                            } else {
-                                FileStatus::Different
+                            let lc = fs::read(left_dir.join(name));
+                            let rc = fs::read(right_dir.join(name));
+                            match (lc, rc) {
+                                (Ok(l), Ok(r)) if l == r => FileStatus::Same,
+                                // Read errors (e.g. symlink-to-dir) → treat as different
+                                _ => FileStatus::Different,
                             }
                         } else {
                             FileStatus::Different
@@ -1181,13 +1181,17 @@ pub(super) fn build_dir_tab(
             let lv2 = lv.clone();
             let base_dir: Option<String> = base_dir_override.clone();
             let do_apply = move || {
-                // Suppress file watcher during bulk operations
+                // Suppress file watcher during bulk operations.
+                // Mark the root dirs, then re-mark per file so the 600ms
+                // window extends across the entire operation.
                 mark_saving(Path::new(&ld_str));
                 mark_saving(Path::new(&rd_str));
                 let mut errors = Vec::new();
                 for (rel, status) in &actionable {
                     let left_p = Path::new(&ld_str).join(rel);
                     let right_p = Path::new(&rd_str).join(rel);
+                    mark_saving(Path::new(&ld_str));
+                    mark_saving(Path::new(&rd_str));
                     let is_patch = base_dir.is_some();
                     match status {
                         FileStatus::Different => {

@@ -323,7 +323,7 @@ fn build_multi_file_patch(
                         fs::create_dir_all(parent).ok();
                     }
                     fs::write(&right_path, &msg).ok();
-                    conflict_paths.push(rel_path.to_string());
+                    conflict_paths.push(rel_path.clone());
                 }
             }
             PatchKind::Added => {
@@ -333,7 +333,7 @@ fn build_multi_file_patch(
                 } else {
                     let p = apply_hunks_best_effort("", &fp.hunks);
                     if p.contains("<<<<<<< original") {
-                        conflict_paths.push(rel_path.to_string());
+                        conflict_paths.push(rel_path.clone());
                     }
                     p
                 };
@@ -342,7 +342,7 @@ fn build_multi_file_patch(
                         "Warning: failed to write patched file {}: {e}",
                         right_path.display()
                     );
-                    conflict_paths.push(rel_path.to_string());
+                    conflict_paths.push(rel_path.clone());
                 }
             }
             PatchKind::Modified => {
@@ -359,7 +359,7 @@ fn build_multi_file_patch(
                         }
                         fs::write(&left_path, &msg).ok();
                         fs::write(&right_path, &msg).ok();
-                        conflict_paths.push(rel_path.to_string());
+                        conflict_paths.push(rel_path.clone());
                         continue;
                     }
                 };
@@ -377,7 +377,7 @@ fn build_multi_file_patch(
                     Ok(p) => p,
                     Err(e) => {
                         eprintln!("Warning: failed to apply patch cleanly to {rel_path}: {e}");
-                        conflict_paths.push(rel_path.to_string());
+                        conflict_paths.push(rel_path.clone());
                         apply_hunks_best_effort(&original, &fp.hunks)
                     }
                 };
@@ -387,7 +387,7 @@ fn build_multi_file_patch(
                         "Warning: failed to write patched file {}: {e}",
                         right_path.display()
                     );
-                    conflict_paths.push(rel_path.to_string());
+                    conflict_paths.push(rel_path.clone());
                 }
             }
         }

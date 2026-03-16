@@ -998,13 +998,15 @@ pub(super) fn build_diff_view(
                 if c.tag == DiffTag::Equal {
                     continue;
                 }
-                // Skip chunks whose right-side text contains conflict markers
-                // (from best-effort patch application). Check for line-start
-                // markers rather than exact strings to avoid false positives.
+                // Skip chunks containing any conflict marker line (from
+                // best-effort patch application). A conflict block may span
+                // multiple diff chunks, so skip on any marker, not just pairs.
                 let src_text = get_lines_text(&rb, c.start_b, c.end_b);
-                if src_text.lines().any(|l| l.starts_with("<<<<<<<"))
-                    && src_text.lines().any(|l| l.starts_with(">>>>>>>"))
-                {
+                if src_text.lines().any(|l| {
+                    l.starts_with("<<<<<<<")
+                        || l.starts_with(">>>>>>>")
+                        || l == "======="
+                }) {
                     continue;
                 }
                 copy_chunk(&rb, c.start_b, c.end_b, &lb, c.start_a, c.end_a);

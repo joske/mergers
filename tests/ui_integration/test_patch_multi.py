@@ -6,9 +6,7 @@ from conftest import (
     FIXTURES,
     _launch_and_wait,
     _kill_proc,
-    find_app,
 )
-from dogtail.utils import doDelay
 
 
 @pytest.fixture(scope="module")
