@@ -13,6 +13,8 @@ Items marked ✅ are covered by automated UI integration tests (`tests/ui_integr
 - [x] ✅ Single file path: prints error and exits
 - [x] ✅ Non-existent path: prints error and exits
 - [x] ✅ File + directory mix: prints error
+- [x] ✅ File + patch file: opens patch viewing window
+- [x] ✅ Directory + patch file: opens multi-file patch dir comparison
 - [x] ✅ `-L`/`--label` flags: custom pane labels shown for 2-file and 3-file modes
 - [x] ✅ `--version` / `--help`: correct output
 
@@ -336,19 +338,29 @@ Items marked ✅ are covered by automated UI integration tests (`tests/ui_integr
 ## Patch Viewing / Applying
 
 ### CLI
-- [ ] `mergers file.c patch.diff`: opens single-file patch view (original vs patched)
-- [ ] `mergers dir/ patch.diff`: opens multi-file patch view (dir comparison)
+- [x] ✅ `mergers file.c patch.diff`: opens single-file patch view (original vs patched)
+- [x] ✅ `mergers dir/ patch.diff`: opens multi-file patch view (dir comparison)
+- [x] ✅ `.diff` extension auto-detected as patch mode
+- [x] ✅ Ctrl+W closes patch window cleanly
 - [ ] `-L` labels applied to patch views
 - [ ] Invalid patch file: error dialog shown
 - [ ] Base path does not exist: error dialog shown
 
 ### Single-File Patch
-- [ ] Left pane: original file; Right pane: patched result
+- [x] ✅ Window title contains "patch" and base filename
+- [x] ✅ Two text panes shown
+- [x] ✅ Left pane: original file content; Right pane: patched result
+- [x] ✅ Right pane contains inserted lines from patch
+- [x] ✅ Chunk label shows change count
+- [x] ✅ Tab label contains "patch"
 - [ ] Conflict hunks shown with `<<<<<<< original` / `>>>>>>> patch` markers in right pane
 - [ ] Labels show base filename and "filename (patched)" (not temp paths)
 - [ ] Window destroy cleans up temp directory
 
 ### Multi-File Patch (Dir View)
+- [x] ✅ Window opens successfully
+- [x] ✅ Shows patched files (e.g. "different.txt")
+- [x] ✅ Shows subdirectories from the patch
 - [ ] Left header shows base directory name (not temp path)
 - [ ] Left header tooltip shows original base path (not temp path)
 - [ ] Right header shows "dirname (patched)"
