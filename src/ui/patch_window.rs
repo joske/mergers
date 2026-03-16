@@ -62,6 +62,12 @@ pub(super) fn build_patch_window(
         show_patch_error(app, &format!("Cannot create temp directory: {e}"));
         return;
     }
+    // Restrict permissions to owner-only (0o700)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&tmp_dir, fs::Permissions::from_mode(0o700));
+    }
 
     // Register for cleanup on shutdown / signal
     if let Ok(mut dirs) = PATCH_TEMP_DIRS.lock() {
@@ -90,15 +96,20 @@ pub(super) fn build_patch_window(
 }
 
 fn show_patch_error(app: &Application, message: &str) {
-    // Create a temporary window to host the error dialog, then show it.
-    let window = ApplicationWindow::builder()
-        .application(app)
-        .title("mergers")
-        .default_width(400)
-        .default_height(100)
-        .build();
-    window.present();
-    show_error_dialog(&window, message);
+    if let Some(win) = app.active_window().and_downcast::<ApplicationWindow>() {
+        show_error_dialog(&win, message);
+    } else {
+        // No window yet — create a transient one that closes after the dialog
+        let window = ApplicationWindow::builder()
+            .application(app)
+            .title("mergers")
+            .default_width(400)
+            .default_height(100)
+            .build();
+        window.present();
+        show_error_dialog(&window, message);
+        window.close();
+    }
 }
 
 fn build_single_file_patch(

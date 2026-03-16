@@ -1140,9 +1140,10 @@ pub(super) fn build_dir_tab(
                 for (rel, status) in &actionable {
                     let left_p = Path::new(&ld_str).join(rel);
                     let right_p = Path::new(&rd_str).join(rel);
+                    let is_patch = base_dir.is_some();
                     match status {
                         FileStatus::Different => {
-                            // Copy right → left (modified file; symlink follows to original)
+                            // Copy right → left (in patch mode, symlink follows to original)
                             if let Some(parent) = left_p.parent() {
                                 let _ = fs::create_dir_all(parent);
                             }
@@ -1150,12 +1151,14 @@ pub(super) fn build_dir_tab(
                                 errors.push(format!("{rel}: {e}"));
                                 continue;
                             }
-                            // Remove both sides so they vanish from the scan
-                            let _ = fs::remove_file(&left_p);
-                            let _ = fs::remove_file(&right_p);
+                            // In patch mode, remove temp entries so they vanish from scan
+                            if is_patch {
+                                let _ = fs::remove_file(&left_p);
+                                let _ = fs::remove_file(&right_p);
+                            }
                         }
                         FileStatus::RightOnly => {
-                            // New file — copy right to the real base dir if in patch mode,
+                            // New file — in patch mode copy to real base dir,
                             // otherwise copy to the left dir.
                             let target = if let Some(ref base) = base_dir {
                                 PathBuf::from(base).join(rel)
@@ -1169,18 +1172,19 @@ pub(super) fn build_dir_tab(
                                 errors.push(format!("{rel}: {e}"));
                                 continue;
                             }
-                            // Remove temp sides so they vanish from the scan
-                            let _ = fs::remove_file(&left_p);
-                            let _ = fs::remove_file(&right_p);
+                            // In patch mode, remove temp entries so they vanish from scan
+                            if is_patch {
+                                let _ = fs::remove_file(&left_p);
+                                let _ = fs::remove_file(&right_p);
+                            }
                         }
                         FileStatus::LeftOnly => {
-                            // Deleted file — remove the real file (resolve symlink in patch mode)
-                            if base_dir.is_some() {
-                                // In patch mode, left_p is a symlink; resolve to original
+                            if is_patch {
+                                // In patch mode, left_p is a symlink; resolve to delete original
                                 let real_path = fs::canonicalize(&left_p).unwrap_or(left_p.clone());
                                 let _ = fs::remove_file(&real_path);
+                                let _ = fs::remove_file(&left_p);
                             }
-                            let _ = fs::remove_file(&left_p);
                         }
                         FileStatus::Conflict | FileStatus::Same => {}
                     }
