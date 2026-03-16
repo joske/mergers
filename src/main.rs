@@ -9,7 +9,7 @@ use clap::Parser;
 use gio::prelude::{ApplicationExt, ApplicationExtManual};
 use gtk4::{Application, glib};
 
-use mergers::{CompareMode, ui, vcs};
+use mergers::{CompareMode, patch, ui, vcs};
 
 #[derive(Parser)]
 #[command(name = "mergers", version, about = "Visual diff and merge tool")]
@@ -32,18 +32,8 @@ fn is_right_a_patch(path: &Path) -> bool {
     if let Ok(file) = std::fs::File::open(path) {
         let reader = BufReader::new(file);
         let lines: Vec<String> = reader.lines().take(50).filter_map(Result::ok).collect();
-        let preview: Vec<&str> = lines.iter().map(String::as_str).collect();
-        for (i, line) in preview.iter().enumerate() {
-            if *line == "***************" {
-                return true;
-            }
-            if line.starts_with("--- ")
-                && i + 1 < preview.len()
-                && preview[i + 1].starts_with("+++ ")
-            {
-                return true;
-            }
-        }
+        let preview = lines.join("\n");
+        return patch::is_patch_file(&preview);
     }
     false
 }

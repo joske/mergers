@@ -88,10 +88,12 @@ fn strip_ab_prefix(path: &str) -> &str {
         .unwrap_or(path)
 }
 
-/// Sanitize a path from a patch file: reject absolute paths and `..` traversal.
+/// Sanitize a path from a patch file: strip leading separators and reject `..` traversal.
 ///
-/// Returns `None` if the path is unsafe (absolute or contains `..` components).
-/// Handles both Unix (`/`, `..`) and Windows (`\`, `C:`) path conventions.
+/// Leading `/` and `\` characters are stripped to make absolute paths relative to the
+/// base directory (similar to `git apply -p0`). Returns `None` if the resulting path
+/// is empty, contains `..` components, or starts with a Windows drive letter.
+/// Handles both Unix and Windows path conventions.
 #[must_use]
 pub fn sanitize_patch_path(path: &str) -> Option<&str> {
     // Strip leading slashes (Unix absolute) and backslashes (Windows absolute)

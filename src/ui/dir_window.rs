@@ -1119,6 +1119,7 @@ pub(super) fn build_dir_tab(
         let rd = right_dir.clone();
         let reload = reload_dir.clone();
         let lv = left_view.clone();
+        let base_dir_override: Option<String> = left_tooltip_override.clone();
         apply_all_btn.connect_clicked(move |_| {
             let ld_str = ld.borrow().clone();
             let rd_str = rd.borrow().clone();
@@ -1130,6 +1131,7 @@ pub(super) fn build_dir_tab(
             let count = actionable.len();
             let reload = reload.clone();
             let lv2 = lv.clone();
+            let base_dir: Option<String> = base_dir_override.clone();
             let do_apply = move || {
                 // Suppress file watcher during bulk operations
                 mark_saving(Path::new(&ld_str));
@@ -1139,8 +1141,8 @@ pub(super) fn build_dir_tab(
                     let left_p = Path::new(&ld_str).join(rel);
                     let right_p = Path::new(&rd_str).join(rel);
                     match status {
-                        FileStatus::Different | FileStatus::RightOnly => {
-                            // Copy right → left (modified or new file)
+                        FileStatus::Different => {
+                            // Copy right → left (modified file; symlink follows to original)
                             if let Some(parent) = left_p.parent() {
                                 let _ = fs::create_dir_all(parent);
                             }
@@ -1152,8 +1154,32 @@ pub(super) fn build_dir_tab(
                             let _ = fs::remove_file(&left_p);
                             let _ = fs::remove_file(&right_p);
                         }
+                        FileStatus::RightOnly => {
+                            // New file — copy right to the real base dir if in patch mode,
+                            // otherwise copy to the left dir.
+                            let target = if let Some(ref base) = base_dir {
+                                PathBuf::from(base).join(rel)
+                            } else {
+                                left_p.clone()
+                            };
+                            if let Some(parent) = target.parent() {
+                                let _ = fs::create_dir_all(parent);
+                            }
+                            if let Err(e) = copy_path_recursive(&right_p, &target) {
+                                errors.push(format!("{rel}: {e}"));
+                                continue;
+                            }
+                            // Remove temp sides so they vanish from the scan
+                            let _ = fs::remove_file(&left_p);
+                            let _ = fs::remove_file(&right_p);
+                        }
                         FileStatus::LeftOnly => {
-                            // Deleted file — remove from left
+                            // Deleted file — remove the real file (resolve symlink in patch mode)
+                            if base_dir.is_some() {
+                                // In patch mode, left_p is a symlink; resolve to original
+                                let real_path = fs::canonicalize(&left_p).unwrap_or(left_p.clone());
+                                let _ = fs::remove_file(&real_path);
+                            }
                             let _ = fs::remove_file(&left_p);
                         }
                         FileStatus::Conflict | FileStatus::Same => {}

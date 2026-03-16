@@ -9,10 +9,11 @@ static PATCH_TEMP_DIRS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
 /// Remove all registered patch temp dirs. Called from shutdown and signal handlers.
 pub fn cleanup_patch_temp_dirs() {
-    if let Ok(dirs) = PATCH_TEMP_DIRS.lock() {
+    if let Ok(mut dirs) = PATCH_TEMP_DIRS.lock() {
         for dir in dirs.iter() {
             let _ = fs::remove_dir_all(dir);
         }
+        dirs.clear();
     }
 }
 
