@@ -1994,49 +1994,36 @@ mod tests {
     }
 
     // ── collect_actionable_files logic ──────────────────────────
+    //
+    // `collect_actionable_files` walks a GTK ListStore tree, which requires
+    // GTK main-thread init and can't be unit-tested directly. These tests
+    // verify the filtering predicate it uses (lines 111-116) and the
+    // non-patch LeftOnly exclusion (line 1174).
 
     #[test]
-    fn actionable_includes_different() {
-        assert!(matches!(
-            FileStatus::Different,
-            FileStatus::Different | FileStatus::RightOnly | FileStatus::LeftOnly
-        ));
+    fn actionable_status_filter() {
+        // Mirrors the match arms in collect_actionable_files
+        let statuses = [
+            (FileStatus::Different, true),
+            (FileStatus::RightOnly, true),
+            (FileStatus::LeftOnly, true),
+            (FileStatus::Conflict, false),
+            (FileStatus::Same, false),
+        ];
+        for (status, expected) in &statuses {
+            let is_actionable = matches!(
+                status,
+                FileStatus::Different | FileStatus::RightOnly | FileStatus::LeftOnly
+            );
+            assert_eq!(
+                is_actionable, *expected,
+                "FileStatus::{status:?} should be actionable={expected}"
+            );
+        }
     }
 
     #[test]
-    fn actionable_includes_right_only() {
-        assert!(matches!(
-            FileStatus::RightOnly,
-            FileStatus::Different | FileStatus::RightOnly | FileStatus::LeftOnly
-        ));
-    }
-
-    #[test]
-    fn actionable_includes_left_only() {
-        assert!(matches!(
-            FileStatus::LeftOnly,
-            FileStatus::Different | FileStatus::RightOnly | FileStatus::LeftOnly
-        ));
-    }
-
-    #[test]
-    fn actionable_excludes_conflict() {
-        assert!(!matches!(
-            FileStatus::Conflict,
-            FileStatus::Different | FileStatus::RightOnly | FileStatus::LeftOnly
-        ));
-    }
-
-    #[test]
-    fn actionable_excludes_same() {
-        assert!(!matches!(
-            FileStatus::Same,
-            FileStatus::Different | FileStatus::RightOnly | FileStatus::LeftOnly
-        ));
-    }
-
-    #[test]
-    fn actionable_filter_mixed_statuses() {
+    fn actionable_mixed_filter() {
         let entries = [
             ("a.rs", FileStatus::Different),
             ("b.rs", FileStatus::Same),
@@ -2055,6 +2042,21 @@ mod tests {
             .map(|(name, _)| *name)
             .collect();
         assert_eq!(result, vec!["a.rs", "d.rs", "e.rs"]);
+    }
+
+    #[test]
+    fn actionable_non_patch_excludes_left_only() {
+        // In non-patch mode, LeftOnly is filtered out after collection (line 1174)
+        let mut actionable = vec![
+            ("a.rs".to_string(), FileStatus::Different),
+            ("b.rs".to_string(), FileStatus::LeftOnly),
+            ("c.rs".to_string(), FileStatus::RightOnly),
+            ("d.rs".to_string(), FileStatus::LeftOnly),
+        ];
+        // Simulate the retain at line 1174
+        actionable.retain(|(_, s)| *s != FileStatus::LeftOnly);
+        let paths: Vec<&str> = actionable.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(paths, vec!["a.rs", "c.rs"]);
     }
 
     // ── FileStatus ────────────────────────────────────────────────
