@@ -180,9 +180,11 @@ fn scan_tree(
     rel: &str,
     dir_filters: &[String],
     hide_hidden: bool,
+    patch_mode: bool,
 ) -> (Vec<ScanEntry>, FileStatus) {
-    // Check for a conflicts marker file written by patch mode.
-    let conflicts = if rel.is_empty() {
+    // Only read the conflicts marker in patch mode to avoid misclassifying
+    // files when a real directory happens to contain `.mergers-conflicts`.
+    let conflicts = if patch_mode && rel.is_empty() {
         let marker = right_root.join(".mergers-conflicts");
         if let Ok(content) = fs::read_to_string(&marker) {
             content.lines().map(String::from).collect()
@@ -506,6 +508,8 @@ pub(super) fn build_dir_tab(
         Rc::new(RefCell::new(tooltip_dirs.first().cloned()));
     let right_tooltip_override: Rc<RefCell<Option<String>>> =
         Rc::new(RefCell::new(tooltip_dirs.get(1).cloned()));
+    // Patch mode: tooltip_dirs is non-empty only for patch comparisons
+    let patch_mode = !tooltip_dirs.is_empty();
     let left_dir = Rc::new(RefCell::new(
         std::fs::canonicalize(&left_dir)
             .unwrap_or(left_dir)
@@ -532,7 +536,7 @@ pub(super) fn build_dir_tab(
         let rs = root_store.clone();
         gtk4::glib::spawn_future_local(async move {
             let (entries, _) = gio::spawn_blocking(move || {
-                scan_tree(Path::new(&ld), Path::new(&rd), "", &filters, hide_hidden)
+                scan_tree(Path::new(&ld), Path::new(&rd), "", &filters, hide_hidden, patch_mode)
             })
             .await
             .unwrap();
@@ -931,6 +935,7 @@ pub(super) fn build_dir_tab(
                         "",
                         &filters,
                         hide_hidden,
+                        patch_mode,
                     )
                 })
                 .await

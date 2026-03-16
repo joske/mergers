@@ -770,9 +770,6 @@ fn parse_unified_diff(input: &str) -> Result<Vec<FilePatch>, PatchError> {
                         hunk_lines.push(HunkLine::Remove(rest.to_string()));
                     } else if let Some(rest) = line.strip_prefix(' ') {
                         hunk_lines.push(HunkLine::Context(rest.to_string()));
-                    } else if line.is_empty() {
-                        // Empty line in a hunk is context with empty content.
-                        hunk_lines.push(HunkLine::Context(String::new()));
                     } else {
                         // Unknown line — end of this hunk.
                         break;

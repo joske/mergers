@@ -188,6 +188,7 @@ fn build_single_file_patch(
     // Right pane is read-only (patched output)
     dv.right_save.set_sensitive(false);
     dv.right_save.set_visible(false);
+    dv.right_text_view.set_editable(false);
 
     // Window title
     let title = format!("mergers \u{2014} {base_filename} (patch)");

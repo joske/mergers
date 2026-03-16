@@ -17,6 +17,7 @@ type SwapCallback = Rc<RefCell<Option<Box<dyn Fn()>>>>;
 pub(super) struct DiffViewResult {
     pub(super) widget: GtkBox,
     pub(super) left_text_view: TextView,
+    pub(super) right_text_view: TextView,
     pub(super) left_buf: TextBuffer,
     pub(super) right_buf: TextBuffer,
     pub(super) left_save: Button,
@@ -1183,6 +1184,7 @@ pub(super) fn build_diff_view(
     DiffViewResult {
         widget,
         left_text_view: left_pane.text_view,
+        right_text_view: right_pane.text_view,
         left_buf,
         right_buf,
         left_save: left_pane.save_btn,
