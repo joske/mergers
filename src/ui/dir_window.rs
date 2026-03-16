@@ -132,7 +132,7 @@ fn read_dir_entries(
             let Ok(name) = entry.file_name().into_string() else {
                 continue;
             };
-            if name == ".mergers-conflicts" || dir_filters.iter().any(|f| f == &name) {
+            if dir_filters.iter().any(|f| f == &name) {
                 continue;
             }
             if hide_hidden && name.starts_with('.') {

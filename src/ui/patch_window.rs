@@ -286,8 +286,8 @@ fn build_multi_file_patch(
             );
             continue;
         };
-        let left_path = left_dir.join(rel_path);
-        let right_path = right_dir.join(rel_path);
+        let left_path = left_dir.join(&rel_path);
+        let right_path = right_dir.join(&rel_path);
 
         // Ensure parent dirs exist in the right (patched) tree.
         // Left tree uses symlinks, so only the right tree needs real dirs.
@@ -301,7 +301,7 @@ fn build_multi_file_patch(
         match fp.kind {
             PatchKind::Deleted => {
                 // Symlink original on left, nothing on right → shows as LeftOnly
-                let orig_path = base.join(rel_path);
+                let orig_path = base.join(&rel_path);
                 if orig_path.exists() {
                     if let Some(parent) = left_path.parent() {
                         fs::create_dir_all(parent).ok();
@@ -346,7 +346,7 @@ fn build_multi_file_patch(
                 }
             }
             PatchKind::Modified => {
-                let orig_path = base.join(rel_path);
+                let orig_path = base.join(&rel_path);
                 let original = match fs::read_to_string(&orig_path) {
                     Ok(c) => c,
                     Err(e) => {

@@ -94,14 +94,14 @@ fn strip_ab_prefix(path: &str) -> &str {
         .unwrap_or(path)
 }
 
-/// Sanitize a path from a patch file: strip leading separators and reject `..` traversal.
+/// Sanitize a path from a patch file: strip leading separators, reject `..` traversal,
+/// and normalize backslashes to forward slashes for cross-platform consistency.
 ///
 /// Leading `/` and `\` characters are stripped to make absolute paths relative to the
 /// base directory (similar to `git apply -p0`). Returns `None` if the resulting path
 /// is empty, contains `..` components, or starts with a Windows drive letter.
-/// Handles both Unix and Windows path conventions.
 #[must_use]
-pub fn sanitize_patch_path(path: &str) -> Option<&str> {
+pub fn sanitize_patch_path(path: &str) -> Option<String> {
     // Strip leading slashes (Unix absolute) and backslashes (Windows absolute)
     let path = path.trim_start_matches(['/', '\\']);
     if path.is_empty() {
@@ -115,7 +115,9 @@ pub fn sanitize_patch_path(path: &str) -> Option<&str> {
     if path.split(['/', '\\']).any(|c| c == "..") {
         return None;
     }
-    Some(path)
+    // Normalize backslashes to forward slashes so Windows-produced patches
+    // create the correct directory structure on Unix
+    Some(path.replace('\\', "/"))
 }
 
 /// Strip a trailing tab-separated timestamp from a path (e.g. `file.txt\t2024-01-01 ...`).
@@ -552,8 +554,8 @@ pub fn apply_hunks(original: &str, hunks: &[Hunk]) -> Result<String, PatchError>
     }
 
     let mut result = output.join("\n");
-    // Preserve trailing newline if the original had one
-    if original.ends_with('\n') && !result.ends_with('\n') {
+    // Preserve trailing newline if the original had one, but not for empty output
+    if !result.is_empty() && original.ends_with('\n') && !result.ends_with('\n') {
         result.push('\n');
     }
     Ok(result)
@@ -632,8 +634,8 @@ pub fn apply_hunks_best_effort(original: &str, hunks: &[Hunk]) -> String {
     }
 
     let mut result = output.join("\n");
-    // Preserve trailing newline if the original had one
-    if original.ends_with('\n') && !result.ends_with('\n') {
+    // Preserve trailing newline if the original had one, but not for empty output
+    if !result.is_empty() && original.ends_with('\n') && !result.ends_with('\n') {
         result.push('\n');
     }
     result
@@ -1230,12 +1232,12 @@ fn main() {
 
     #[test]
     fn sanitize_normal_path() {
-        assert_eq!(sanitize_patch_path("src/main.rs"), Some("src/main.rs"));
+        assert_eq!(sanitize_patch_path("src/main.rs"), Some("src/main.rs".to_string()));
     }
 
     #[test]
     fn sanitize_strips_leading_slash() {
-        assert_eq!(sanitize_patch_path("/etc/passwd"), Some("etc/passwd"));
+        assert_eq!(sanitize_patch_path("/etc/passwd"), Some("etc/passwd".to_string()));
     }
 
     #[test]
@@ -1257,10 +1259,10 @@ fn main() {
     }
 
     #[test]
-    fn sanitize_strips_leading_backslash() {
+    fn sanitize_strips_leading_backslash_and_normalizes() {
         assert_eq!(
             sanitize_patch_path("\\usr\\bin\\foo"),
-            Some("usr\\bin\\foo")
+            Some("usr/bin/foo".to_string())
         );
     }
 
@@ -1336,16 +1338,16 @@ fn main() {
 
     #[test]
     fn sanitize_allows_hidden_files() {
-        assert_eq!(sanitize_patch_path(".gitignore"), Some(".gitignore"));
+        assert_eq!(sanitize_patch_path(".gitignore"), Some(".gitignore".to_string()));
         assert_eq!(
             sanitize_patch_path("src/.hidden/file.rs"),
-            Some("src/.hidden/file.rs")
+            Some("src/.hidden/file.rs".to_string())
         );
     }
 
     #[test]
     fn sanitize_allows_triple_dot() {
-        assert_eq!(sanitize_patch_path("src/.../foo"), Some("src/.../foo"));
+        assert_eq!(sanitize_patch_path("src/.../foo"), Some("src/.../foo".to_string()));
     }
 
     #[test]
@@ -1439,6 +1441,24 @@ fn main() {
             ],
         }];
         let result = apply_hunks(original, &hunks).unwrap();
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn apply_hunks_delete_everything_trailing_newline() {
+        let original = "a\nb\n";
+        let hunks = vec![Hunk {
+            old_start: 1,
+            old_count: 2,
+            new_start: 1,
+            new_count: 0,
+            lines: vec![
+                HunkLine::Remove("a".to_string()),
+                HunkLine::Remove("b".to_string()),
+            ],
+        }];
+        let result = apply_hunks(original, &hunks).unwrap();
+        // Empty output should stay empty, not become "\n"
         assert_eq!(result, "");
     }
 
