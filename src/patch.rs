@@ -1268,12 +1268,18 @@ fn main() {
 
     #[test]
     fn sanitize_normal_path() {
-        assert_eq!(sanitize_patch_path("src/main.rs"), Some("src/main.rs".to_string()));
+        assert_eq!(
+            sanitize_patch_path("src/main.rs"),
+            Some("src/main.rs".to_string())
+        );
     }
 
     #[test]
     fn sanitize_strips_leading_slash() {
-        assert_eq!(sanitize_patch_path("/etc/passwd"), Some("etc/passwd".to_string()));
+        assert_eq!(
+            sanitize_patch_path("/etc/passwd"),
+            Some("etc/passwd".to_string())
+        );
     }
 
     #[test]
@@ -1374,7 +1380,10 @@ fn main() {
 
     #[test]
     fn sanitize_allows_hidden_files() {
-        assert_eq!(sanitize_patch_path(".gitignore"), Some(".gitignore".to_string()));
+        assert_eq!(
+            sanitize_patch_path(".gitignore"),
+            Some(".gitignore".to_string())
+        );
         assert_eq!(
             sanitize_patch_path("src/.hidden/file.rs"),
             Some("src/.hidden/file.rs".to_string())
@@ -1383,7 +1392,10 @@ fn main() {
 
     #[test]
     fn sanitize_allows_triple_dot() {
-        assert_eq!(sanitize_patch_path("src/.../foo"), Some("src/.../foo".to_string()));
+        assert_eq!(
+            sanitize_patch_path("src/.../foo"),
+            Some("src/.../foo".to_string())
+        );
     }
 
     #[test]

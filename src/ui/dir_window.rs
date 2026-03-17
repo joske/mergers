@@ -536,7 +536,14 @@ pub(super) fn build_dir_tab(
         let rs = root_store.clone();
         gtk4::glib::spawn_future_local(async move {
             let (entries, _) = gio::spawn_blocking(move || {
-                scan_tree(Path::new(&ld), Path::new(&rd), "", &filters, hide_hidden, patch_mode)
+                scan_tree(
+                    Path::new(&ld),
+                    Path::new(&rd),
+                    "",
+                    &filters,
+                    hide_hidden,
+                    patch_mode,
+                )
             })
             .await
             .unwrap();
