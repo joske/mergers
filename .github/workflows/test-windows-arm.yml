@@ -41,9 +41,8 @@ jobs:
         run: |
           export CARGO_HOME="$(pwd)/.cargo"
           export RUSTUP_HOME="$(pwd)/.rustup"
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-host aarch64-pc-windows-gnullvm --default-toolchain stable
           export PATH="$(pwd)/.cargo/bin:$PATH"
-          rustup target add aarch64-pc-windows-gnullvm
       - name: Configure cargo linker
         shell: msys2 {0}
         run: |
