@@ -1,22 +1,41 @@
 #![windows_subsystem = "windows"]
 
-use std::path::PathBuf;
+use std::{
+    io::{BufRead, BufReader},
+    path::{Path, PathBuf},
+};
 
 use clap::Parser;
-use gio::prelude::ApplicationExtManual;
+use gio::prelude::{ApplicationExt, ApplicationExtManual};
 use gtk4::{Application, glib};
 
-use mergers::{CompareMode, ui, vcs};
+use mergers::{CompareMode, patch, ui, vcs};
 
 #[derive(Parser)]
 #[command(name = "mergers", version, about = "Visual diff and merge tool")]
 struct Cli {
-    /// Paths to compare (2 files or 2 directories, or 3 files for 3-way merge)
+    /// Paths to compare (2 files, 2 dirs, 3 files for merge, or file/dir + patch)
     paths: Vec<PathBuf>,
 
     /// Custom labels for panes (one per pane)
     #[arg(short = 'L', long = "label", value_name = "LABEL")]
     labels: Vec<String>,
+}
+
+fn is_right_a_patch(path: &Path) -> bool {
+    if let Some(ext) = path.extension().and_then(|e| e.to_str())
+        && matches!(ext, "patch" | "diff")
+    {
+        return true;
+    }
+    // Read only the first 50 lines instead of the entire file
+    if let Ok(file) = std::fs::File::open(path) {
+        let reader = BufReader::new(file);
+        let lines: Vec<String> = reader.lines().take(50).filter_map(Result::ok).collect();
+        let preview = lines.join("\n");
+        return patch::is_patch_file(&preview);
+    }
+    false
 }
 
 fn main() -> glib::ExitCode {
@@ -45,10 +64,29 @@ fn main() -> glib::ExitCode {
         let right = &cli.paths[1];
 
         if left.is_file() && right.is_file() {
-            CompareMode::Files {
-                left: left.clone(),
-                right: right.clone(),
-                labels: cli.labels.clone(),
+            if is_right_a_patch(right) {
+                CompareMode::Patch {
+                    base: left.clone(),
+                    patch: right.clone(),
+                    labels: cli.labels.clone(),
+                }
+            } else {
+                CompareMode::Files {
+                    left: left.clone(),
+                    right: right.clone(),
+                    labels: cli.labels.clone(),
+                }
+            }
+        } else if left.is_dir() && right.is_file() {
+            if is_right_a_patch(right) {
+                CompareMode::Patch {
+                    base: left.clone(),
+                    patch: right.clone(),
+                    labels: cli.labels.clone(),
+                }
+            } else {
+                eprintln!("Error: cannot compare a directory with a file");
+                std::process::exit(1);
             }
         } else if left.is_dir() && right.is_dir() {
             CompareMode::Dirs {
@@ -93,8 +131,26 @@ fn main() -> glib::ExitCode {
 
     let application = Application::builder().application_id("mergers").build();
 
+    // Clean up patch temp dirs on normal shutdown
+    application.connect_shutdown(|_| {
+        ui::cleanup_patch_temp_dirs();
+    });
+
     ui::build_ui(&application, mode);
 
+    // Set up signal handler *after* GTK init so it doesn't get overridden.
+    // ctrlc handles SIGINT and SIGTERM.
+    ctrlc::set_handler(|| {
+        ui::cleanup_patch_temp_dirs();
+        std::process::exit(1);
+    })
+    .ok();
+
     // Pass empty args so GTK doesn't try to parse our directory args
-    application.run_with_args::<String>(&[])
+    let code = application.run_with_args::<String>(&[]);
+
+    // Final cleanup in case shutdown handler didn't fire
+    ui::cleanup_patch_temp_dirs();
+
+    code
 }

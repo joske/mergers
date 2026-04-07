@@ -1,6 +1,6 @@
 [package]
 name = "mergers"
-version = "0.8.1"
+version = "0.8.2"
 edition = "2024"
 description = "A visual diff and merge tool for files and directories"
 license = "GPL-2.0"
@@ -12,15 +12,17 @@ gtk4 = { version = "0.11", features = ["v4_14"] }
 gio = { version = "0.22", features = ["v2_66"] }
 chrono = "0.4"
 notify = "8.2"
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.6", features = ["derive"] }
 sourceview5 = { version = "0.11", features = ["gtk_v4_14"] }
 serde = { version = "1.0", features = ["derive"] }
 toml = "1.0"
+ctrlc = { version = "3.5", features = ["termination"] }
+tempfile = "3.27"
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 proptest = "1.10"
-tempfile = "3.26"
+tempfile = "3.27"
 
 [[bench]]
 name = "benchmarks"

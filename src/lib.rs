@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 pub mod myers;
+pub mod patch;
 pub mod settings;
 pub mod ui;
 pub mod vcs;
@@ -37,6 +38,11 @@ pub enum CompareMode {
         left: PathBuf,
         middle: PathBuf,
         right: PathBuf,
+        labels: Vec<String>,
+    },
+    Patch {
+        base: PathBuf,
+        patch: PathBuf,
         labels: Vec<String>,
     },
     Vcs {

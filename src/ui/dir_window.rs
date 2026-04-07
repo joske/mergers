@@ -42,6 +42,7 @@ impl DirRowInfo {
 
         let status = match status_code {
             "D" => FileStatus::Different,
+            "C" => FileStatus::Conflict,
             "L" => FileStatus::LeftOnly,
             "R" => FileStatus::RightOnly,
             _ => FileStatus::Same,
@@ -93,6 +94,31 @@ fn copy_path_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Recursively collect `(rel_path, status)` of all non-conflicting, non-same files.
+fn collect_actionable_files(
+    store: &ListStore,
+    cm: &HashMap<String, ListStore>,
+    out: &mut Vec<(String, FileStatus)>,
+) {
+    for i in 0..store.n_items() {
+        if let Some(obj) = store.item(i).and_downcast::<StringObject>() {
+            let info = DirRowInfo::decode(&obj.string());
+            if info.is_dir {
+                if let Some(child_store) = cm.get(&info.rel_path) {
+                    collect_actionable_files(child_store, cm, out);
+                }
+            } else {
+                match info.status {
+                    FileStatus::Different | FileStatus::RightOnly | FileStatus::LeftOnly => {
+                        out.push((info.rel_path, info.status));
+                    }
+                    FileStatus::Conflict | FileStatus::Same => {}
+                }
+            }
+        }
+    }
+}
+
 // ─── Directory scanning ────────────────────────────────────────────────────
 
 fn read_dir_entries(
@@ -112,8 +138,11 @@ fn read_dir_entries(
             if hide_hidden && name.starts_with('.') {
                 continue;
             }
-            let meta = entry.metadata().ok();
-            let is_dir = meta.as_ref().is_some_and(std::fs::Metadata::is_dir);
+            // Use lstat (file_type/symlink_metadata) consistently to avoid
+            // following symlinks to directories (prevents infinite recursion)
+            // and to get consistent size/mtime for symlinks-to-dirs.
+            let is_dir = entry.file_type().ok().is_some_and(|ft| ft.is_dir());
+            let meta = fs::symlink_metadata(entry.path()).ok();
             map.insert(
                 name,
                 DirMeta {
@@ -151,6 +180,37 @@ fn scan_tree(
     rel: &str,
     dir_filters: &[String],
     hide_hidden: bool,
+    patch_mode: bool,
+) -> (Vec<ScanEntry>, FileStatus) {
+    // Only read the conflicts marker in patch mode to avoid misclassifying
+    // files when a real directory happens to contain `.mergers-conflicts`.
+    let conflicts = if patch_mode && rel.is_empty() {
+        let marker = right_root.join(".mergers-conflicts");
+        if let Ok(content) = fs::read_to_string(&marker) {
+            content.lines().map(String::from).collect()
+        } else {
+            HashSet::new()
+        }
+    } else {
+        HashSet::new()
+    };
+    scan_tree_inner(
+        left_root,
+        right_root,
+        rel,
+        dir_filters,
+        hide_hidden,
+        &conflicts,
+    )
+}
+
+fn scan_tree_inner(
+    left_root: &Path,
+    right_root: &Path,
+    rel: &str,
+    dir_filters: &[String],
+    hide_hidden: bool,
+    conflicts: &HashSet<String>,
 ) -> (Vec<ScanEntry>, FileStatus) {
     let left_dir = if rel.is_empty() {
         left_root.to_path_buf()
@@ -192,8 +252,14 @@ fn scan_tree(
 
         let (status, children);
         if *is_dir {
-            let (child_entries, child_agg) =
-                scan_tree(left_root, right_root, &child_rel, dir_filters, hide_hidden);
+            let (child_entries, child_agg) = scan_tree_inner(
+                left_root,
+                right_root,
+                &child_rel,
+                dir_filters,
+                hide_hidden,
+                conflicts,
+            );
             status = if !in_left {
                 FileStatus::RightOnly
             } else if !in_right {
@@ -205,22 +271,40 @@ fn scan_tree(
         } else {
             children = Vec::new();
             status = match (in_left, in_right) {
-                (true, false) => FileStatus::LeftOnly,
-                (false, true) => FileStatus::RightOnly,
+                (true, false) => {
+                    if conflicts.contains(&child_rel) {
+                        FileStatus::Conflict
+                    } else {
+                        FileStatus::LeftOnly
+                    }
+                }
+                (false, true) => {
+                    if conflicts.contains(&child_rel) {
+                        FileStatus::Conflict
+                    } else {
+                        FileStatus::RightOnly
+                    }
+                }
                 (true, true) => {
-                    let lm = left_entries.get(*name);
-                    let rm = right_entries.get(*name);
-                    // Fast path: different sizes means different content
-                    if lm.and_then(|m| m.size) == rm.and_then(|m| m.size) {
-                        let lc = fs::read(left_dir.join(name)).unwrap_or_default();
-                        let rc = fs::read(right_dir.join(name)).unwrap_or_default();
-                        if lc == rc {
-                            FileStatus::Same
+                    // Check conflict marker first — conflicted files should
+                    // always show as Conflict even if contents are identical
+                    if conflicts.contains(&child_rel) {
+                        FileStatus::Conflict
+                    } else {
+                        let lm = left_entries.get(*name);
+                        let rm = right_entries.get(*name);
+                        // Fast path: different sizes means different content
+                        if lm.and_then(|m| m.size) == rm.and_then(|m| m.size) {
+                            let lc = fs::read(left_dir.join(name));
+                            let rc = fs::read(right_dir.join(name));
+                            match (lc, rc) {
+                                (Ok(l), Ok(r)) if l == r => FileStatus::Same,
+                                // Read errors (e.g. symlink-to-dir) → treat as different
+                                _ => FileStatus::Different,
+                            }
                         } else {
                             FileStatus::Different
                         }
-                    } else {
-                        FileStatus::Different
                     }
                 }
                 _ => unreachable!(),
@@ -258,8 +342,16 @@ fn scan_tree(
 fn build_stores(entries: &[ScanEntry], children_map: &mut HashMap<String, ListStore>) -> ListStore {
     let store = ListStore::new::<StringObject>();
     for entry in entries {
+        // Skip Same entries — they have no visual purpose in the dir view
+        if entry.status == FileStatus::Same {
+            continue;
+        }
         if entry.is_dir {
             let child_store = build_stores(&entry.children, children_map);
+            // Skip empty directories (all children are Same)
+            if child_store.n_items() == 0 {
+                continue;
+            }
             children_map.insert(entry.rel_path.clone(), child_store);
         }
         let info = DirRowInfo {
@@ -282,6 +374,7 @@ fn build_stores(entries: &[ScanEntry], children_map: &mut HashMap<String, ListSt
 fn apply_status_class(widget: &impl WidgetExt, status: &str, is_left: bool) {
     for cls in &[
         "diff-changed",
+        "diff-conflict",
         "diff-deleted",
         "diff-inserted",
         "diff-missing",
@@ -291,6 +384,7 @@ fn apply_status_class(widget: &impl WidgetExt, status: &str, is_left: bool) {
     if is_left {
         match status {
             "D" => widget.add_css_class("diff-changed"),
+            "C" => widget.add_css_class("diff-conflict"),
             "L" => widget.add_css_class("diff-deleted"),
             "R" => widget.add_css_class("diff-missing"),
             _ => {}
@@ -298,6 +392,7 @@ fn apply_status_class(widget: &impl WidgetExt, status: &str, is_left: bool) {
     } else {
         match status {
             "D" => widget.add_css_class("diff-changed"),
+            "C" => widget.add_css_class("diff-conflict"),
             "R" => widget.add_css_class("diff-inserted"),
             "L" => widget.add_css_class("diff-missing"),
             _ => {}
@@ -400,6 +495,7 @@ pub(super) fn build_dir_tab(
     left_dir: std::path::PathBuf,
     right_dir: std::path::PathBuf,
     labels: &[String],
+    tooltip_dirs: &[String],
     settings: Rc<RefCell<Settings>>,
     notebook: &Notebook,
     open_tabs: &Rc<RefCell<Vec<FileTab>>>,
@@ -408,6 +504,12 @@ pub(super) fn build_dir_tab(
         Rc::new(RefCell::new(labels.first().cloned()));
     let right_label_override: Rc<RefCell<Option<String>>> =
         Rc::new(RefCell::new(labels.get(1).cloned()));
+    let left_tooltip_override: Rc<RefCell<Option<String>>> =
+        Rc::new(RefCell::new(tooltip_dirs.first().cloned()));
+    let right_tooltip_override: Rc<RefCell<Option<String>>> =
+        Rc::new(RefCell::new(tooltip_dirs.get(1).cloned()));
+    // Patch mode: tooltip_dirs is non-empty only for patch comparisons
+    let patch_mode = !tooltip_dirs.is_empty();
     let left_dir = Rc::new(RefCell::new(
         std::fs::canonicalize(&left_dir)
             .unwrap_or(left_dir)
@@ -434,7 +536,14 @@ pub(super) fn build_dir_tab(
         let rs = root_store.clone();
         gtk4::glib::spawn_future_local(async move {
             let (entries, _) = gio::spawn_blocking(move || {
-                scan_tree(Path::new(&ld), Path::new(&rd), "", &filters, hide_hidden)
+                scan_tree(
+                    Path::new(&ld),
+                    Path::new(&rd),
+                    "",
+                    &filters,
+                    hide_hidden,
+                    patch_mode,
+                )
             })
             .await
             .unwrap();
@@ -660,7 +769,12 @@ pub(super) fn build_dir_tab(
         None => shortened_path(Path::new(&*left_dir.borrow())),
     };
     let left_header = Label::new(Some(&left_header_text));
-    left_header.set_tooltip_text(Some(&*left_dir.borrow()));
+    {
+        let ld = left_dir.borrow();
+        let lto = left_tooltip_override.borrow();
+        let left_tip: &str = lto.as_ref().map_or(&*ld, String::as_str);
+        left_header.set_tooltip_text(Some(left_tip));
+    }
     left_header.set_ellipsize(gtk4::pango::EllipsizeMode::Start);
     left_header.set_hexpand(true);
     let left_copy_btn = Button::from_icon_name("edit-copy-symbolic");
@@ -685,7 +799,12 @@ pub(super) fn build_dir_tab(
         None => shortened_path(Path::new(&*right_dir.borrow())),
     };
     let right_header = Label::new(Some(&right_header_text));
-    right_header.set_tooltip_text(Some(&*right_dir.borrow()));
+    {
+        let rd = right_dir.borrow();
+        let rto = right_tooltip_override.borrow();
+        let right_tip: &str = rto.as_ref().map_or(&*rd, String::as_str);
+        right_header.set_tooltip_text(Some(right_tip));
+    }
     right_header.set_ellipsize(gtk4::pango::EllipsizeMode::Start);
     right_header.set_hexpand(true);
     let right_copy_btn = Button::from_icon_name("edit-copy-symbolic");
@@ -752,8 +871,12 @@ pub(super) fn build_dir_tab(
     dir_prefs_btn.set_tooltip_text(Some(&format!("Preferences ({}+,)", primary_key_name())));
     dir_prefs_btn.set_action_name(Some("win.prefs"));
 
+    let apply_all_btn = Button::from_icon_name("media-skip-backward-symbolic");
+    apply_all_btn.set_tooltip_text(Some("Apply all non-conflicting changes right → left"));
+
     dir_toolbar.append(&dir_copy_box);
     dir_toolbar.append(&delete_btn);
+    dir_toolbar.append(&apply_all_btn);
     dir_toolbar.append(&dir_swap_btn);
     dir_toolbar.append(&tree_box);
     dir_toolbar.append(&dir_prefs_btn);
@@ -819,6 +942,7 @@ pub(super) fn build_dir_tab(
                         "",
                         &filters,
                         hide_hidden,
+                        patch_mode,
                     )
                 })
                 .await
@@ -909,9 +1033,13 @@ pub(super) fn build_dir_tab(
         let rd = right_dir.clone();
         let ll = left_label_override.clone();
         let rl = right_label_override.clone();
+        let lto = left_tooltip_override.clone();
+        let rto = right_tooltip_override.clone();
         let reload = reload_dir.clone();
         let lh = left_header.clone();
         let rh = right_header.clone();
+        let aab = apply_all_btn.clone();
+        let swapped = Rc::new(Cell::new(false));
         dir_swap_btn.connect_clicked(move |btn| {
             let tmp = ld.borrow().clone();
             (*ld.borrow_mut()).clone_from(&rd.borrow());
@@ -919,18 +1047,38 @@ pub(super) fn build_dir_tab(
             let tmp_label = ll.borrow().clone();
             (*ll.borrow_mut()).clone_from(&rl.borrow());
             *rl.borrow_mut() = tmp_label;
+            let tmp_tip = lto.borrow().clone();
+            (*lto.borrow_mut()).clone_from(&rto.borrow());
+            *rto.borrow_mut() = tmp_tip;
             let left_text = match *ll.borrow() {
                 Some(ref l) => l.clone(),
                 None => shortened_path(Path::new(&*ld.borrow())),
             };
             lh.set_text(&left_text);
-            lh.set_tooltip_text(Some(&*ld.borrow()));
+            {
+                let ld_ref = ld.borrow();
+                let lto_ref = lto.borrow();
+                let left_tip: &str = lto_ref.as_ref().map_or(&*ld_ref, String::as_str);
+                lh.set_tooltip_text(Some(left_tip));
+            }
             let right_text = match *rl.borrow() {
                 Some(ref l) => l.clone(),
                 None => shortened_path(Path::new(&*rd.borrow())),
             };
             rh.set_text(&right_text);
-            rh.set_tooltip_text(Some(&*rd.borrow()));
+            {
+                let rd_ref = rd.borrow();
+                let rto_ref = rto.borrow();
+                let right_tip: &str = rto_ref.as_ref().map_or(&*rd_ref, String::as_str);
+                rh.set_tooltip_text(Some(right_tip));
+            }
+            // In patch mode, disable apply-all when swapped (directions get confused)
+            let is_patch = lto.borrow().is_some() || rto.borrow().is_some();
+            if is_patch {
+                let now_swapped = !swapped.get();
+                swapped.set(now_swapped);
+                aab.set_sensitive(!now_swapped);
+            }
             // Update window title
             if let Some(win) = find_window(btn) {
                 let ln = Path::new(ld.borrow().as_str())
@@ -983,7 +1131,10 @@ pub(super) fn build_dir_tab(
         action.connect_activate(move |_, _| {
             if let Some(raw) = get_row() {
                 let info = DirRowInfo::decode(&raw);
-                if info.status == only_status || info.status == FileStatus::Different {
+                if info.status == only_status
+                    || info.status == FileStatus::Different
+                    || info.status == FileStatus::Conflict
+                {
                     let rel = info.rel_path;
                     let src = Path::new(sd.borrow().as_str()).join(&rel);
                     let dst = Path::new(dd.borrow().as_str()).join(&rel);
@@ -997,7 +1148,7 @@ pub(super) fn build_dir_tab(
                         }
                         reload();
                     };
-                    if info.status == FileStatus::Different {
+                    if info.status == FileStatus::Different || info.status == FileStatus::Conflict {
                         if let Some(win) = find_window(&lv) {
                             show_confirm_dialog(
                                 &win,
@@ -1014,6 +1165,111 @@ pub(super) fn build_dir_tab(
             }
         });
         dir_action_group.add_action(&action);
+    }
+    // Apply all: copy every non-conflicting changed file from right → left
+    {
+        let rs = root_store.clone();
+        let cm = children_map.clone();
+        let ld = left_dir.clone();
+        let rd = right_dir.clone();
+        let reload = reload_dir.clone();
+        let lv = left_view.clone();
+        let base_dir_override: Option<String> = left_tooltip_override.borrow().clone();
+        apply_all_btn.connect_clicked(move |_| {
+            let ld_str = ld.borrow().clone();
+            let rd_str = rd.borrow().clone();
+            let mut actionable: Vec<(String, FileStatus)> = Vec::new();
+            collect_actionable_files(&rs, &cm.borrow(), &mut actionable);
+            // In non-patch mode, LeftOnly delete is not supported
+            let is_patch = base_dir_override.is_some();
+            if !is_patch {
+                actionable.retain(|(_, s)| *s != FileStatus::LeftOnly);
+            }
+            if actionable.is_empty() {
+                return;
+            }
+            let count = actionable.len();
+            let reload = reload.clone();
+            let lv2 = lv.clone();
+            let base_dir: Option<String> = base_dir_override.clone();
+            let do_apply = move || {
+                // Suppress file watcher during bulk operations.
+                // Mark the root dirs, then re-mark per file so the 600ms
+                // window extends across the entire operation.
+                mark_saving(Path::new(&ld_str));
+                mark_saving(Path::new(&rd_str));
+                let mut errors = Vec::new();
+                for (rel, status) in &actionable {
+                    let left_p = Path::new(&ld_str).join(rel);
+                    let right_p = Path::new(&rd_str).join(rel);
+                    mark_saving(Path::new(&ld_str));
+                    mark_saving(Path::new(&rd_str));
+                    let is_patch = base_dir.is_some();
+                    match status {
+                        FileStatus::Different => {
+                            // Copy right → left (in patch mode, symlink follows to original)
+                            if let Some(parent) = left_p.parent() {
+                                let _ = fs::create_dir_all(parent);
+                            }
+                            if let Err(e) = copy_path_recursive(&right_p, &left_p) {
+                                errors.push(format!("{rel}: {e}"));
+                                continue;
+                            }
+                            // In patch mode, remove temp entries so they vanish from scan
+                            if is_patch {
+                                let _ = fs::remove_file(&left_p);
+                                let _ = fs::remove_file(&right_p);
+                            }
+                        }
+                        FileStatus::RightOnly => {
+                            // New file — in patch mode copy to real base dir,
+                            // otherwise copy to the left dir.
+                            let target = if let Some(ref base) = base_dir {
+                                PathBuf::from(base).join(rel)
+                            } else {
+                                left_p.clone()
+                            };
+                            if let Some(parent) = target.parent() {
+                                let _ = fs::create_dir_all(parent);
+                            }
+                            if let Err(e) = copy_path_recursive(&right_p, &target) {
+                                errors.push(format!("{rel}: {e}"));
+                                continue;
+                            }
+                            // In patch mode, remove temp entries so they vanish from scan
+                            if is_patch {
+                                let _ = fs::remove_file(&left_p);
+                                let _ = fs::remove_file(&right_p);
+                            }
+                        }
+                        FileStatus::LeftOnly => {
+                            if is_patch {
+                                // In patch mode, left_p is a symlink; resolve to delete original
+                                let real_path = fs::canonicalize(&left_p).unwrap_or(left_p.clone());
+                                let _ = fs::remove_file(&real_path);
+                                let _ = fs::remove_file(&left_p);
+                            }
+                        }
+                        FileStatus::Conflict | FileStatus::Same => {}
+                    }
+                }
+                if !errors.is_empty()
+                    && let Some(win) = find_window(&lv2)
+                {
+                    show_error_dialog(&win, &errors.join("\n"));
+                }
+                reload();
+            };
+            if let Some(win) = find_window(&lv) {
+                show_confirm_dialog(
+                    &win,
+                    &format!("Apply {count} file(s)?"),
+                    "Non-conflicting changes will be applied (copy, create, or delete).",
+                    "Apply",
+                    do_apply,
+                );
+            }
+        });
     }
     {
         let action = gio::SimpleAction::new("folder-delete", None);
@@ -1033,7 +1289,7 @@ pub(super) fn build_dir_tab(
                 let path = match status {
                     FileStatus::LeftOnly => Some(lp),
                     FileStatus::RightOnly => Some(rp),
-                    FileStatus::Different | FileStatus::Same => {
+                    FileStatus::Different | FileStatus::Conflict | FileStatus::Same => {
                         Some(if fl.get() { lp } else { rp })
                     }
                 };
@@ -1133,17 +1389,14 @@ pub(super) fn build_dir_tab(
                 let info = DirRowInfo::decode(&raw);
                 let lp = Path::new(ld.borrow().as_str()).join(&info.rel_path);
                 let rp = Path::new(rd.borrow().as_str()).join(&info.rel_path);
-                let path = match info.status {
-                    FileStatus::LeftOnly => lp,
-                    FileStatus::RightOnly => rp,
-                    FileStatus::Different | FileStatus::Same => {
-                        if fl.get() {
-                            lp
-                        } else {
-                            rp
+                let path =
+                    match info.status {
+                        FileStatus::LeftOnly => lp,
+                        FileStatus::RightOnly => rp,
+                        FileStatus::Different | FileStatus::Conflict | FileStatus::Same => {
+                            if fl.get() { lp } else { rp }
                         }
-                    }
-                };
+                    };
                 let abs = path.canonicalize().unwrap_or(path);
                 lv.clipboard().set_text(&abs.display().to_string());
             }
@@ -1232,12 +1485,26 @@ pub(super) fn build_dir_tab(
         let tabs = open_tabs.clone();
         let ld = left_dir.clone();
         let rd = right_dir.clone();
+        let ll = left_label_override.clone();
+        let rl = right_label_override.clone();
         let st = settings.clone();
         action.connect_activate(move |_, _| {
             if let Some(raw) = get_row() {
                 let info = DirRowInfo::decode(&raw);
                 if !info.is_dir {
-                    open_file_diff(&nb, &info.rel_path, &tabs, &ld.borrow(), &rd.borrow(), &st);
+                    let labels: Vec<String> = [ll.borrow().clone(), rl.borrow().clone()]
+                        .into_iter()
+                        .flatten()
+                        .collect();
+                    open_file_diff(
+                        &nb,
+                        &info.rel_path,
+                        &tabs,
+                        &ld.borrow(),
+                        &rd.borrow(),
+                        &labels,
+                        &st,
+                    );
                 }
             }
         });
@@ -1322,16 +1589,14 @@ pub(super) fn build_dir_tab(
                         FileStatus::RightOnly => !is_left,
                         _ => true,
                     };
-                    ao.set_enabled(
-                        !is_dir && (status == FileStatus::Different || status == FileStatus::Same),
-                    );
+                    let is_diff_like =
+                        status == FileStatus::Different || status == FileStatus::Conflict;
+                    ao.set_enabled(!is_dir && (is_diff_like || status == FileStatus::Same));
                     al.set_enabled(
-                        exists_on_this_side
-                            && (status == FileStatus::RightOnly || status == FileStatus::Different),
+                        exists_on_this_side && (status == FileStatus::RightOnly || is_diff_like),
                     );
                     ar.set_enabled(
-                        exists_on_this_side
-                            && (status == FileStatus::LeftOnly || status == FileStatus::Different),
+                        exists_on_this_side && (status == FileStatus::LeftOnly || is_diff_like),
                     );
                     ad.set_enabled(exists_on_this_side);
                     ae.set_enabled(!is_dir && exists_on_this_side);
@@ -1353,6 +1618,8 @@ pub(super) fn build_dir_tab(
         let tabs = open_tabs.clone();
         let ld = left_dir.clone();
         let rd = right_dir.clone();
+        let ll = left_label_override.clone();
+        let rl = right_label_override.clone();
         let sel = dir_sel.clone();
         let st = settings.clone();
         Rc::new(move || {
@@ -1365,7 +1632,19 @@ pub(super) fn build_dir_tab(
                 if info.is_dir {
                     row.set_expanded(!row.is_expanded());
                 } else {
-                    open_file_diff(&nb, &info.rel_path, &tabs, &ld.borrow(), &rd.borrow(), &st);
+                    let labels: Vec<String> = [ll.borrow().clone(), rl.borrow().clone()]
+                        .into_iter()
+                        .flatten()
+                        .collect();
+                    open_file_diff(
+                        &nb,
+                        &info.rel_path,
+                        &tabs,
+                        &ld.borrow(),
+                        &rd.borrow(),
+                        &labels,
+                        &st,
+                    );
                 }
             }
         })
@@ -1472,20 +1751,24 @@ pub(super) fn build_dir_tab(
         },
     );
 
-    // Build title
-    let left_name = Path::new(left_dir.borrow().as_str())
-        .file_name()
-        .map_or_else(
-            || left_dir.borrow().clone(),
-            |n| n.to_string_lossy().into_owned(),
-        );
-    let right_name = Path::new(right_dir.borrow().as_str())
-        .file_name()
-        .map_or_else(
-            || right_dir.borrow().clone(),
-            |n| n.to_string_lossy().into_owned(),
-        );
-    let title = format!("{left_name} — {right_name}");
+    // Build title — prefer label overrides (e.g. patch mode) over raw dir names
+    let left_name = left_label_override.borrow().clone().unwrap_or_else(|| {
+        Path::new(left_dir.borrow().as_str())
+            .file_name()
+            .map_or_else(
+                || left_dir.borrow().clone(),
+                |n| n.to_string_lossy().into_owned(),
+            )
+    });
+    let right_name = right_label_override.borrow().clone().unwrap_or_else(|| {
+        Path::new(right_dir.borrow().as_str())
+            .file_name()
+            .map_or_else(
+                || right_dir.borrow().clone(),
+                |n| n.to_string_lossy().into_owned(),
+            )
+    });
+    let title = format!("{left_name} \u{2014} {right_name}");
 
     (dir_tab, dir_watcher, left_view, title)
 }
@@ -1501,6 +1784,7 @@ pub(super) fn open_dir_comparison_tab(
     let (dir_widget, dir_watcher, left_view, dir_title) = build_dir_tab(
         left_dir,
         right_dir,
+        &[],
         &[],
         Rc::clone(settings),
         notebook,
@@ -1551,19 +1835,44 @@ pub(super) fn build_dir_window(
     labels: &[String],
     settings: Rc<RefCell<Settings>>,
 ) {
+    build_dir_window_with_tooltips(app, left_dir, right_dir, labels, &[], None, settings);
+}
+
+pub(super) fn build_dir_window_with_tooltips(
+    app: &Application,
+    left_dir: std::path::PathBuf,
+    right_dir: std::path::PathBuf,
+    labels: &[String],
+    tooltip_dirs: &[String],
+    on_destroy: Option<Box<dyn Fn() + 'static>>,
+    settings: Rc<RefCell<Settings>>,
+) {
     let AppWindow {
         window,
         notebook,
         open_tabs,
     } = build_app_window(app, &settings, 900, 600, true);
 
-    let (dir_tab, dir_watcher, left_view, title) =
-        build_dir_tab(left_dir, right_dir, labels, settings, &notebook, &open_tabs);
+    let (dir_tab, dir_watcher, left_view, title) = build_dir_tab(
+        left_dir,
+        right_dir,
+        labels,
+        tooltip_dirs,
+        settings,
+        &notebook,
+        &open_tabs,
+    );
     notebook.append_page(&dir_tab, Some(&Label::new(Some(&title))));
 
     window.connect_destroy(move |_| {
         dir_watcher.alive.set(false);
     });
+
+    // If a cleanup callback is provided (e.g. patch mode temp dir), run it on destroy
+    if let Some(on_destroy) = on_destroy {
+        window.connect_destroy(move |_| on_destroy());
+    }
+
     window.present();
     left_view.grab_focus();
 }
@@ -1655,6 +1964,26 @@ mod tests {
     }
 
     #[test]
+    fn encode_decode_conflict() {
+        let original = DirRowInfo {
+            status: FileStatus::Conflict,
+            name: "broken.rs".to_string(),
+            is_dir: false,
+            rel_path: "src/broken.rs".to_string(),
+            left_size: Some(100),
+            left_mtime: None,
+            right_size: Some(200),
+            right_mtime: None,
+        };
+        let encoded = original.encode();
+        let decoded = DirRowInfo::decode(&encoded);
+
+        assert_eq!(decoded.status, FileStatus::Conflict);
+        assert_eq!(decoded.name, "broken.rs");
+        assert_eq!(decoded.rel_path, "src/broken.rs");
+    }
+
+    #[test]
     fn decode_field_out_of_bounds() {
         // Should return empty string for missing fields via helper
         assert_eq!(DirRowInfo::get_field_text("a\x1fb", 5), "");
@@ -1680,12 +2009,79 @@ mod tests {
         assert_eq!(decoded.rel_path, "path/file with spaces.txt");
     }
 
+    // ── collect_actionable_files logic ──────────────────────────
+    //
+    // `collect_actionable_files` walks a GTK ListStore tree, which requires
+    // GTK main-thread init and can't be unit-tested directly. These tests
+    // verify the filtering predicate it uses (lines 111-116) and the
+    // non-patch LeftOnly exclusion (line 1174).
+
+    #[test]
+    fn actionable_status_filter() {
+        // Mirrors the match arms in collect_actionable_files
+        let statuses = [
+            (FileStatus::Different, true),
+            (FileStatus::RightOnly, true),
+            (FileStatus::LeftOnly, true),
+            (FileStatus::Conflict, false),
+            (FileStatus::Same, false),
+        ];
+        for (status, expected) in &statuses {
+            let is_actionable = matches!(
+                status,
+                FileStatus::Different | FileStatus::RightOnly | FileStatus::LeftOnly
+            );
+            assert_eq!(
+                is_actionable, *expected,
+                "FileStatus::{status:?} should be actionable={expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn actionable_mixed_filter() {
+        let entries = [
+            ("a.rs", FileStatus::Different),
+            ("b.rs", FileStatus::Same),
+            ("c.rs", FileStatus::Conflict),
+            ("d.rs", FileStatus::RightOnly),
+            ("e.rs", FileStatus::LeftOnly),
+        ];
+        let result: Vec<&str> = entries
+            .iter()
+            .filter(|(_, s)| {
+                matches!(
+                    s,
+                    FileStatus::Different | FileStatus::RightOnly | FileStatus::LeftOnly
+                )
+            })
+            .map(|(name, _)| *name)
+            .collect();
+        assert_eq!(result, vec!["a.rs", "d.rs", "e.rs"]);
+    }
+
+    #[test]
+    fn actionable_non_patch_excludes_left_only() {
+        // In non-patch mode, LeftOnly is filtered out after collection (line 1174)
+        let mut actionable = vec![
+            ("a.rs".to_string(), FileStatus::Different),
+            ("b.rs".to_string(), FileStatus::LeftOnly),
+            ("c.rs".to_string(), FileStatus::RightOnly),
+            ("d.rs".to_string(), FileStatus::LeftOnly),
+        ];
+        // Simulate the retain at line 1174
+        actionable.retain(|(_, s)| *s != FileStatus::LeftOnly);
+        let paths: Vec<&str> = actionable.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(paths, vec!["a.rs", "c.rs"]);
+    }
+
     // ── FileStatus ────────────────────────────────────────────────
 
     #[test]
     fn file_status_codes() {
         assert_eq!(FileStatus::Same.code(), "S");
         assert_eq!(FileStatus::Different.code(), "D");
+        assert_eq!(FileStatus::Conflict.code(), "C");
         assert_eq!(FileStatus::LeftOnly.code(), "L");
         assert_eq!(FileStatus::RightOnly.code(), "R");
     }

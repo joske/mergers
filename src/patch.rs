@@ -1,0 +1,1710 @@
+use std::fmt;
+
+#[derive(Debug, Clone)]
+pub struct Hunk {
+    pub old_start: usize,
+    pub old_count: usize,
+    pub new_start: usize,
+    pub new_count: usize,
+    pub lines: Vec<HunkLine>,
+}
+
+#[derive(Debug, Clone)]
+pub enum HunkLine {
+    Context(String),
+    Add(String),
+    Remove(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PatchKind {
+    Modified,
+    Added,
+    Deleted,
+}
+
+#[derive(Debug, Clone)]
+pub struct FilePatch {
+    pub original_path: String,
+    pub kind: PatchKind,
+    pub hunks: Vec<Hunk>,
+}
+
+#[derive(Debug)]
+pub struct PatchError(pub String);
+
+impl fmt::Display for PatchError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for PatchError {}
+
+/// Returns true if the input looks like a context diff.
+///
+/// Requires both a `***************` separator and a file header pair
+/// (`*** <path>` followed by `--- <path>`) to avoid mis-detecting unified
+/// diffs or non-diff text that happen to contain that separator line.
+fn is_context_diff(input: &str) -> bool {
+    let mut has_separator = false;
+    let mut has_header = false;
+    let lines: Vec<&str> = input.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        if *line == "***************" {
+            has_separator = true;
+        }
+        if line.starts_with("*** ")
+            && !line.contains("****")
+            && i + 1 < lines.len()
+            && lines[i + 1].starts_with("--- ")
+        {
+            has_header = true;
+        }
+        if has_separator && has_header {
+            return true;
+        }
+    }
+    false
+}
+
+/// Returns true if the content looks like a patch file (unified or context diff).
+///
+/// Scans the first 50 lines for a unified diff signature (`--- ` immediately followed
+/// by `+++ `) or a context diff separator (`***************`).
+#[must_use]
+pub fn is_patch_file(content: &str) -> bool {
+    let lines: Vec<&str> = content.lines().take(50).collect();
+    let mut has_ctx_sep = false;
+    let mut has_ctx_header = false;
+    for (i, line) in lines.iter().enumerate() {
+        // Unified: --- immediately followed by +++
+        if line.starts_with("--- ") && i + 1 < lines.len() && lines[i + 1].starts_with("+++ ") {
+            return true;
+        }
+        // Context: require both separator and file header pair
+        if *line == "***************" {
+            has_ctx_sep = true;
+        }
+        if line.starts_with("*** ")
+            && !line.contains("****")
+            && i + 1 < lines.len()
+            && lines[i + 1].starts_with("--- ")
+        {
+            has_ctx_header = true;
+        }
+    }
+    has_ctx_sep && has_ctx_header
+}
+
+/// Parse a unified or context diff into a list of per-file patches.
+///
+/// # Errors
+///
+/// Returns `PatchError` if the input is empty or contains an unsupported diff format.
+pub fn parse_patch(input: &str) -> Result<Vec<FilePatch>, PatchError> {
+    if input.trim().is_empty() {
+        return Err(PatchError("empty patch input".to_string()));
+    }
+
+    if is_context_diff(input) {
+        let patches = parse_context_diff(input)?;
+        if patches.is_empty() {
+            return Err(PatchError(
+                "no file headers or hunks found in context diff input".to_string(),
+            ));
+        }
+        return Ok(patches);
+    }
+
+    let patches = parse_unified_diff(input)?;
+    if patches.is_empty() {
+        return Err(PatchError(
+            "no file headers or hunks found in patch input".to_string(),
+        ));
+    }
+    Ok(patches)
+}
+
+/// Strip an optional `a/` or `b/` prefix from a path.
+fn strip_ab_prefix(path: &str) -> &str {
+    path.strip_prefix("a/")
+        .or_else(|| path.strip_prefix("b/"))
+        .unwrap_or(path)
+}
+
+/// Sanitize a path from a patch file: strip leading separators, reject `..` traversal,
+/// and normalize backslashes to forward slashes for cross-platform consistency.
+///
+/// Leading `/` and `\` characters are stripped to make absolute paths relative to the
+/// base directory (similar to `git apply -p0`). Returns `None` if the resulting path
+/// is empty, contains `..` components, or starts with a Windows drive letter.
+#[must_use]
+pub fn sanitize_patch_path(path: &str) -> Option<String> {
+    // Strip leading slashes (Unix absolute) and backslashes (Windows absolute)
+    let path = path.trim_start_matches(['/', '\\']);
+    if path.is_empty() {
+        return None;
+    }
+    // Reject Windows drive letters (e.g. "C:", "D:")
+    if path.len() >= 2 && path.as_bytes()[0].is_ascii_alphabetic() && path.as_bytes()[1] == b':' {
+        return None;
+    }
+    // Reject `..` as a component with either separator
+    if path.split(['/', '\\']).any(|c| c == "..") {
+        return None;
+    }
+    // Normalize backslashes to forward slashes so Windows-produced patches
+    // create the correct directory structure on Unix
+    Some(path.replace('\\', "/"))
+}
+
+/// Strip a trailing tab-separated timestamp from a path (e.g. `file.txt\t2024-01-01 ...`).
+fn strip_timestamp(path: &str) -> &str {
+    match path.find('\t') {
+        Some(pos) => &path[..pos],
+        None => path,
+    }
+}
+
+/// Parse `@@ -old_start[,old_count] +new_start[,new_count] @@` into `(old_start, old_count,
+/// new_start, new_count)`.
+fn parse_hunk_header(line: &str) -> Result<(usize, usize, usize, usize), PatchError> {
+    let line = line.trim();
+    let rest = line
+        .strip_prefix("@@")
+        .ok_or_else(|| PatchError(format!("invalid hunk header: {line}")))?;
+    // Find the closing @@
+    let rest = match rest.find("@@") {
+        Some(pos) => &rest[..pos],
+        None => return Err(PatchError(format!("invalid hunk header: {line}"))),
+    };
+    let rest = rest.trim();
+
+    let parts: Vec<&str> = rest.split_whitespace().collect();
+    if parts.len() != 2 {
+        return Err(PatchError(format!("invalid hunk header: {line}")));
+    }
+
+    let old = parts[0]
+        .strip_prefix('-')
+        .ok_or_else(|| PatchError(format!("invalid hunk header old range: {line}")))?;
+    let new = parts[1]
+        .strip_prefix('+')
+        .ok_or_else(|| PatchError(format!("invalid hunk header new range: {line}")))?;
+
+    let (old_start, old_count) = parse_range(old, line)?;
+    let (new_start, new_count) = parse_range(new, line)?;
+
+    Ok((old_start, old_count, new_start, new_count))
+}
+
+fn parse_range(range: &str, line: &str) -> Result<(usize, usize), PatchError> {
+    if let Some((start, count)) = range.split_once(',') {
+        let start = start
+            .parse::<usize>()
+            .map_err(|_| PatchError(format!("invalid range number in: {line}")))?;
+        let count = count
+            .parse::<usize>()
+            .map_err(|_| PatchError(format!("invalid range number in: {line}")))?;
+        Ok((start, count))
+    } else {
+        let start = range
+            .parse::<usize>()
+            .map_err(|_| PatchError(format!("invalid range number in: {line}")))?;
+        Ok((start, 1))
+    }
+}
+
+/// Parse a context-range header like `*** 1,4 ****` or `--- 5 ----` into `(start, count)`.
+/// Context diff ranges are inclusive (start through end), so count = end - start + 1.
+/// A single number means one line, so count = 1.
+fn parse_context_range(line: &str) -> Result<(usize, usize), PatchError> {
+    // Extract the numeric part between the prefix stars/dashes and the trailing stars/dashes.
+    let inner = line
+        .trim_start_matches(['*', '-', ' '])
+        .trim_end_matches(['*', '-', ' ']);
+    if inner.is_empty() {
+        // Empty section (e.g. pure addition with `*** 0 ****`)
+        return Ok((0, 0));
+    }
+    if let Some((start_s, end_s)) = inner.split_once(',') {
+        let start = start_s
+            .trim()
+            .parse::<usize>()
+            .map_err(|_| PatchError(format!("invalid context range: {line}")))?;
+        let end = end_s
+            .trim()
+            .parse::<usize>()
+            .map_err(|_| PatchError(format!("invalid context range: {line}")))?;
+        if end < start {
+            return Err(PatchError(format!(
+                "invalid context range (end < start): {line}"
+            )));
+        }
+        Ok((start, end - start + 1))
+    } else {
+        let start = inner
+            .trim()
+            .parse::<usize>()
+            .map_err(|_| PatchError(format!("invalid context range: {line}")))?;
+        if start == 0 {
+            Ok((0, 0))
+        } else {
+            Ok((start, 1))
+        }
+    }
+}
+
+fn parse_context_diff(input: &str) -> Result<Vec<FilePatch>, PatchError> {
+    let lines: Vec<&str> = input.lines().collect();
+    let mut patches = Vec::new();
+    let mut i = 0;
+
+    while i < lines.len() {
+        // Look for file header: `*** old_file` followed by `--- new_file`.
+        if lines[i].starts_with("*** ") && !lines[i].contains("****") {
+            if i + 1 >= lines.len() || !lines[i + 1].starts_with("--- ") {
+                i += 1;
+                continue;
+            }
+            // Check this is a file header, not a hunk range line.
+            // Hunk range lines look like `*** 1,4 ****` — they end with `****`.
+            let old_raw = lines[i][4..].trim();
+            let old_path = strip_ab_prefix(strip_timestamp(old_raw));
+            let new_raw = lines[i + 1][4..].trim();
+            let new_path = strip_ab_prefix(strip_timestamp(new_raw));
+
+            let kind = if old_path == "/dev/null" || old_path == "dev/null" {
+                PatchKind::Added
+            } else if new_path == "/dev/null" || new_path == "dev/null" {
+                PatchKind::Deleted
+            } else {
+                PatchKind::Modified
+            };
+
+            let canonical_path = if kind == PatchKind::Added {
+                new_path
+            } else {
+                old_path
+            };
+            i += 2;
+
+            let mut hunks = Vec::new();
+
+            // Parse hunks separated by `***************`.
+            while i < lines.len() && lines[i] == "***************" {
+                i += 1;
+                if i >= lines.len() {
+                    break;
+                }
+
+                // Old section: `*** start,end ****`
+                if !lines[i].starts_with("*** ") {
+                    return Err(PatchError(format!(
+                        "expected old section header, got: {}",
+                        lines[i]
+                    )));
+                }
+                let (old_start, old_count) = parse_context_range(lines[i])?;
+                i += 1;
+
+                // Collect old section lines until we hit `--- start,end ----`.
+                let mut old_lines: Vec<&str> = Vec::new();
+                while i < lines.len() && !lines[i].starts_with("--- ") {
+                    old_lines.push(lines[i]);
+                    i += 1;
+                }
+
+                // New section: `--- start,end ----`
+                if i >= lines.len() || !lines[i].starts_with("--- ") {
+                    return Err(PatchError(
+                        "expected new section header in context hunk".to_string(),
+                    ));
+                }
+                let (new_start, new_count) = parse_context_range(lines[i])?;
+                i += 1;
+
+                // Collect new section lines until next hunk separator or file header.
+                let mut new_lines: Vec<&str> = Vec::new();
+                while i < lines.len()
+                    && lines[i] != "***************"
+                    && !(lines[i].starts_with("*** ")
+                        && !lines[i].contains("****")
+                        && i + 1 < lines.len()
+                        && lines[i + 1].starts_with("--- "))
+                {
+                    new_lines.push(lines[i]);
+                    i += 1;
+                }
+
+                // Merge old and new sections into HunkLine list.
+                let hunk_lines = merge_context_sections(&old_lines, &new_lines)?;
+
+                hunks.push(Hunk {
+                    old_start,
+                    old_count,
+                    new_start,
+                    new_count,
+                    lines: hunk_lines,
+                });
+            }
+
+            patches.push(FilePatch {
+                original_path: canonical_path.to_string(),
+                kind,
+                hunks,
+            });
+        } else {
+            i += 1;
+        }
+    }
+
+    Ok(patches)
+}
+
+/// Classify a context diff line by its two-character prefix.
+enum CtxLineKind {
+    Context,
+    Changed,
+    Added,
+    Removed,
+}
+
+fn classify_context_line(line: &str) -> Option<(CtxLineKind, &str)> {
+    if let Some(rest) = line.strip_prefix("  ") {
+        Some((CtxLineKind::Context, rest))
+    } else if let Some(rest) = line.strip_prefix("! ") {
+        Some((CtxLineKind::Changed, rest))
+    } else if let Some(rest) = line.strip_prefix("+ ") {
+        Some((CtxLineKind::Added, rest))
+    } else if let Some(rest) = line.strip_prefix("- ") {
+        Some((CtxLineKind::Removed, rest))
+    } else {
+        None
+    }
+}
+
+/// Merge old-section and new-section lines into a unified `HunkLine` list.
+///
+/// Context lines appear in both sections (we take them from whichever has them).
+/// `!` (changed) lines in the old section become `Remove`, in the new section become `Add`.
+/// `-` lines in the old section become `Remove`, `+` lines in the new section become `Add`.
+fn merge_context_sections(
+    old_lines: &[&str],
+    new_lines: &[&str],
+) -> Result<Vec<HunkLine>, PatchError> {
+    let mut result = Vec::new();
+    let mut oi = 0;
+    let mut ni = 0;
+
+    while oi < old_lines.len() || ni < new_lines.len() {
+        // If old section is exhausted, drain new section.
+        if oi >= old_lines.len() {
+            while ni < new_lines.len() {
+                let (kind, text) = classify_context_line(new_lines[ni])
+                    .ok_or_else(|| PatchError(format!("bad context line: {}", new_lines[ni])))?;
+                match kind {
+                    CtxLineKind::Context => result.push(HunkLine::Context(text.to_string())),
+                    CtxLineKind::Added | CtxLineKind::Changed => {
+                        result.push(HunkLine::Add(text.to_string()));
+                    }
+                    CtxLineKind::Removed => result.push(HunkLine::Remove(text.to_string())),
+                }
+                ni += 1;
+            }
+            break;
+        }
+        // If new section is exhausted, drain old section.
+        if ni >= new_lines.len() {
+            while oi < old_lines.len() {
+                let (kind, text) = classify_context_line(old_lines[oi])
+                    .ok_or_else(|| PatchError(format!("bad context line: {}", old_lines[oi])))?;
+                match kind {
+                    CtxLineKind::Context => result.push(HunkLine::Context(text.to_string())),
+                    CtxLineKind::Removed | CtxLineKind::Changed => {
+                        result.push(HunkLine::Remove(text.to_string()));
+                    }
+                    CtxLineKind::Added => result.push(HunkLine::Add(text.to_string())),
+                }
+                oi += 1;
+            }
+            break;
+        }
+
+        let old_class = classify_context_line(old_lines[oi]);
+        let new_class = classify_context_line(new_lines[ni]);
+
+        match (&old_class, &new_class) {
+            // Changed lines: old `!` become Remove, new `!` become Add.
+            (Some((CtxLineKind::Changed, _)), _) => {
+                // Emit all consecutive old `!` lines as Remove.
+                while oi < old_lines.len() {
+                    if let Some((CtxLineKind::Changed, text)) = classify_context_line(old_lines[oi])
+                    {
+                        result.push(HunkLine::Remove(text.to_string()));
+                        oi += 1;
+                    } else {
+                        break;
+                    }
+                }
+                // Emit all consecutive new `!` lines as Add.
+                while ni < new_lines.len() {
+                    if let Some((CtxLineKind::Changed, text)) = classify_context_line(new_lines[ni])
+                    {
+                        result.push(HunkLine::Add(text.to_string()));
+                        ni += 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            // Old section has removed lines.
+            (Some((CtxLineKind::Removed, text)), _) => {
+                result.push(HunkLine::Remove(text.to_string()));
+                oi += 1;
+            }
+            // New section has added lines.
+            (_, Some((CtxLineKind::Added, text))) => {
+                result.push(HunkLine::Add(text.to_string()));
+                ni += 1;
+            }
+            // Context in old, something else in new — emit old context and advance both.
+            (Some((CtxLineKind::Context, text)), _) => {
+                result.push(HunkLine::Context(text.to_string()));
+                oi += 1;
+                ni += 1;
+            }
+            _ => {
+                return Err(PatchError(format!(
+                    "unexpected context diff line combination: {:?} / {:?}",
+                    old_lines.get(oi),
+                    new_lines.get(ni)
+                )));
+            }
+        }
+    }
+
+    Ok(result)
+}
+
+/// Apply a list of hunks to the original file content, producing the patched text.
+///
+/// # Errors
+///
+/// Returns `PatchError` if a hunk references lines beyond the original content or if
+/// context/remove lines don't match the original.
+pub fn apply_hunks(original: &str, hunks: &[Hunk]) -> Result<String, PatchError> {
+    let orig_lines: Vec<&str> = if original.is_empty() {
+        Vec::new()
+    } else {
+        original.lines().collect()
+    };
+    let mut output = Vec::new();
+    // 0-based position in orig_lines
+    let mut pos: usize = 0;
+
+    for hunk in hunks {
+        // old_start is 1-based; convert to 0-based index
+        let hunk_start = if hunk.old_start == 0 {
+            0
+        } else {
+            hunk.old_start - 1
+        };
+
+        if hunk_start < pos {
+            return Err(PatchError(format!(
+                "overlapping hunks: expected position >= {}, but hunk starts at {}",
+                pos + 1,
+                hunk.old_start
+            )));
+        }
+
+        // Copy unchanged lines before this hunk
+        if hunk_start > orig_lines.len() {
+            return Err(PatchError(format!(
+                "hunk references line {} but original has only {} lines",
+                hunk.old_start,
+                orig_lines.len()
+            )));
+        }
+        for line in &orig_lines[pos..hunk_start] {
+            output.push((*line).to_string());
+        }
+        pos = hunk_start;
+
+        for hl in &hunk.lines {
+            match hl {
+                HunkLine::Context(text) | HunkLine::Remove(text) => {
+                    if pos >= orig_lines.len() {
+                        return Err(PatchError(format!(
+                            "hunk references line {} but original has only {} lines",
+                            pos + 1,
+                            orig_lines.len()
+                        )));
+                    }
+                    if orig_lines[pos] != text.as_str() {
+                        return Err(PatchError(format!(
+                            "mismatch at line {}: expected {:?}, got {:?}",
+                            pos + 1,
+                            text,
+                            orig_lines[pos]
+                        )));
+                    }
+                    if matches!(hl, HunkLine::Context(_)) {
+                        output.push(text.clone());
+                    }
+                    pos += 1;
+                }
+                HunkLine::Add(text) => {
+                    output.push(text.clone());
+                }
+            }
+        }
+
+        // Validate consumed old/new line counts match hunk header
+        let actual_old = hunk
+            .lines
+            .iter()
+            .filter(|l| matches!(l, HunkLine::Context(_) | HunkLine::Remove(_)))
+            .count();
+        let actual_new = hunk
+            .lines
+            .iter()
+            .filter(|l| matches!(l, HunkLine::Context(_) | HunkLine::Add(_)))
+            .count();
+        if actual_old != hunk.old_count {
+            return Err(PatchError(format!(
+                "hunk at line {}: expected {} old lines but found {}",
+                hunk.old_start, hunk.old_count, actual_old
+            )));
+        }
+        if actual_new != hunk.new_count {
+            return Err(PatchError(format!(
+                "hunk at line {}: expected {} new lines but found {}",
+                hunk.new_start, hunk.new_count, actual_new
+            )));
+        }
+    }
+
+    // Copy remaining original lines after the last hunk
+    for line in &orig_lines[pos..] {
+        output.push((*line).to_string());
+    }
+
+    let mut result = output.join("\n");
+    // Preserve trailing newline if the original had one, but not for empty output
+    if !result.is_empty() && original.ends_with('\n') && !result.ends_with('\n') {
+        result.push('\n');
+    }
+    Ok(result)
+}
+
+/// Try to apply each hunk individually. Hunks that apply cleanly are applied;
+/// hunks that fail are inserted as conflict markers at the expected location.
+/// Returns the result text — never fails.
+#[must_use]
+pub fn apply_hunks_best_effort(original: &str, hunks: &[Hunk]) -> String {
+    let orig_lines: Vec<&str> = if original.is_empty() {
+        Vec::new()
+    } else {
+        original.lines().collect()
+    };
+    let mut output: Vec<String> = Vec::new();
+    let mut pos: usize = 0;
+
+    for hunk in hunks {
+        let hunk_start = if hunk.old_start == 0 {
+            0
+        } else {
+            hunk.old_start.saturating_sub(1)
+        };
+
+        // If hunk starts before our position (overlap) or beyond file end,
+        // emit it as a rejected hunk at current position.
+        if hunk_start < pos || hunk_start > orig_lines.len() {
+            emit_conflict(&mut output, &[], &hunk.lines);
+            continue;
+        }
+
+        // Copy unchanged lines before this hunk
+        for line in &orig_lines[pos..hunk_start] {
+            output.push((*line).to_string());
+        }
+        pos = hunk_start;
+
+        // Try to apply this hunk
+        if try_apply_hunk(&orig_lines, pos, hunk) {
+            // Hunk applies cleanly
+            for hl in &hunk.lines {
+                match hl {
+                    HunkLine::Context(text) => {
+                        output.push(text.clone());
+                        pos += 1;
+                    }
+                    HunkLine::Remove(_) => {
+                        pos += 1;
+                    }
+                    HunkLine::Add(text) => {
+                        output.push(text.clone());
+                    }
+                }
+            }
+        } else {
+            // Hunk fails — emit conflict markers
+            let old_count = hunk
+                .lines
+                .iter()
+                .filter(|l| matches!(l, HunkLine::Context(_) | HunkLine::Remove(_)))
+                .count();
+            let end = (pos + old_count).min(orig_lines.len());
+            let original_section: Vec<String> = orig_lines[pos..end]
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect();
+            emit_conflict(&mut output, &original_section, &hunk.lines);
+            pos = end;
+        }
+    }
+
+    // Copy remaining original lines
+    for line in &orig_lines[pos..] {
+        output.push((*line).to_string());
+    }
+
+    let mut result = output.join("\n");
+    // Preserve trailing newline if the original had one, but not for empty output
+    if !result.is_empty() && original.ends_with('\n') && !result.ends_with('\n') {
+        result.push('\n');
+    }
+    result
+}
+
+/// Check whether a hunk can be applied cleanly at the given position.
+fn try_apply_hunk(orig_lines: &[&str], mut pos: usize, hunk: &Hunk) -> bool {
+    for hl in &hunk.lines {
+        match hl {
+            HunkLine::Context(text) | HunkLine::Remove(text) => {
+                if pos >= orig_lines.len() || orig_lines[pos] != text.as_str() {
+                    return false;
+                }
+                pos += 1;
+            }
+            HunkLine::Add(_) => {}
+        }
+    }
+    true
+}
+
+/// Emit a conflict block with the original lines and the patch's intended changes.
+fn emit_conflict(output: &mut Vec<String>, original_lines: &[String], hunk_lines: &[HunkLine]) {
+    output.push("<<<<<<< original".to_string());
+    for line in original_lines {
+        output.push(line.clone());
+    }
+    output.push("=======".to_string());
+    // Show what the patch wanted: context + added lines (skip removed)
+    for hl in hunk_lines {
+        match hl {
+            HunkLine::Context(text) | HunkLine::Add(text) => {
+                output.push(text.clone());
+            }
+            HunkLine::Remove(_) => {}
+        }
+    }
+    output.push(">>>>>>> patch".to_string());
+}
+
+fn parse_unified_diff(input: &str) -> Result<Vec<FilePatch>, PatchError> {
+    let lines: Vec<&str> = input.lines().collect();
+    let mut patches = Vec::new();
+    let mut i = 0;
+
+    while i < lines.len() {
+        // Look for a --- / +++ header pair.
+        if lines[i].starts_with("--- ") && i + 1 < lines.len() && lines[i + 1].starts_with("+++ ") {
+            let old_raw = lines[i][4..].trim();
+            let old_path = strip_timestamp(strip_ab_prefix(old_raw));
+            let new_raw = lines[i + 1][4..].trim();
+            let new_path = strip_timestamp(strip_ab_prefix(new_raw));
+
+            let kind = if old_path == "/dev/null" || old_path == "dev/null" {
+                PatchKind::Added
+            } else if new_path == "/dev/null" || new_path == "dev/null" {
+                PatchKind::Deleted
+            } else {
+                PatchKind::Modified
+            };
+
+            // For added files, use the new path as canonical
+            let canonical_path = if kind == PatchKind::Added {
+                new_path
+            } else {
+                old_path
+            };
+
+            i += 2;
+
+            let mut hunks = Vec::new();
+
+            // Parse consecutive hunks.
+            while i < lines.len() && lines[i].starts_with("@@") {
+                let (old_start, old_count, new_start, new_count) = parse_hunk_header(lines[i])?;
+                i += 1;
+
+                let mut hunk_lines = Vec::new();
+
+                while i < lines.len() {
+                    let line = lines[i];
+                    if line.starts_with("--- ") || line.starts_with("@@") {
+                        break;
+                    }
+                    if line.starts_with("\\ ") {
+                        // "\ No newline at end of file" — skip.
+                        i += 1;
+                        continue;
+                    }
+                    if let Some(rest) = line.strip_prefix('+') {
+                        hunk_lines.push(HunkLine::Add(rest.to_string()));
+                    } else if let Some(rest) = line.strip_prefix('-') {
+                        hunk_lines.push(HunkLine::Remove(rest.to_string()));
+                    } else if let Some(rest) = line.strip_prefix(' ') {
+                        hunk_lines.push(HunkLine::Context(rest.to_string()));
+                    } else {
+                        // Unknown line — end of this hunk.
+                        break;
+                    }
+                    i += 1;
+                }
+
+                hunks.push(Hunk {
+                    old_start,
+                    old_count,
+                    new_start,
+                    new_count,
+                    lines: hunk_lines,
+                });
+            }
+
+            patches.push(FilePatch {
+                original_path: canonical_path.to_string(),
+                kind,
+                hunks,
+            });
+        } else {
+            i += 1;
+        }
+    }
+
+    Ok(patches)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_unified_single_file() {
+        let diff = "\
+--- a/hello.txt
++++ b/hello.txt
+@@ -1,3 +1,4 @@
+ line1
+-line2
++line2modified
++line2b
+ line3
+";
+        let patches = parse_patch(diff).unwrap();
+        assert_eq!(patches.len(), 1);
+        assert_eq!(patches[0].original_path, "hello.txt");
+        assert_eq!(patches[0].hunks.len(), 1);
+
+        let hunk = &patches[0].hunks[0];
+        assert_eq!(hunk.old_start, 1);
+        assert_eq!(hunk.old_count, 3);
+        assert_eq!(hunk.new_start, 1);
+        assert_eq!(hunk.new_count, 4);
+        assert_eq!(hunk.lines.len(), 5);
+
+        assert!(matches!(&hunk.lines[0], HunkLine::Context(s) if s == "line1"));
+        assert!(matches!(&hunk.lines[1], HunkLine::Remove(s) if s == "line2"));
+        assert!(matches!(&hunk.lines[2], HunkLine::Add(s) if s == "line2modified"));
+        assert!(matches!(&hunk.lines[3], HunkLine::Add(s) if s == "line2b"));
+        assert!(matches!(&hunk.lines[4], HunkLine::Context(s) if s == "line3"));
+    }
+
+    #[test]
+    fn parse_unified_multi_file() {
+        let diff = "\
+--- a/file1.txt
++++ b/file1.txt
+@@ -1,2 +1,2 @@
+-old
++new
+ same
+--- a/file2.txt
++++ b/file2.txt
+@@ -1 +1 @@
+-alpha
++beta
+";
+        let patches = parse_patch(diff).unwrap();
+        assert_eq!(patches.len(), 2);
+        assert_eq!(patches[0].original_path, "file1.txt");
+        assert_eq!(patches[1].original_path, "file2.txt");
+        assert_eq!(patches[0].hunks.len(), 1);
+        assert_eq!(patches[1].hunks.len(), 1);
+
+        // Second file: single-number range means count=1.
+        let hunk = &patches[1].hunks[0];
+        assert_eq!(hunk.old_start, 1);
+        assert_eq!(hunk.old_count, 1);
+        assert_eq!(hunk.new_start, 1);
+        assert_eq!(hunk.new_count, 1);
+    }
+
+    #[test]
+    fn parse_unified_no_prefix() {
+        let diff = "\
+--- hello.txt\t2024-01-01 00:00:00.000000000 +0000
++++ hello.txt\t2024-01-02 00:00:00.000000000 +0000
+@@ -1,2 +1,2 @@
+-aaa
++bbb
+ ccc
+";
+        let patches = parse_patch(diff).unwrap();
+        assert_eq!(patches.len(), 1);
+        assert_eq!(patches[0].original_path, "hello.txt");
+    }
+
+    #[test]
+    fn parse_context_single_file() {
+        let diff = "\
+*** hello.txt\t2024-01-01 00:00:00.000000000 +0000
+--- hello.txt\t2024-01-02 00:00:00.000000000 +0000
+***************
+*** 1,4 ****
+  line1
+! line2
+  line3
+  line4
+--- 1,4 ----
+  line1
+! line2modified
+  line3
+  line4
+";
+        let patches = parse_patch(diff).unwrap();
+        assert_eq!(patches.len(), 1);
+        assert_eq!(patches[0].original_path, "hello.txt");
+        assert_eq!(patches[0].hunks.len(), 1);
+
+        let hunk = &patches[0].hunks[0];
+        assert_eq!(hunk.old_start, 1);
+        assert_eq!(hunk.old_count, 4);
+        assert_eq!(hunk.new_start, 1);
+        assert_eq!(hunk.new_count, 4);
+        assert_eq!(hunk.lines.len(), 5);
+
+        assert!(matches!(&hunk.lines[0], HunkLine::Context(s) if s == "line1"));
+        assert!(matches!(&hunk.lines[1], HunkLine::Remove(s) if s == "line2"));
+        assert!(matches!(&hunk.lines[2], HunkLine::Add(s) if s == "line2modified"));
+        assert!(matches!(&hunk.lines[3], HunkLine::Context(s) if s == "line3"));
+        assert!(matches!(&hunk.lines[4], HunkLine::Context(s) if s == "line4"));
+    }
+
+    #[test]
+    fn parse_context_add_only() {
+        let diff = "\
+*** hello.txt\t2024-01-01 00:00:00.000000000 +0000
+--- hello.txt\t2024-01-02 00:00:00.000000000 +0000
+***************
+*** 1,2 ****
+--- 1,4 ----
+  line1
++ added1
++ added2
+  line2
+";
+        let patches = parse_patch(diff).unwrap();
+        assert_eq!(patches.len(), 1);
+
+        let hunk = &patches[0].hunks[0];
+        assert_eq!(hunk.old_start, 1);
+        assert_eq!(hunk.old_count, 2);
+        assert_eq!(hunk.new_start, 1);
+        assert_eq!(hunk.new_count, 4);
+        assert_eq!(hunk.lines.len(), 4);
+
+        assert!(matches!(&hunk.lines[0], HunkLine::Context(s) if s == "line1"));
+        assert!(matches!(&hunk.lines[1], HunkLine::Add(s) if s == "added1"));
+        assert!(matches!(&hunk.lines[2], HunkLine::Add(s) if s == "added2"));
+        assert!(matches!(&hunk.lines[3], HunkLine::Context(s) if s == "line2"));
+    }
+
+    #[test]
+    fn parse_patch_empty_input() {
+        let result = parse_patch("");
+        assert!(result.is_err());
+        let result = parse_patch("   \n  \n");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn apply_hunks_simple_replace() {
+        let original = "line1\nline2\nline3";
+        let hunks = vec![Hunk {
+            old_start: 2,
+            old_count: 1,
+            new_start: 2,
+            new_count: 1,
+            lines: vec![
+                HunkLine::Remove("line2".to_string()),
+                HunkLine::Add("replaced".to_string()),
+            ],
+        }];
+        let result = apply_hunks(original, &hunks).unwrap();
+        assert_eq!(result, "line1\nreplaced\nline3");
+    }
+
+    #[test]
+    fn apply_hunks_addition() {
+        let original = "line1\nline2\nline3";
+        let hunks = vec![Hunk {
+            old_start: 2,
+            old_count: 1,
+            new_start: 2,
+            new_count: 2,
+            lines: vec![
+                HunkLine::Context("line2".to_string()),
+                HunkLine::Add("inserted".to_string()),
+            ],
+        }];
+        let result = apply_hunks(original, &hunks).unwrap();
+        assert_eq!(result, "line1\nline2\ninserted\nline3");
+    }
+
+    #[test]
+    fn apply_hunks_deletion() {
+        let original = "line1\nline2\nline3";
+        let hunks = vec![Hunk {
+            old_start: 2,
+            old_count: 1,
+            new_start: 2,
+            new_count: 0,
+            lines: vec![HunkLine::Remove("line2".to_string())],
+        }];
+        let result = apply_hunks(original, &hunks).unwrap();
+        assert_eq!(result, "line1\nline3");
+    }
+
+    #[test]
+    fn apply_hunks_multiple() {
+        let original = "a\nb\nc\nd\ne\nf";
+        let hunks = vec![
+            Hunk {
+                old_start: 2,
+                old_count: 1,
+                new_start: 2,
+                new_count: 1,
+                lines: vec![
+                    HunkLine::Remove("b".to_string()),
+                    HunkLine::Add("B".to_string()),
+                ],
+            },
+            Hunk {
+                old_start: 5,
+                old_count: 1,
+                new_start: 5,
+                new_count: 1,
+                lines: vec![
+                    HunkLine::Remove("e".to_string()),
+                    HunkLine::Add("E".to_string()),
+                ],
+            },
+        ];
+        let result = apply_hunks(original, &hunks).unwrap();
+        assert_eq!(result, "a\nB\nc\nd\nE\nf");
+    }
+
+    #[test]
+    fn apply_hunks_to_empty_original() {
+        let original = "";
+        let hunks = vec![Hunk {
+            old_start: 0,
+            old_count: 0,
+            new_start: 1,
+            new_count: 2,
+            lines: vec![
+                HunkLine::Add("new1".to_string()),
+                HunkLine::Add("new2".to_string()),
+            ],
+        }];
+        let result = apply_hunks(original, &hunks).unwrap();
+        assert_eq!(result, "new1\nnew2");
+    }
+
+    #[test]
+    fn detect_unified_patch() {
+        let content = "\
+diff --git a/file.txt b/file.txt
+--- a/file.txt
++++ b/file.txt
+@@ -1,3 +1,3 @@
+ line1
+-line2
++line2modified
+ line3
+";
+        assert!(is_patch_file(content));
+    }
+
+    #[test]
+    fn detect_context_patch() {
+        let content = "\
+*** file.txt\t2024-01-01 00:00:00.000000000 +0000
+--- file.txt\t2024-01-02 00:00:00.000000000 +0000
+***************
+*** 1,3 ****
+  line1
+! line2
+  line3
+--- 1,3 ----
+  line1
+! line2modified
+  line3
+";
+        assert!(is_patch_file(content));
+    }
+
+    #[test]
+    fn detect_not_a_patch() {
+        let content = "\
+fn main() {
+    println!(\"Hello, world!\");
+}
+";
+        assert!(!is_patch_file(content));
+    }
+
+    #[test]
+    fn detect_empty_not_a_patch() {
+        assert!(!is_patch_file(""));
+    }
+
+    #[test]
+    fn round_trip_unified_parse_apply() {
+        let original = "line1\nline2\nline3\nline4\nline5";
+        let diff = "\
+--- a/test.txt
++++ b/test.txt
+@@ -1,5 +1,6 @@
+ line1
+-line2
++line2modified
+ line3
+ line4
++line4b
+ line5
+";
+        let patches = parse_patch(diff).unwrap();
+        assert_eq!(patches.len(), 1);
+        let result = apply_hunks(original, &patches[0].hunks).unwrap();
+        assert_eq!(result, "line1\nline2modified\nline3\nline4\nline4b\nline5");
+    }
+
+    #[test]
+    fn round_trip_context_parse_apply() {
+        let original = "alpha\nbeta\ngamma\ndelta";
+        let diff = "\
+*** test.txt\t2024-01-01 00:00:00.000000000 +0000
+--- test.txt\t2024-01-02 00:00:00.000000000 +0000
+***************
+*** 1,4 ****
+  alpha
+! beta
+! gamma
+  delta
+--- 1,4 ----
+  alpha
+! BETA
+! GAMMA
+  delta
+";
+        let patches = parse_patch(diff).unwrap();
+        assert_eq!(patches.len(), 1);
+        let result = apply_hunks(original, &patches[0].hunks).unwrap();
+        assert_eq!(result, "alpha\nBETA\nGAMMA\ndelta");
+    }
+
+    #[test]
+    fn round_trip_multi_file() {
+        let diff = "\
+--- a/one.txt
++++ b/one.txt
+@@ -1,3 +1,3 @@
+ aaa
+-bbb
++BBB
+ ccc
+--- a/two.txt
++++ b/two.txt
+@@ -1,2 +1,3 @@
+ xxx
++yyy
+ zzz
+";
+        let patches = parse_patch(diff).unwrap();
+        assert_eq!(patches.len(), 2);
+
+        let result1 = apply_hunks("aaa\nbbb\nccc", &patches[0].hunks).unwrap();
+        assert_eq!(result1, "aaa\nBBB\nccc");
+
+        let result2 = apply_hunks("xxx\nzzz", &patches[1].hunks).unwrap();
+        assert_eq!(result2, "xxx\nyyy\nzzz");
+    }
+
+    #[test]
+    fn round_trip_delete_only() {
+        let original = "keep1\nremove1\nremove2\nkeep2";
+        let diff = "\
+--- a/del.txt
++++ b/del.txt
+@@ -1,4 +1,2 @@
+ keep1
+-remove1
+-remove2
+ keep2
+";
+        let patches = parse_patch(diff).unwrap();
+        assert_eq!(patches.len(), 1);
+        let result = apply_hunks(original, &patches[0].hunks).unwrap();
+        assert_eq!(result, "keep1\nkeep2");
+    }
+
+    // ── Best-effort apply tests ──────────────────────────────────────
+
+    #[test]
+    fn best_effort_clean_apply() {
+        let original = "line1\nline2\nline3\n";
+        let hunks = vec![Hunk {
+            old_start: 1,
+            old_count: 3,
+            new_start: 1,
+            new_count: 3,
+            lines: vec![
+                HunkLine::Context("line1".to_string()),
+                HunkLine::Remove("line2".to_string()),
+                HunkLine::Add("LINE2".to_string()),
+                HunkLine::Context("line3".to_string()),
+            ],
+        }];
+        let result = apply_hunks_best_effort(original, &hunks);
+        assert_eq!(result, "line1\nLINE2\nline3\n");
+    }
+
+    #[test]
+    fn best_effort_conflict_markers() {
+        let original = "aaa\nbbb\nccc\n";
+        let hunks = vec![Hunk {
+            old_start: 1,
+            old_count: 3,
+            new_start: 1,
+            new_count: 3,
+            lines: vec![
+                HunkLine::Context("aaa".to_string()),
+                HunkLine::Remove("WRONG".to_string()),
+                HunkLine::Add("NEW".to_string()),
+                HunkLine::Context("ccc".to_string()),
+            ],
+        }];
+        let result = apply_hunks_best_effort(original, &hunks);
+        assert!(result.contains("<<<<<<< original"));
+        assert!(result.contains("======="));
+        assert!(result.contains(">>>>>>> patch"));
+        assert!(result.contains("bbb")); // original line in conflict
+        assert!(result.contains("NEW")); // patched line in conflict
+    }
+
+    #[test]
+    fn best_effort_partial_apply() {
+        // Two hunks: first applies, second conflicts
+        let original = "a\nb\nc\nd\ne\nf\n";
+        let hunks = vec![
+            Hunk {
+                old_start: 1,
+                old_count: 2,
+                new_start: 1,
+                new_count: 2,
+                lines: vec![
+                    HunkLine::Remove("a".to_string()),
+                    HunkLine::Add("A".to_string()),
+                    HunkLine::Context("b".to_string()),
+                ],
+            },
+            Hunk {
+                old_start: 5,
+                old_count: 2,
+                new_start: 5,
+                new_count: 2,
+                lines: vec![
+                    HunkLine::Remove("WRONG".to_string()),
+                    HunkLine::Add("E".to_string()),
+                    HunkLine::Context("f".to_string()),
+                ],
+            },
+        ];
+        let result = apply_hunks_best_effort(original, &hunks);
+        // First hunk applied cleanly
+        assert!(result.starts_with("A\nb\nc\nd\n"));
+        // Second hunk has conflict markers
+        assert!(result.contains("<<<<<<< original"));
+        assert!(result.contains(">>>>>>> patch"));
+    }
+
+    // ── sanitize_patch_path tests ────────────────────────────────────
+
+    #[test]
+    fn sanitize_normal_path() {
+        assert_eq!(
+            sanitize_patch_path("src/main.rs"),
+            Some("src/main.rs".to_string())
+        );
+    }
+
+    #[test]
+    fn sanitize_strips_leading_slash() {
+        assert_eq!(
+            sanitize_patch_path("/etc/passwd"),
+            Some("etc/passwd".to_string())
+        );
+    }
+
+    #[test]
+    fn sanitize_rejects_dotdot() {
+        assert_eq!(sanitize_patch_path("../../../etc/passwd"), None);
+        assert_eq!(sanitize_patch_path("src/../../../etc/passwd"), None);
+    }
+
+    #[test]
+    fn sanitize_rejects_windows_backslash_traversal() {
+        assert_eq!(sanitize_patch_path("..\\..\\etc\\passwd"), None);
+        assert_eq!(sanitize_patch_path("src\\..\\..\\etc\\passwd"), None);
+    }
+
+    #[test]
+    fn sanitize_rejects_windows_drive_letter() {
+        assert_eq!(sanitize_patch_path("C:\\tmp\\owned.txt"), None);
+        assert_eq!(sanitize_patch_path("D:\\Windows\\System32\\config"), None);
+    }
+
+    #[test]
+    fn sanitize_strips_leading_backslash_and_normalizes() {
+        assert_eq!(
+            sanitize_patch_path("\\usr\\bin\\foo"),
+            Some("usr/bin/foo".to_string())
+        );
+    }
+
+    #[test]
+    fn sanitize_rejects_empty() {
+        assert_eq!(sanitize_patch_path(""), None);
+        assert_eq!(sanitize_patch_path("/"), None);
+        assert_eq!(sanitize_patch_path("\\"), None);
+    }
+
+    // ── trailing newline preservation ────────────────────────────────
+
+    #[test]
+    fn apply_hunks_preserves_trailing_newline() {
+        let original = "line1\nline2\n";
+        let hunks = vec![Hunk {
+            old_start: 2,
+            old_count: 1,
+            new_start: 2,
+            new_count: 1,
+            lines: vec![
+                HunkLine::Remove("line2".to_string()),
+                HunkLine::Add("LINE2".to_string()),
+            ],
+        }];
+        let result = apply_hunks(original, &hunks).unwrap();
+        assert_eq!(result, "line1\nLINE2\n");
+    }
+
+    #[test]
+    fn apply_hunks_no_trailing_newline_when_original_lacks_it() {
+        let original = "line1\nline2";
+        let hunks = vec![Hunk {
+            old_start: 2,
+            old_count: 1,
+            new_start: 2,
+            new_count: 1,
+            lines: vec![
+                HunkLine::Remove("line2".to_string()),
+                HunkLine::Add("LINE2".to_string()),
+            ],
+        }];
+        let result = apply_hunks(original, &hunks).unwrap();
+        assert_eq!(result, "line1\nLINE2");
+    }
+
+    // ── context diff Added/Deleted detection ─────────────────────────
+
+    #[test]
+    fn context_diff_added_file() {
+        let input = "*** /dev/null\n--- b/new_file.txt\n***************\n*** 0 ****\n--- 1,2 ----\n+ hello\n+ world\n";
+        let patches = parse_patch(input).unwrap();
+        assert_eq!(patches.len(), 1);
+        assert_eq!(patches[0].kind, PatchKind::Added);
+        assert_eq!(patches[0].original_path, "new_file.txt");
+    }
+
+    #[test]
+    fn context_diff_deleted_file() {
+        let input = "*** a/old_file.txt\n--- /dev/null\n***************\n*** 1,2 ****\n- hello\n- world\n--- 0 ----\n";
+        let patches = parse_patch(input).unwrap();
+        assert_eq!(patches.len(), 1);
+        assert_eq!(patches[0].kind, PatchKind::Deleted);
+        assert_eq!(patches[0].original_path, "old_file.txt");
+    }
+
+    // ── sanitize_patch_path edge cases ───────────────────────────────
+
+    #[test]
+    fn sanitize_bare_dotdot() {
+        assert_eq!(sanitize_patch_path(".."), None);
+    }
+
+    #[test]
+    fn sanitize_allows_hidden_files() {
+        assert_eq!(
+            sanitize_patch_path(".gitignore"),
+            Some(".gitignore".to_string())
+        );
+        assert_eq!(
+            sanitize_patch_path("src/.hidden/file.rs"),
+            Some("src/.hidden/file.rs".to_string())
+        );
+    }
+
+    #[test]
+    fn sanitize_allows_triple_dot() {
+        assert_eq!(
+            sanitize_patch_path("src/.../foo"),
+            Some("src/.../foo".to_string())
+        );
+    }
+
+    #[test]
+    fn sanitize_mixed_separators_with_traversal() {
+        assert_eq!(sanitize_patch_path("src/foo\\..\\..\\bar"), None);
+        assert_eq!(sanitize_patch_path("src\\foo/../../../etc"), None);
+    }
+
+    // ── apply_hunks error cases ──────────────────────────────────────
+
+    #[test]
+    fn apply_hunks_overlapping_error() {
+        let original = "a\nb\nc\nd";
+        let hunks = vec![
+            Hunk {
+                old_start: 1,
+                old_count: 3,
+                new_start: 1,
+                new_count: 3,
+                lines: vec![
+                    HunkLine::Remove("a".to_string()),
+                    HunkLine::Add("A".to_string()),
+                    HunkLine::Context("b".to_string()),
+                    HunkLine::Context("c".to_string()),
+                ],
+            },
+            Hunk {
+                old_start: 2, // overlaps with first hunk
+                old_count: 1,
+                new_start: 2,
+                new_count: 1,
+                lines: vec![
+                    HunkLine::Remove("b".to_string()),
+                    HunkLine::Add("B".to_string()),
+                ],
+            },
+        ];
+        let result = apply_hunks(original, &hunks);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().0.contains("overlapping"));
+    }
+
+    #[test]
+    fn apply_hunks_past_end_of_file() {
+        let original = "a\nb";
+        let hunks = vec![Hunk {
+            old_start: 10,
+            old_count: 1,
+            new_start: 10,
+            new_count: 1,
+            lines: vec![
+                HunkLine::Remove("x".to_string()),
+                HunkLine::Add("y".to_string()),
+            ],
+        }];
+        let result = apply_hunks(original, &hunks);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn apply_hunks_context_mismatch() {
+        let original = "a\nb\nc";
+        let hunks = vec![Hunk {
+            old_start: 1,
+            old_count: 2,
+            new_start: 1,
+            new_count: 2,
+            lines: vec![
+                HunkLine::Context("WRONG".to_string()),
+                HunkLine::Remove("b".to_string()),
+                HunkLine::Add("B".to_string()),
+            ],
+        }];
+        let result = apply_hunks(original, &hunks);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().0.contains("mismatch"));
+    }
+
+    #[test]
+    fn apply_hunks_delete_everything() {
+        let original = "a\nb\nc";
+        let hunks = vec![Hunk {
+            old_start: 1,
+            old_count: 3,
+            new_start: 1,
+            new_count: 0,
+            lines: vec![
+                HunkLine::Remove("a".to_string()),
+                HunkLine::Remove("b".to_string()),
+                HunkLine::Remove("c".to_string()),
+            ],
+        }];
+        let result = apply_hunks(original, &hunks).unwrap();
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn apply_hunks_delete_everything_trailing_newline() {
+        let original = "a\nb\n";
+        let hunks = vec![Hunk {
+            old_start: 1,
+            old_count: 2,
+            new_start: 1,
+            new_count: 0,
+            lines: vec![
+                HunkLine::Remove("a".to_string()),
+                HunkLine::Remove("b".to_string()),
+            ],
+        }];
+        let result = apply_hunks(original, &hunks).unwrap();
+        // Empty output should stay empty, not become "\n"
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn apply_hunks_at_first_line() {
+        let original = "first\nsecond\nthird";
+        let hunks = vec![Hunk {
+            old_start: 1,
+            old_count: 1,
+            new_start: 1,
+            new_count: 1,
+            lines: vec![
+                HunkLine::Remove("first".to_string()),
+                HunkLine::Add("FIRST".to_string()),
+            ],
+        }];
+        let result = apply_hunks(original, &hunks).unwrap();
+        assert_eq!(result, "FIRST\nsecond\nthird");
+    }
+
+    #[test]
+    fn apply_hunks_empty_hunks_list() {
+        let original = "unchanged";
+        let result = apply_hunks(original, &[]).unwrap();
+        assert_eq!(result, "unchanged");
+    }
+
+    // ── best-effort edge cases ───────────────────────────────────────
+
+    #[test]
+    fn best_effort_all_hunks_fail() {
+        let original = "a\nb\nc\n";
+        let hunks = vec![
+            Hunk {
+                old_start: 1,
+                old_count: 1,
+                new_start: 1,
+                new_count: 1,
+                lines: vec![
+                    HunkLine::Remove("WRONG".to_string()),
+                    HunkLine::Add("X".to_string()),
+                ],
+            },
+            Hunk {
+                old_start: 3,
+                old_count: 1,
+                new_start: 3,
+                new_count: 1,
+                lines: vec![
+                    HunkLine::Remove("ALSO_WRONG".to_string()),
+                    HunkLine::Add("Y".to_string()),
+                ],
+            },
+        ];
+        let result = apply_hunks_best_effort(original, &hunks);
+        // Both hunks should produce conflict markers
+        let marker_count = result.matches("<<<<<<< original").count();
+        assert_eq!(marker_count, 2);
+    }
+
+    #[test]
+    fn best_effort_preserves_trailing_newline_on_conflict() {
+        let original = "a\nb\nc\n";
+        let hunks = vec![Hunk {
+            old_start: 2,
+            old_count: 1,
+            new_start: 2,
+            new_count: 1,
+            lines: vec![
+                HunkLine::Remove("WRONG".to_string()),
+                HunkLine::Add("B".to_string()),
+            ],
+        }];
+        let result = apply_hunks_best_effort(original, &hunks);
+        assert!(result.ends_with('\n'));
+    }
+
+    // ── parse edge cases ─────────────────────────────────────────────
+
+    #[test]
+    fn parse_unified_with_git_prefix() {
+        let diff = "\
+diff --git a/foo.rs b/foo.rs
+index abc1234..def5678 100644
+--- a/foo.rs
++++ b/foo.rs
+@@ -1,2 +1,2 @@
+-old
++new
+ same
+";
+        let patches = parse_patch(diff).unwrap();
+        assert_eq!(patches.len(), 1);
+        assert_eq!(patches[0].original_path, "foo.rs");
+    }
+
+    #[test]
+    fn parse_unified_no_newline_marker() {
+        // `\ No newline at end of file` should be ignored (not treated as hunk line)
+        let diff = "\
+--- a/foo.txt
++++ b/foo.txt
+@@ -1,2 +1,2 @@
+-old
++new
+ last
+\\ No newline at end of file
+";
+        let patches = parse_patch(diff).unwrap();
+        assert_eq!(patches.len(), 1);
+        assert_eq!(patches[0].hunks[0].lines.len(), 3);
+    }
+
+    #[test]
+    fn parse_unified_added_file() {
+        let diff = "\
+--- /dev/null
++++ b/new_file.txt
+@@ -0,0 +1,2 @@
++hello
++world
+";
+        let patches = parse_patch(diff).unwrap();
+        assert_eq!(patches.len(), 1);
+        assert_eq!(patches[0].kind, PatchKind::Added);
+        assert_eq!(patches[0].original_path, "new_file.txt");
+    }
+
+    #[test]
+    fn parse_unified_deleted_file() {
+        let diff = "\
+--- a/old_file.txt
++++ /dev/null
+@@ -1,2 +0,0 @@
+-goodbye
+-world
+";
+        let patches = parse_patch(diff).unwrap();
+        assert_eq!(patches.len(), 1);
+        assert_eq!(patches[0].kind, PatchKind::Deleted);
+        assert_eq!(patches[0].original_path, "old_file.txt");
+    }
+
+    #[test]
+    fn is_patch_file_false_for_lone_dashes() {
+        // --- without +++ on next line should not be detected as patch
+        let content = "--- some heading\nregular text\nmore text\n";
+        assert!(!is_patch_file(content));
+    }
+
+    #[test]
+    fn is_patch_file_at_boundary_line_50() {
+        // Patch signature must appear within first 50 lines
+        let mut content = String::new();
+        for i in 0..48 {
+            use std::fmt::Write;
+            let _ = writeln!(content, "filler line {i}");
+        }
+        content.push_str("--- a/file.txt\n+++ b/file.txt\n");
+        assert!(is_patch_file(&content)); // lines 48-49 (0-indexed), within limit
+
+        let mut content_beyond = String::new();
+        for i in 0..50 {
+            use std::fmt::Write;
+            let _ = writeln!(content_beyond, "filler line {i}");
+        }
+        content_beyond.push_str("--- a/file.txt\n+++ b/file.txt\n");
+        assert!(!is_patch_file(&content_beyond)); // lines 50-51, beyond limit
+    }
+
+    #[test]
+    fn parse_context_multi_hunk() {
+        let diff = "\
+*** file.txt\t2024-01-01
+--- file.txt\t2024-01-02
+***************
+*** 1,3 ****
+  aaa
+! bbb
+  ccc
+--- 1,3 ----
+  aaa
+! BBB
+  ccc
+***************
+*** 8,10 ****
+  xxx
+! yyy
+  zzz
+--- 8,10 ----
+  xxx
+! YYY
+  zzz
+";
+        let patches = parse_patch(diff).unwrap();
+        assert_eq!(patches.len(), 1);
+        assert_eq!(patches[0].hunks.len(), 2);
+        assert_eq!(patches[0].hunks[0].old_start, 1);
+        assert_eq!(patches[0].hunks[1].old_start, 8);
+    }
+}

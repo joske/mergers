@@ -21,6 +21,7 @@ A visual diff and merge tool written in Rust with GTK4, inspired by [Meld](https
 - **Chunk navigation** with keyboard shortcuts (with optional wrap-around)
 - **Synchronized scrolling** — chunk-aware vertical sync keeps corresponding lines aligned
 - **Chunk map** — visual overview strips alongside each pane with viewport indicator
+- **Patch viewing** — open `.patch`/`.diff` files to interactively review and apply changes, with conflict markers for failed hunks
 - **Patch export** (unified diff format)
 - **Refresh** (Ctrl+R / F5) — reload files from disk with unsaved-changes confirmation
 - **Open externally** (Ctrl+Shift+O) — open focused file in system default app
@@ -95,6 +96,12 @@ mergers dir1/ dir2/
 # Three-way merge (left, merged, right)
 mergers local.txt merged.txt remote.txt
 
+# Apply a patch to a file (auto-detected from .patch/.diff extension)
+mergers original.txt changes.patch
+
+# Apply a patch to a directory
+mergers project/ changes.patch
+
 # View uncommitted git changes
 mergers .
 
@@ -120,32 +127,35 @@ git mergetool
 
 ## Comparison with Similar Tools
 
-| Feature                           | mergers               | [Meld](https://meldmerge.org/) | [Diffuse](https://github.com/MightyCreak/diffuse) |
-| --------------------------------- | --------------------- | ------------------------------ | ------------------------------------------------- |
-| **File Comparison**               | 2-way, 3-way          | 2-way, 3-way                   | N-way (arbitrary)                                 |
-| **Directory Comparison**          | Yes                   | Yes                            | No                                                |
-| **VCS Integration**               | Git                   | Git, Hg, Bzr, CVS, SVN         | Git, Hg, Bzr, CVS, SVN, Darcs, Monotone, RCS      |
-| **Syntax Highlighting**           | Yes (GtkSourceView 5) | Yes (GtkSourceView)            | Yes                                               |
-| **Word-level Diffs**              | Yes                   | Yes                            | No                                                |
-| **Inline Editing**                | Yes                   | Yes                            | Yes                                               |
-| **Manual Line Alignment**         | No                    | No                             | Yes                                               |
-| **Undo/Redo**                     | Yes                   | Yes                            | Unlimited undo                                    |
-| **Find & Replace**                | Yes                   | Yes                            | Yes                                               |
-| **Go to Line**                    | Yes                   | No                             | No                                                |
-| **Patch Export**                  | Yes                   | No                             | No                                                |
-| **Ignore Whitespace**             | Yes                   | Yes                            | No                                                |
-| **Ignore Blank Lines**            | Yes                   | Yes                            | No                                                |
-| **Text Wrapping Options**         | Yes                   | Yes                            | No                                                |
-| **File Monitoring / Auto-reload** | Yes                   | Yes                            | No                                                |
-| **Synchronized Scrolling**        | Yes                   | Yes                            | No                                                |
-| **Chunk Map (minimap)**           | Yes                   | Yes                            | No                                                |
-| **Conflict Marker Detection**     | Yes                   | No                             | No                                                |
-| **Folder Filters**                | Yes                   | Yes                            | N/A                                               |
-| **Git Mergetool Support**         | Yes                   | Yes                            | Yes                                               |
-| **Custom Pane Labels**            | Yes                   | Yes                            | Yes                                               |
-| **Toolkit**                       | GTK4                  | GTK3                           | GTK3                                              |
-| **Language**                      | Rust                  | Python                         | Python                                            |
-| **License**                       | GPL-2.0               | GPL-2.0                        | GPL-2.0                                           |
+| Feature                           | mergers               | [Meld](https://meldmerge.org/) | [Diffuse](https://github.com/MightyCreak/diffuse) | [Kompare](https://apps.kde.org/kompare/) |
+| --------------------------------- | --------------------- | ------------------------------ | ------------------------------------------------- | ---------------------------------------- |
+| **File Comparison**               | 2-way, 3-way          | 2-way, 3-way                   | N-way (arbitrary)                                 | 2-way                                    |
+| **Directory Comparison**          | Yes                   | Yes                            | No                                                | Yes                                      |
+| **VCS Integration**               | Git                   | Git, Hg, Bzr, CVS, SVN         | Git, Hg, Bzr, CVS, SVN, Darcs, Monotone, RCS      | No                                       |
+| **Syntax Highlighting**           | Yes (GtkSourceView 5) | Yes (GtkSourceView)            | Yes                                               | No                                       |
+| **Word-level Diffs**              | Yes                   | Yes                            | No                                                | No                                       |
+| **Inline Editing**                | Yes                   | Yes                            | Yes                                               | No                                       |
+| **Manual Line Alignment**         | No                    | No                             | Yes                                               | No                                       |
+| **Undo/Redo**                     | Yes                   | Yes                            | Unlimited undo                                    | No                                       |
+| **Find & Replace**                | Yes                   | Yes                            | Yes                                               | No                                       |
+| **Go to Line**                    | Yes                   | No                             | No                                                | No                                       |
+| **Patch Export**                  | Yes                   | No                             | No                                                | Yes                                      |
+| **Patch Viewing/Applying**        | Yes                   | No                             | No                                                | Yes                                      |
+| **Ignore Whitespace**             | Yes                   | Yes                            | No                                                | No                                       |
+| **Ignore Blank Lines**            | Yes                   | Yes                            | No                                                | No                                       |
+| **Text Wrapping Options**         | Yes                   | Yes                            | No                                                | No                                       |
+| **File Monitoring / Auto-reload** | Yes                   | Yes                            | No                                                | No                                       |
+| **Synchronized Scrolling**        | Yes                   | Yes                            | No                                                | No                                       |
+| **Chunk Map (minimap)**           | Yes                   | Yes                            | No                                                | No                                       |
+| **Conflict Marker Detection**     | Yes                   | No                             | No                                                | No                                       |
+| **Diff Statistics**               | No                    | No                             | No                                                | Yes                                      |
+| **Folder Filters**                | Yes                   | Yes                            | N/A                                               | No                                       |
+| **Git Mergetool Support**         | Yes                   | Yes                            | Yes                                               | No                                       |
+| **Custom Pane Labels**            | Yes                   | Yes                            | Yes                                               | No                                       |
+| **Remote File Support**           | Via GVFS              | Via GVFS                       | No                                                | Via KIO                                  |
+| **Toolkit**                       | GTK4                  | GTK3                           | GTK3                                              | Qt (KDE Frameworks)                      |
+| **Language**                      | Rust                  | Python                         | Python                                            | C++                                      |
+| **License**                       | GPL-2.0               | GPL-2.0                        | GPL-2.0                                           | GPL-2.0                                  |
 
 ## Building
 

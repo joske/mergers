@@ -39,6 +39,7 @@ mod tests;
 pub(super) enum FileStatus {
     Same,
     Different,
+    Conflict,
     LeftOnly,
     RightOnly,
 }
@@ -48,6 +49,7 @@ impl FileStatus {
         match self {
             Self::Same => "S",
             Self::Different => "D",
+            Self::Conflict => "C",
             Self::LeftOnly => "L",
             Self::RightOnly => "R",
         }

@@ -88,6 +88,8 @@ mod file_window;
 #[doc(hidden)]
 pub mod merge_state;
 mod merge_view;
+mod patch_window;
+pub use patch_window::cleanup_patch_temp_dirs;
 mod preferences;
 mod vcs_window;
 mod welcome;
@@ -97,6 +99,7 @@ use diff_view::*;
 use dir_window::*;
 use file_window::*;
 use merge_view::*;
+use patch_window::*;
 use preferences::*;
 use vcs_window::*;
 use welcome::*;
@@ -247,6 +250,11 @@ pub fn build_ui(application: &Application, mode: CompareMode) {
                 right,
                 labels,
             } => build_merge_window(app, left, middle, right, &labels, &settings),
+            CompareMode::Patch {
+                base,
+                patch,
+                labels,
+            } => build_patch_window(app, base, patch, &labels, &settings),
             CompareMode::Vcs { dir } => build_vcs_window(app, dir, settings),
             CompareMode::Welcome => build_welcome_window(app, settings),
         }
