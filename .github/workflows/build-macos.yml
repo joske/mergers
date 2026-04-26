@@ -2,7 +2,7 @@ name: macOS Build
 on:
   pull_request:
 jobs:
-  macos:
+  build:
     strategy:
       fail-fast: false
       matrix:
@@ -20,3 +20,14 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: Build release binary
         run: cargo build --release
+  macos:
+    needs: build
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify all matrix builds passed
+        run: |
+          if [ "${{ needs.build.result }}" != "success" ]; then
+            echo "One or more matrix builds failed"
+            exit 1
+          fi

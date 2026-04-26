@@ -46,6 +46,7 @@ fn make_chunks(n_total: usize, n_changes: usize) -> Vec<DiffChunk> {
     let mut pos_a = 0;
     let mut pos_b = 0;
     let mut changes_placed = 0;
+    #[allow(clippy::manual_checked_ops)]
     let step = if n_changes > 0 {
         n_total / n_changes
     } else {
