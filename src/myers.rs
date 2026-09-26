@@ -961,7 +961,10 @@ mod tests {
         let b = vec!["a", "b", "c", "d", "e"];
         let chunks = diff(&a, &b);
         // Should have Equal, Insert, Equal, Insert, Equal
-        assert!(chunks.iter().filter(|c| c.tag == DiffTag::Insert).count() == 2);
+        assert_eq!(
+            chunks.iter().filter(|c| c.tag == DiffTag::Insert).count(),
+            2
+        );
         verify_coverage(&chunks, a.len(), b.len());
     }
 
@@ -970,7 +973,10 @@ mod tests {
         let a = vec!["a", "b", "c", "d", "e"];
         let b = vec!["a", "c", "e"];
         let chunks = diff(&a, &b);
-        assert!(chunks.iter().filter(|c| c.tag == DiffTag::Delete).count() == 2);
+        assert_eq!(
+            chunks.iter().filter(|c| c.tag == DiffTag::Delete).count(),
+            2
+        );
         verify_coverage(&chunks, a.len(), b.len());
     }
 

@@ -141,7 +141,7 @@ fn read_dir_entries(
             // Use lstat (file_type/symlink_metadata) consistently to avoid
             // following symlinks to directories (prevents infinite recursion)
             // and to get consistent size/mtime for symlinks-to-dirs.
-            let is_dir = entry.file_type().ok().is_some_and(|ft| ft.is_dir());
+            let is_dir = entry.file_type().is_ok_and(|ft| ft.is_dir());
             let meta = fs::symlink_metadata(entry.path()).ok();
             map.insert(
                 name,
