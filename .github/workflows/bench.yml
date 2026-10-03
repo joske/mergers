@@ -9,7 +9,7 @@ jobs:
     permissions:
       pull-requests: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install additional packages
         run: sudo apt-get update && sudo apt-get install -y build-essential libgtksourceview-5-dev
       - name: Install Rust
