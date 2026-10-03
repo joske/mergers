@@ -14,7 +14,7 @@ jobs:
       - name: Install additional packages
         run: sudo apt-get update && sudo apt-get install -y build-essential libgtksourceview-5-dev xvfb fonts-dejavu-core
       - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           components: clippy, rustfmt
       - name: Cache cargo
