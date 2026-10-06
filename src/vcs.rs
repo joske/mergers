@@ -326,7 +326,7 @@ mod tests {
     fn test_parse_nul_unstaged_not_staged() {
         let entries = parse_porcelain_nul(b" M src/main.rs\0");
         assert_eq!(entries.len(), 1);
-        assert!(entries[0].extra.is_empty());
+        assert_eq!(entries[0].extra, "");
     }
 
     #[test]
@@ -438,7 +438,7 @@ mod tests {
         let entries = parse_porcelain_nul(b"DU deleted_by_us.rs\0");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].status, VcsStatus::Conflict);
-        assert!(entries[0].extra.is_empty());
+        assert_eq!(entries[0].extra, "");
     }
 
     #[test]

@@ -107,7 +107,7 @@ mod tests {
     #[test]
     fn change_indices_empty() {
         let result = merge_change_indices(&[], &[]);
-        assert!(result.is_empty());
+        assert_eq!(result, [] as [(usize, bool); 0]);
     }
 
     #[test]
@@ -121,7 +121,7 @@ mod tests {
         }];
         let right = left.clone();
         let result = merge_change_indices(&left, &right);
-        assert!(result.is_empty());
+        assert_eq!(result, [] as [(usize, bool); 0]);
     }
 
     #[test]
@@ -230,14 +230,14 @@ mod tests {
     #[test]
     fn conflict_markers_empty_text() {
         let result = find_conflict_markers_in_text("");
-        assert!(result.is_empty());
+        assert_eq!(result, [] as [usize; 0]);
     }
 
     #[test]
     fn conflict_markers_none_present() {
         let text = "line one\nline two\nline three\n";
         let result = find_conflict_markers_in_text(text);
-        assert!(result.is_empty());
+        assert_eq!(result, [] as [usize; 0]);
     }
 
     #[test]
@@ -259,7 +259,7 @@ mod tests {
     fn conflict_markers_not_at_line_start() {
         let text = "some text <<<<<<< HEAD\nanother line\n";
         let result = find_conflict_markers_in_text(text);
-        assert!(result.is_empty());
+        assert_eq!(result, [] as [usize; 0]);
     }
 
     #[test]
@@ -327,7 +327,7 @@ mod tests {
         // <<<<<<< without >>>>>>> — should produce no blocks
         let text = "before\n<<<<<<< HEAD\nours\n=======\ntheirs\n";
         let blocks = find_conflict_blocks(text);
-        assert!(blocks.is_empty());
+        assert_eq!(blocks, [] as [(usize, usize); 0]);
     }
 
     #[test]
@@ -335,7 +335,7 @@ mod tests {
         // >>>>>>> without <<<<<<< — should produce no blocks
         let text = "before\nsome text\n>>>>>>> branch\nafter\n";
         let blocks = find_conflict_blocks(text);
-        assert!(blocks.is_empty());
+        assert_eq!(blocks, [] as [(usize, usize); 0]);
     }
 
     #[test]
