@@ -78,77 +78,23 @@ jobs:
           TAG="${{ needs.checks.outputs.tag }}"
           gh release create "$TAG" --title "$TAG" --generate-notes
   appimage:
+    # CI has already built, linted, and smoke-tested both artifacts in this run.
     needs: [checks, create-release]
+    runs-on: ubuntu-latest
     strategy:
       matrix:
-        include:
-          - runner: ubuntu-24.04
-            arch: x86_64
-          - runner: ubuntu-24.04-arm
-            arch: aarch64
-    runs-on: ${{ matrix.runner }}
+        arch: [x86_64, aarch64]
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v6
-      - name: Install packages needed for build
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential libgtksourceview-5-dev librsvg2-dev \
-            librsvg2-bin librsvg2-common libgirepository1.0-dev adwaita-icon-theme \
-            shared-mime-info libfuse2
-      - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-      - name: Build release binary
-        run: cargo build --release
-      - name: Convert SVG icon to PNG
-        run: rsvg-convert -w 256 -h 256 assets/mergers.svg -o mergers.png
-      - name: Download AppImage packaging tools
-        run: |
-          curl -fsSL -o linuxdeploy.AppImage https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-${{ matrix.arch }}.AppImage
-          # Pin the GTK plugin, including its GTK4 support.
-          curl -fsSL -o linuxdeploy-plugin-gtk.sh https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/7a3fbc31a9e5075073ff8790f26effbac5f84453/linuxdeploy-plugin-gtk.sh
-          chmod +x linuxdeploy.AppImage linuxdeploy-plugin-gtk.sh
-      - name: Build AppImage
-        env:
-          APPIMAGE_EXTRACT_AND_RUN: '1'
-          DEPLOY_GTK_VERSION: '4'
-          ARCH: ${{ matrix.arch }}
-          OUTPUT: mergers-${{ matrix.arch }}.AppImage
-        run: |
-          # ELF dependencies are collected by linuxdeploy; the GTK plugin adds
-          # schemas, dynamically loaded modules, and resource-path AppRun hooks.
-          # GtkSourceView's language definitions/styles need explicit copying.
-          mkdir -p AppDir/usr/share/icons
-          cp -a /usr/share/gtksourceview-5 AppDir/usr/share/
-          cp -a /usr/share/icons/Adwaita /usr/share/icons/hicolor AppDir/usr/share/icons/
-          # GTK needs MIME data to recognize SVG icons and other image formats.
-          mkdir -p AppDir/usr/share/mime/packages
-          cp /usr/share/mime/packages/freedesktop.org.xml AppDir/usr/share/mime/packages/
-          XDG_DATA_DIRS="$PWD/AppDir/usr/share" update-mime-database AppDir/usr/share/mime
-          # Dereference font configuration symlinks so they stay inside AppDir.
-          mkdir -p AppDir/etc AppDir/apprun-hooks
-          cp -aL /etc/fonts AppDir/etc/
-          cat > AppDir/apprun-hooks/resources.sh <<'EOF'
-          export APPDIR="${APPDIR:-$(dirname "$(readlink -f "$0")")}"
-          export FONTCONFIG_PATH="$APPDIR/etc/fonts"
-          export LD_LIBRARY_PATH="$APPDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-          export GDK_PIXBUF_MODULEDIR="$APPDIR/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders"
-          EOF
-          ./linuxdeploy.AppImage --appdir AppDir \
-            --executable target/release/mergers \
-            --desktop-file assets/mergers.desktop \
-            --icon-file mergers.png \
-            --library "$(pkg-config --variable=libdir fontconfig)/libfontconfig.so.1" \
-            --library "$(pkg-config --variable=libdir freetype2)/libfreetype.so.6" \
-            --library "$(pkg-config --variable=libdir harfbuzz)/libharfbuzz.so.0" \
-            --library "$(pkg-config --variable=libdir fribidi)/libfribidi.so.0" \
-            --plugin gtk --output appimage
-      - name: Test AppImage without system GTK libraries
-        run: bash .github/scripts/test-appimage.sh mergers-${{ matrix.arch }}.AppImage
+      - name: Download tested AppImage artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: appimage-${{ matrix.arch }}
       - name: Upload AppImage to GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           TAG="${{ needs.checks.outputs.tag }}"
           gh release upload "$TAG" mergers-${{ matrix.arch }}.AppImage --clobber
