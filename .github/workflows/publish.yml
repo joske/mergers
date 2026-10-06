@@ -78,42 +78,23 @@ jobs:
           TAG="${{ needs.checks.outputs.tag }}"
           gh release create "$TAG" --title "$TAG" --generate-notes
   appimage:
+    # CI has already built, linted, and smoke-tested both artifacts in this run.
     needs: [checks, create-release]
+    runs-on: ubuntu-latest
     strategy:
       matrix:
-        include:
-          - runner: ubuntu-24.04
-            arch: x86_64
-          - runner: ubuntu-24.04-arm
-            arch: aarch64
-    runs-on: ${{ matrix.runner }}
+        arch: [x86_64, aarch64]
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v6
-      - name: Install packages needed for build
-        run: sudo apt-get update && sudo apt-get install -y build-essential libgtksourceview-5-dev librsvg2-bin libfuse2
-      - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-      - name: Build release binary
-        run: cargo build --release
-      - name: Convert SVG icon to PNG
-        run: rsvg-convert -w 256 -h 256 assets/mergers.svg -o mergers.png
-      - name: Download appimagetool
-        run: |
-          curl -fsSL -o appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${{ matrix.arch }}.AppImage
-          chmod +x appimagetool
-      - name: Build AppImage
-        run: |
-          mkdir -p AppDir/usr/bin
-          cp target/release/mergers AppDir/usr/bin/mergers
-          cp assets/mergers.desktop AppDir/mergers.desktop
-          cp mergers.png AppDir/mergers.png
-          ln -s usr/bin/mergers AppDir/AppRun
-          ./appimagetool --appimage-extract-and-run AppDir mergers-${{ matrix.arch }}.AppImage
+      - name: Download tested AppImage artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: appimage-${{ matrix.arch }}
       - name: Upload AppImage to GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           TAG="${{ needs.checks.outputs.tag }}"
           gh release upload "$TAG" mergers-${{ matrix.arch }}.AppImage --clobber

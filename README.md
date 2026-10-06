@@ -61,6 +61,9 @@ yay -S mergers
 
 ### Linux (AppImage)
 
+Requires a Linux desktop with glibc 2.39 or newer (Ubuntu 24.04 or equivalent).
+GTK4 and GtkSourceView are bundled; they do not need to be installed separately.
+
 Download the latest AppImage from [GitHub Releases](https://github.com/joske/mergers/releases/latest):
 
 ```bash
@@ -242,6 +245,10 @@ Benchmarks run automatically on pull requests via `.github/workflows/bench.yml`.
 **CI**
 
 The `.github/workflows/ui-tests.yml` workflow runs the full suite on every push, installing `at-spi2-core` and `xdotool` from the system package manager before invoking `make test-release`.
+
+CI also builds AppImages for x86_64 and aarch64 on Ubuntu 24.04. Each image passes
+the AppImage catalog's AppDir linter and a startup test without system GTK libraries.
+The release workflow uploads these tested artifacts.
 
 ## License
 

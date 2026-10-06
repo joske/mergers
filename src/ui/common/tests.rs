@@ -35,14 +35,14 @@ fn filter_both_options() {
 fn filter_empty_input() {
     let (text, map) = filter_for_diff("", false, false);
     assert_eq!(text, "");
-    assert!(map.is_empty());
+    assert_eq!(map, [] as [usize; 0]);
 }
 
 #[test]
 fn filter_all_blank_lines() {
     let (text, map) = filter_for_diff("\n\n\n", false, true);
     assert_eq!(text, "");
-    assert!(map.is_empty());
+    assert_eq!(map, [] as [usize; 0]);
 }
 
 // ── remap_chunks ─────────────────────────────────────────────
@@ -84,7 +84,7 @@ fn remap_out_of_bounds_uses_total() {
 #[test]
 fn remap_empty_chunks() {
     let remapped = remap_chunks(vec![], &[0, 1], 2, &[0, 1], 2);
-    assert!(remapped.is_empty());
+    assert_eq!(remapped, [] as [DiffChunk; 0]);
 }
 
 // ── format_size ──────────────────────────────────────────────
@@ -260,13 +260,13 @@ fn read_file_content_binary() {
     std::fs::write(&p, b"hello\x00world").unwrap();
     let (content, is_binary) = read_file_content(&p);
     assert!(is_binary);
-    assert!(content.is_empty());
+    assert_eq!(content, "");
 }
 
 #[test]
 fn read_file_content_nonexistent() {
     let (content, is_binary) = read_file_content(std::path::Path::new("/nonexistent/path"));
-    assert!(content.is_empty());
+    assert_eq!(content, "");
     assert!(!is_binary);
 }
 
@@ -276,7 +276,7 @@ fn read_file_content_empty_file() {
     let p = dir.path().join("empty");
     std::fs::write(&p, "").unwrap();
     let (content, is_binary) = read_file_content(&p);
-    assert!(content.is_empty());
+    assert_eq!(content, "");
     assert!(!is_binary);
 }
 
@@ -408,7 +408,7 @@ fn all_colour_pairs_differ() {
 #[test]
 fn conflict_flags_empty_chunks() {
     let flags = conflict_flags(&[], Side::B, &[], Side::A);
-    assert!(flags.is_empty());
+    assert_eq!(flags, [] as [bool; 0]);
 }
 
 #[test]
@@ -719,7 +719,10 @@ fn conflict_regions_no_overlap() {
         start_b: 5,
         end_b: 7,
     }];
-    assert!(gutter::middle_conflict_regions(&left, &right).is_empty());
+    assert_eq!(
+        gutter::middle_conflict_regions(&left, &right),
+        [] as [(usize, usize); 0]
+    );
 }
 
 #[test]
@@ -762,7 +765,7 @@ fn conflict_regions_filters_zero_width() {
     }];
     let regions = gutter::middle_conflict_regions(&left, &right);
     // Zero-width regions should be filtered out
-    assert!(regions.is_empty());
+    assert_eq!(regions, [] as [(usize, usize); 0]);
 }
 
 #[test]
@@ -814,7 +817,10 @@ fn conflict_regions_equal_chunks_ignored() {
         start_b: 0,
         end_b: 5,
     }];
-    assert!(gutter::middle_conflict_regions(&left, &right).is_empty());
+    assert_eq!(
+        gutter::middle_conflict_regions(&left, &right),
+        [] as [(usize, usize); 0]
+    );
 }
 
 // ── merged_gutter_chunks (binary search) ────────────────────────

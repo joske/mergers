@@ -605,7 +605,7 @@ mod tests {
     fn test_both_empty() {
         let a: Vec<&str> = vec![];
         let b: Vec<&str> = vec![];
-        assert!(diff(&a, &b).is_empty());
+        assert_eq!(diff(&a, &b), [] as [DiffChunk; 0]);
     }
 
     #[test]
@@ -805,7 +805,7 @@ mod tests {
             b.push(common);
         }
         let chunks = diff(&a, &b);
-        assert!(!chunks.is_empty());
+        assert_ne!(chunks, [] as [DiffChunk; 0]);
 
         // Verify coverage
         let mut pos_a = 0;
@@ -943,7 +943,7 @@ mod tests {
     #[test]
     fn test_diff_words_empty_strings() {
         let (_, _, chunks) = diff_words("", "");
-        assert!(chunks.is_empty());
+        assert_eq!(chunks, [] as [DiffChunk; 0]);
     }
 
     #[test]
@@ -1022,7 +1022,7 @@ mod tests {
         let b = "line1\nline2\n";
         // Note: .lines() doesn't include trailing empty after final \n
         let chunks = diff_lines(a, b);
-        assert!(!chunks.is_empty());
+        assert_ne!(chunks, [] as [DiffChunk; 0]);
     }
 
     #[test]

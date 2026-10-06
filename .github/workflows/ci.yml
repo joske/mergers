@@ -28,3 +28,5 @@ jobs:
         env:
           GDK_BACKEND: x11
           GTK_A11Y: none
+  appimage:
+    uses: ./.github/workflows/appimage.yml
