@@ -12,7 +12,7 @@ jobs:
     outputs:
       tag: ${{ steps.get_tag.outputs.tag }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Check HEAD has a tag
@@ -69,7 +69,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install dependencies
         run: brew install gtk4 gtksourceview5
       - name: Install Rust
@@ -129,7 +129,7 @@ jobs:
         shell: msys2 {0}
         run: |
           pacman -S --noconfirm ${{ matrix.package_prefix }}-gtk4 ${{ matrix.package_prefix }}-gtksourceview5 ${{ matrix.package_prefix }}-pkgconf ${{ matrix.package_prefix }}-clang
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install Rust
         shell: msys2 {0}
         run: |
@@ -237,7 +237,7 @@ jobs:
     needs: prepare-release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install packages needed for build
         run: sudo apt-get update && sudo apt-get install -y build-essential libgtksourceview-5-dev
       - name: Install Rust
@@ -325,7 +325,7 @@ jobs:
           SHA=$(curl -sL "$URL" | shasum -a 256 | cut -d' ' -f1)
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
       - name: Checkout tap repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: joske/homebrew-mergers
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}

@@ -41,7 +41,7 @@ jobs:
         shell: msys2 {0}
         run: |
           pacman -S --noconfirm ${{ matrix.package_prefix }}-gtk4 ${{ matrix.package_prefix }}-gtksourceview5 ${{ matrix.package_prefix }}-pkgconf ${{ matrix.package_prefix }}-clang
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install Rust
         shell: msys2 {0}
         run: |
