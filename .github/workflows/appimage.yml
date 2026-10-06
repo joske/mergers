@@ -26,7 +26,7 @@ jobs:
             librsvg2-bin librsvg2-common libgirepository1.0-dev adwaita-icon-theme \
             shared-mime-info libfuse2 desktop-file-utils libfile-mimeinfo-perl appstream
       - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v2
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
       - name: Build release binary
