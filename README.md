@@ -61,6 +61,9 @@ yay -S mergers
 
 ### Linux (AppImage)
 
+Requires a Linux desktop with glibc 2.39 or newer (Ubuntu 24.04 or equivalent).
+GTK4 and GtkSourceView are bundled; they do not need to be installed separately.
+
 Download the latest AppImage from [GitHub Releases](https://github.com/joske/mergers/releases/latest):
 
 ```bash
