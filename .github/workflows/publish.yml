@@ -1,6 +1,11 @@
 name: Release
 on:
   workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: release
+  cancel-in-progress: false
 jobs:
   checks:
     runs-on: ubuntu-latest
@@ -51,55 +56,8 @@ jobs:
   ui-tests:
     needs: ci
     uses: ./.github/workflows/ui-tests.yml
-  publish:
-    needs: ui-tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - name: Install packages needed for build
-        run: sudo apt-get update && sudo apt-get install -y build-essential libgtksourceview-5-dev
-      - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-      - name: Publish to crates.io
-        run: cargo publish
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-  create-release:
-    needs: [checks, publish]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v6
-      - name: Create GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          TAG="${{ needs.checks.outputs.tag }}"
-          gh release create "$TAG" --title "$TAG" --generate-notes
-  appimage:
-    # CI has already built, linted, and smoke-tested both artifacts in this run.
-    needs: [checks, create-release]
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        arch: [x86_64, aarch64]
-    permissions:
-      contents: write
-    steps:
-      - name: Download tested AppImage artifact
-        uses: actions/download-artifact@v8
-        with:
-          name: appimage-${{ matrix.arch }}
-      - name: Upload AppImage to GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          TAG="${{ needs.checks.outputs.tag }}"
-          gh release upload "$TAG" mergers-${{ matrix.arch }}.AppImage --clobber
   macos:
-    needs: [checks, create-release]
+    needs: checks
     strategy:
       matrix:
         include:
@@ -109,7 +67,7 @@ jobs:
             arch: x86_64
     runs-on: ${{ matrix.runner }}
     permissions:
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@v6
       - name: Install dependencies
@@ -117,17 +75,18 @@ jobs:
       - name: Install Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: Build release binary
-        run: cargo build --release
+        run: cargo build --release --locked
       - name: Create tarball
         run: tar -czf mergers-darwin-${{ matrix.arch }}.tar.gz -C target/release mergers
-      - name: Upload to GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          TAG="${{ needs.checks.outputs.tag }}"
-          gh release upload "$TAG" mergers-darwin-${{ matrix.arch }}.tar.gz --clobber
+      - name: Upload macOS package artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-${{ matrix.arch }}
+          path: mergers-darwin-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+          compression-level: 0
   windows:
-    needs: [checks, create-release]
+    needs: checks
     strategy:
       fail-fast: false
       matrix:
@@ -148,7 +107,7 @@ jobs:
             arch: aarch64
     runs-on: ${{ matrix.runner }}
     permissions:
-      contents: write
+      contents: read
     steps:
       - name: Setup MSYS2
         uses: msys2/setup-msys2@v2
@@ -198,7 +157,7 @@ jobs:
           # Use only MSYS2 paths to avoid picking up link.exe from Visual Studio
           export PATH="$(pwd)/.cargo/bin:/$MSYSTEM/bin:/usr/bin"
           export PKG_CONFIG_ALLOW_CROSS=1
-          cargo build --release ${{ matrix.cargo_target_flag }}
+          cargo build --release --locked ${{ matrix.cargo_target_flag }}
       - name: Bundle binary with DLLs
         shell: msys2 {0}
         run: |
@@ -219,15 +178,93 @@ jobs:
       - name: Create zip
         shell: pwsh
         run: Compress-Archive -Path dist\* -DestinationPath mergers-windows-${{ matrix.arch }}.zip
-      - name: Upload to GitHub release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Upload Windows package artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-${{ matrix.arch }}
+          path: mergers-windows-${{ matrix.arch }}.zip
+          if-no-files-found: error
+          compression-level: 0
+  prepare-release:
+    # CI builds both AppImages; these matrices build the other four packages.
+    # A failure in any build or test prevents both crates.io and GitHub publication.
+    needs: [checks, ci, ui-tests, macos, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.checks.outputs.tag }}
+    steps:
+      - name: Download all tested packages
+        uses: actions/download-artifact@v8
+        with:
+          path: release-artifacts
+      - name: Verify packages and populate a draft release
         run: |
-          TAG="${{ needs.checks.outputs.tag }}"
-          gh release upload "$TAG" mergers-windows-${{ matrix.arch }}.zip --clobber
+          assets=(
+            release-artifacts/appimage-x86_64/mergers-x86_64.AppImage
+            release-artifacts/appimage-aarch64/mergers-aarch64.AppImage
+            release-artifacts/macos-x86_64/mergers-darwin-x86_64.tar.gz
+            release-artifacts/macos-aarch64/mergers-darwin-aarch64.tar.gz
+            release-artifacts/windows-x86_64/mergers-windows-x86_64.zip
+            release-artifacts/windows-aarch64/mergers-windows-aarch64.zip
+          )
+          for asset in "${assets[@]}"; do
+            if [ ! -s "$asset" ]; then
+              echo "::error::Missing or empty release package: $asset"
+              exit 1
+            fi
+          done
+          # A failed upload can leave a draft. Reuse it, but never alter an
+          # already published release when retrying this workflow.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" != true ]; then
+              echo "::error::A published release already exists for $TAG"
+              exit 1
+            fi
+          else
+            gh release create "$TAG" --draft --verify-tag --title "$TAG" --generate-notes
+          fi
+          gh release upload "$TAG" "${assets[@]}" --clobber
+          count=$(gh release view "$TAG" --json assets --jq '.assets | length')
+          if [ "$count" != "${#assets[@]}" ]; then
+            echo "::error::Expected ${#assets[@]} release assets, found $count"
+            exit 1
+          fi
+  publish:
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install packages needed for build
+        run: sudo apt-get update && sudo apt-get install -y build-essential libgtksourceview-5-dev
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Publish to crates.io
+        run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+  release:
+    needs: [checks, prepare-release, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.checks.outputs.tag }}
+    steps:
+      - name: Publish the complete GitHub release
+        run: |
+          if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" != true ]; then
+            echo "::error::Expected a draft release for $TAG"
+            exit 1
+          fi
+          gh release edit "$TAG" --draft=false
   aur:
-    needs: [checks, appimage]
+    needs: [checks, release]
     runs-on: ubuntu-latest
     container: archlinux:base-devel
     steps:
@@ -270,7 +307,7 @@ jobs:
         if: always()
         run: rm -f /root/.ssh/aur
   homebrew:
-    needs: [checks, macos]
+    needs: [checks, release]
     runs-on: ubuntu-latest
     steps:
       - name: Determine version
